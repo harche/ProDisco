@@ -1,0 +1,54 @@
+import { z } from 'zod';
+
+import { getCustomResource as getCustomResourceApi } from '../../kube/client.js';
+import { summarizeMetadata } from '../../util/summary.js';
+import type { ToolDefinition } from '../types.js';
+
+const GetCustomResourceInputSchema = z.object({
+  group: z.string().min(1),
+  version: z.string().min(1),
+  plural: z.string().min(1),
+  name: z.string().min(1),
+  namespace: z.string().optional(),
+  includeRaw: z.boolean().default(false).optional(),
+});
+
+type GetCustomResourceResult = {
+  apiVersion?: string;
+  kind?: string;
+  metadata: ReturnType<typeof summarizeMetadata>;
+  spec?: unknown;
+  status?: unknown;
+  raw?: unknown;
+};
+
+export const getCustomResourceTool: ToolDefinition<GetCustomResourceResult, typeof GetCustomResourceInputSchema> = {
+  name: 'kubernetes.getCustomResource',
+  description: 'Get a custom resource (CRD instance) by group/version/plural/name.',
+  schema: GetCustomResourceInputSchema,
+  async execute(input) {
+    const raw = (await getCustomResourceApi({
+      group: input.group,
+      version: input.version,
+      plural: input.plural,
+      namespace: input.namespace,
+      name: input.name,
+    })) as {
+      apiVersion?: string;
+      kind?: string;
+      metadata?: Record<string, unknown>;
+      spec?: unknown;
+      status?: unknown;
+    };
+
+    return {
+      apiVersion: raw.apiVersion,
+      kind: raw.kind,
+      metadata: summarizeMetadata(raw.metadata as never),
+      spec: raw.spec,
+      status: raw.status,
+      raw: input.includeRaw ? raw : undefined,
+    };
+  },
+};
+
