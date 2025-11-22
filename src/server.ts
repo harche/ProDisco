@@ -4,16 +4,11 @@ import { fileURLToPath } from 'node:url';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version?: string };
-import { tools } from './tools/index.js';
 import { searchToolsTool } from './tools/kubernetes/searchTools.js';
 import { listGeneratedFiles, readGeneratedFile } from './resources/filesystem.js';
-
-type JsonLike = Record<string, unknown>;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -74,102 +69,34 @@ server.registerResource(
   },
 );
 
-// Register tools as INTERNAL ONLY (for code execution to call via callMCPTool)
-// These are NOT exposed to Claude - only the generated TypeScript files are
-for (const tool of tools) {
-  server.registerTool(
-    tool.name,
-    {
-      description: tool.description,
-      inputSchema: tool.schema,
-    },
-    async (input: Parameters<typeof tool.execute>[0]) => {
-      try {
-        const result = await tool.execute(input);
-        return formatToolResult(result);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`[tool:${tool.name}] error`, error);
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text' as const,
-              text: `Error executing ${tool.name}: ${message}`,
-            },
-          ],
-        };
-      }
-    },
-  );
-}
-
-console.error(`✅ Registered ${tools.length} internal tools (callable via code execution)`);
 console.error(`📁 Exposed generated/ directory as MCP resources`);
 
-// Override tools/list to only expose the searchTools helper.
-const searchToolsListEntry = {
-  name: searchToolsTool.name,
-  description: searchToolsTool.description,
-  inputSchema: zodToJsonSchema(searchToolsTool.schema),
-};
-
-server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [searchToolsListEntry],
-}));
-
-function formatToolResult(data: unknown) {
-  if (typeof data === 'string') {
+// Register only the kubernetes.searchTools helper as an exposed tool.
+server.registerTool(
+  searchToolsTool.name,
+  {
+    title: 'Kubernetes Tool Search',
+    description: searchToolsTool.description,
+    inputSchema: searchToolsTool.schema,
+  },
+  async (args) => {
+    const parsedArgs = await searchToolsTool.schema.parseAsync(args);
+    const result = await searchToolsTool.execute(parsedArgs);
     return {
       content: [
         {
-          type: 'text' as const,
-          text: data,
+          type: 'text',
+          text: result.summary,
         },
-      ],
-    };
-  }
-
-  if (data && typeof data === 'object') {
-    const structured = data as JsonLike;
-    return {
-      content: [
         {
-          type: 'text' as const,
-          text: stringifyForContent(structured),
+          type: 'text',
+          text: JSON.stringify(result.tools, null, 2),
         },
       ],
-      structuredContent: structured,
+      structuredContent: result,
     };
-  }
-
-  return {
-    content: [
-      {
-        type: 'text' as const,
-        text: stringifyForContent(data),
-      },
-    ],
-  };
-}
-
-function stringifyForContent(value: unknown): string {
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  const serialized = JSON.stringify(value, null, 2);
-  if (!serialized) {
-    return String(value);
-  }
-
-  const maxLength = 4000;
-  if (serialized.length <= maxLength) {
-    return serialized;
-  }
-
-  return `${serialized.slice(0, maxLength)}\n... truncated (${serialized.length} chars total)`;
-}
+  },
+);
 
 async function main() {
   const transport = new StdioServerTransport();

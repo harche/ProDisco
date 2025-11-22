@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
 import type { ToolDefinition } from '../types.js';
-import { kubernetesTools } from './index.js';
+import { kubernetesToolMetadata } from './metadata.js';
 
 const SearchToolsInputSchema = z.object({
   query: z
@@ -51,8 +51,11 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     const detailLevel = input.detailLevel ?? 'summary';
     const limit = input.limit ?? 20;
 
+    // Build list of discoverable Kubernetes tools (excluding search itself to avoid recursion)
+    const discoverableTools = kubernetesToolMetadata.map((entry) => entry.tool);
+
     // Filter tools by query
-    let matchedTools = kubernetesTools;
+    let matchedTools = discoverableTools;
     if (query) {
       matchedTools = matchedTools.filter(
         (tool) =>

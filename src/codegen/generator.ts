@@ -5,16 +5,19 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ZodTypeAny } from 'zod';
 
-import { kubernetesTools } from '../tools/kubernetes/index.js';
+import { kubernetesToolMetadata } from '../tools/kubernetes/metadata.js';
 
 interface ToolWrapper {
   name: string;
   description: string;
   inputSchema: unknown;
   functionName: string;
+  modulePath: string;
+  exportName: string;
 }
 
 export async function generateToolWrappers(outputDir: string): Promise<void> {
@@ -26,24 +29,33 @@ export async function generateToolWrappers(outputDir: string): Promise<void> {
   // Note: client.ts is manually maintained in generated/servers/client.ts
   // It provides the callMCPTool function that communicates with the MCP server
 
-  // Generate wrapper for each tool
+  // Generate wrapper for each tool metadata entry
   const wrappers: ToolWrapper[] = [];
   
-  for (const tool of kubernetesTools) {
-    // Skip searchTools - not needed in code execution mode
-    if (tool.name === 'kubernetes.searchTools') continue;
-
+  for (const entry of kubernetesToolMetadata) {
+    const tool = entry.tool;
     const functionName = tool.name.replace('kubernetes.', '');
     const schema = zodToJsonSchema(tool.schema as ZodTypeAny);
     
-    wrappers.push({
+    const wrapperMeta = {
       name: tool.name,
       description: tool.description,
       inputSchema: schema,
       functionName,
-    });
+      modulePath: entry.sourceModulePath,
+      exportName: entry.exportName,
+    };
+    wrappers.push(wrapperMeta);
 
-    await generateToolWrapper(kubernetesDir, tool.name, tool.description, functionName, schema);
+    await generateToolWrapper(
+      kubernetesDir,
+      tool.name,
+      tool.description,
+      functionName,
+      schema,
+      entry.sourceModulePath,
+      entry.exportName,
+    );
   }
 
   // Generate index file that exports all tools
@@ -63,11 +75,16 @@ async function generateToolWrapper(
   description: string,
   functionName: string,
   schema: unknown,
+  modulePath: string,
+  exportName: string,
 ): Promise<void> {
   // Generate TypeScript interface from JSON Schema
   const inputInterface = generateInterfaceFromSchema(functionName, schema);
+  const toolsDir = path.dirname(fileURLToPath(new URL('../tools/kubernetes/metadata.ts', import.meta.url)));
+  const moduleAbsolutePath = path.resolve(toolsDir, modulePath);
+  const relativeImportPath = normalizeImportPath(path.relative(dir, moduleAbsolutePath));
   
-  const wrapperCode = `import { callMCPTool } from '../client.js';
+  const wrapperCode = `import { ${exportName} } from '${relativeImportPath}';
 
 ${inputInterface}
 
@@ -75,10 +92,10 @@ ${inputInterface}
  * ${description}
  * 
  * All Kubernetes complexity (authentication, API clients, etc.) is handled
- * by the MCP server. Just provide the input parameters.
+ * by the backend modules. Just provide the input parameters.
  */
 export async function ${functionName}(input: ${functionName}Input): Promise<any> {
-  return callMCPTool('${toolName}', input);
+  return ${exportName}.execute(input);
 }
 `;
 
@@ -207,5 +224,13 @@ Discover tools by exploring the filesystem:
 `;
 
   await fs.writeFile(path.join(outputDir, 'README.md'), readmeContent);
+}
+
+function normalizeImportPath(relativePath: string): string {
+  const posixPath = relativePath.split(path.sep).join('/');
+  if (posixPath.startsWith('.')) {
+    return posixPath;
+  }
+  return `./${posixPath}`;
 }
 

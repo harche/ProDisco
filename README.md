@@ -11,6 +11,7 @@ npm install
 npm run build
 npm run codegen
 claude mcp add --transport stdio kube-mcp -- node dist/server.js
+claude mcp remove kube-mcp # remove when you're done
 ```
 
 Only **one tool** (`kubernetes.searchTools`) appears in `tools/list`. Everything else is discovered via resources, so Claude naturally stays in code mode.
