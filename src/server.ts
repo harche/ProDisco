@@ -40,7 +40,7 @@ const resourceTemplate = new ResourceTemplate(
       const files = await listGeneratedFiles(GENERATED_DIR);
       return {
         resources: files.map((f) => ({
-          uri: `file:///${f.name}`,
+          uri: f.uri,
           name: f.name,
           description: f.description,
           mimeType: f.mimeType,
@@ -58,7 +58,8 @@ server.registerResource(
   },
   async (uri) => {
     // Extract relative path from URI
-    const relativePath = uri.pathname.replace(/^\/+/, '');
+    const absolutePath = decodeURIComponent(uri.pathname);
+    const relativePath = path.relative(GENERATED_DIR, absolutePath);
     const content = await readGeneratedFile(GENERATED_DIR, relativePath);
     
     return {

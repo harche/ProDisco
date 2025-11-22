@@ -35,8 +35,9 @@ async function walkDirectory(baseDir: string, currentDir: string, resources: Fil
     if (entry.isDirectory()) {
       await walkDirectory(baseDir, fullPath, resources);
     } else if (entry.isFile() && entry.name.endsWith('.ts')) {
+      const absolutePath = path.resolve(fullPath);
       resources.push({
-        uri: `file:///${relativePath}`,
+        uri: `file://${absolutePath}`,
         name: relativePath,
         description: `TypeScript module: ${relativePath}`,
         mimeType: 'text/typescript',

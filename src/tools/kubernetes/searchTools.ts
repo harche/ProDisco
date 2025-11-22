@@ -1,3 +1,5 @@
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
 import type { ToolDefinition } from '../types.js';
@@ -29,15 +31,20 @@ type SearchToolsResult = {
   tools: Array<{
     name: string;
     description?: string;
+    resourceUri?: string;
     inputSchema?: unknown;
   }>;
   totalMatches: number;
 };
 
+const thisDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(thisDir, '../../..');
+const generatedModulesDir = path.join(repoRoot, 'generated/servers/kubernetes');
+
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
   name: 'kubernetes.searchTools',
   description:
-    'Search and discover available Kubernetes tools on-demand. Use this to find relevant tools before calling them, enabling progressive disclosure of the tool set. When you write your own TypeScript code using these modules, remember to execute it with `npx tsx <your_script>.ts`.',
+    'Search and discover available Kubernetes tools on-demand. Use this first to locate the relevant TypeScript modules exposed by the MCP server (each result includes a resourceUri), read the tool file (e.g., listPods.ts), then write your own script and execute it with `npx tsx <your_script>.ts` so the MCP environment runs it.',
   schema: SearchToolsInputSchema,
   async execute(input) {
     const query = input.query?.toLowerCase();
@@ -59,18 +66,23 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
 
     // Format based on detail level
     const formattedTools = limitedTools.map((tool) => {
+      const moduleName = tool.name.replace('kubernetes.', '');
+      const resourceUri = `file://${path.join(generatedModulesDir, `${moduleName}.ts`)}`;
+
       switch (detailLevel) {
         case 'name':
-          return { name: tool.name };
+          return { name: tool.name, resourceUri };
         case 'summary':
           return {
             name: tool.name,
             description: tool.description,
+            resourceUri,
           };
         case 'full':
           return {
             name: tool.name,
             description: tool.description,
+            resourceUri,
             inputSchema: tool.schema,
           };
       }
