@@ -52,7 +52,7 @@ const cachedScriptsDir = path.join(repoRoot, 'scripts/cache');
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
   name: 'kubernetes.searchTools',
   description:
-    'Search and discover Kubernetes tools, then create reusable scripts under `scripts/cache/` (e.g., `scripts/cache/list-pods.ts`). Always accept parameters via CLI args or env vars instead of hardcoding values, and run them with `npx tsx scripts/cache/<script>.ts --flag=value` so they can be reused.',
+    'Search and discover Kubernetes tools, then create reusable scripts under `scripts/cache/` (e.g., `scripts/cache/list-pods.ts`). Each script should parse CLI args (add as many flags as needed) or env vars for every input instead of hardcoding cluster names/namespaces; fail fast with a usage message when a required flag is missing. Run scripts with `npx tsx scripts/cache/<script>.ts --flag=value --another=value2` so they stay portable between prompts.',
   schema: SearchToolsInputSchema,
   async execute(input) {
     const query = input.query?.toLowerCase();

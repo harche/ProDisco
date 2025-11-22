@@ -18,7 +18,7 @@ Only **one tool** (`kubernetes.searchTools`) appears in `tools/list`. Everything
 
 ### Scripts cache convention
 
-Claude should write any helper scripts to `scripts/cache/<name>.ts` and execute them with `npx tsx scripts/cache/<name>.ts --flag=value`. Passing cluster details (namespace, pod name, selectors, etc.) through CLI arguments or environment variables keeps scripts reusable between prompts. The `kubernetes.searchTools` response now lists any cached scripts so Claude can reuse or update them instead of creating duplicates.
+Claude should write any helper scripts to `scripts/cache/<name>.ts` and execute them with `npx tsx scripts/cache/<name>.ts --flag=value --another=value2` (add as many flags as needed). Scripts must parse CLI args (or env vars) for every required value—never hardcode namespaces, pod names, etc.—and should print a brief usage message if arguments are missing. The `kubernetes.searchTools` response now lists any cached scripts so Claude can reuse or update them instead of creating duplicates.
 
 ---
 
