@@ -1,6 +1,6 @@
-# Kubernetes MCP Server (Progressive Disclosure Pattern)
+# ProDisco – Progressive Disclosure Kuberentes MCP Server
 
-Kubernetes access for MCP agents that exactly follows Anthropic’s [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes TypeScript modules, agents discover them through the filesystem, write code, and only the final console output returns to the chat.
+ProDisco gives MCP agents Kubernetes access that exactly follows Anthropic’s [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the server exposes TypeScript modules, agents discover them through the filesystem, write code, and only the final console output returns to the chat.
 
 ---
 
@@ -10,8 +10,8 @@ Kubernetes access for MCP agents that exactly follows Anthropic’s [Progressive
 npm install
 npm run build
 npm run codegen
-claude mcp add --transport stdio kube-mcp -- node dist/server.js
-claude mcp remove kube-mcp # remove when you're done
+claude mcp add --transport stdio prodisco -- node dist/server.js
+claude mcp remove prodisco # remove when you're done
 ```
 
 Only **one tool** (`kubernetes.searchTools`) is advertised to the agent. Everything else is discovered via resources, so agents naturally stay in code mode.
@@ -50,7 +50,7 @@ Sample agent output:
 
   tools.
 
-⏺ kube-mcp - kubernetes.searchTools (MCP)(query: "node", detailLevel: "summary")
+⏺ prodisco - kubernetes.searchTools (MCP)(query: "node", detailLevel: "summary")
 
   ⎿  {                                                                           
 
@@ -60,7 +60,7 @@ Sample agent output:
 
      … +7 lines (ctrl+o to expand)
 
-⏺ kube-mcp - kubernetes.searchTools (MCP)(query: "listNodes", detailLevel: "full")
+⏺ prodisco - kubernetes.searchTools (MCP)(query: "listNodes", detailLevel: "full")
 
   ⎿  {                                                                                
 
@@ -148,7 +148,7 @@ Sample agent output:
 
 
 
-⏺ kube-mcp - kubernetes.searchTools (MCP)(query: "pod", detailLevel: "full")
+⏺ prodisco - kubernetes.searchTools (MCP)(query: "pod", detailLevel: "full")
 
   ⎿ {                                                                                                      
 
