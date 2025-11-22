@@ -1,3 +1,4 @@
+import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zodToJsonSchema } from 'zod-to-json-schema';
@@ -37,16 +38,21 @@ type SearchToolsResult = {
     outputSchema?: unknown;
   }>;
   totalMatches: number;
+  cachedScripts: Array<{
+    name: string;
+    resourceUri: string;
+  }>;
 };
 
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(thisDir, '../../..');
 const generatedModulesDir = path.join(repoRoot, 'generated/servers/kubernetes');
+const cachedScriptsDir = path.join(repoRoot, 'scripts/cache');
 
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
   name: 'kubernetes.searchTools',
   description:
-    'Search and discover available Kubernetes tools on-demand. Use this first to locate the relevant TypeScript modules exposed by the MCP server (each result includes a resourceUri), read the tool file (e.g., listPods.ts), then write your own script and execute it with `npx tsx <your_script>.ts` so the MCP environment runs it.',
+    'Search and discover Kubernetes tools, then create reusable scripts under `scripts/cache/` (e.g., `scripts/cache/list-pods.ts`). Always accept parameters via CLI args or env vars instead of hardcoding values, and run them with `npx tsx scripts/cache/<script>.ts --flag=value` so they can be reused.',
   schema: SearchToolsInputSchema,
   async execute(input) {
     const query = input.query?.toLowerCase();
@@ -103,6 +109,8 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       }
     });
 
+    const cachedScripts = await listCachedScripts();
+
     // Create summary text
     let summary = `Found ${totalMatches} tool(s)`;
     if (query) {
@@ -113,6 +121,12 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     }
     summary += ':\n';
     summary += formattedTools.map((t) => `  - ${t.name}`).join('\n');
+    if (cachedScripts.length > 0) {
+      summary += `\n\nCached scripts (run with \`npx tsx scripts/cache/<name>.ts --help\` for args):\n`;
+      summary += cachedScripts.map((script) => `  - ${script.name}`).join('\n');
+    } else {
+      summary += `\n\nNo cached scripts yet. Create one under \`scripts/cache/\` to reuse it later.`;
+    }
 
     if (detailLevel === 'name') {
       summary += `\n\nUse detailLevel="summary" or "full" to see more details about these tools.`;
@@ -122,7 +136,26 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       summary,
       tools: formattedTools,
       totalMatches,
+      cachedScripts,
     };
   },
 };
+
+async function listCachedScripts(): Promise<Array<{ name: string; resourceUri: string }>> {
+  try {
+    const files = await fs.readdir(cachedScriptsDir);
+    return files
+      .filter((file) => file.endsWith('.ts'))
+      .sort((a, b) => a.localeCompare(b))
+      .map((file) => ({
+        name: file,
+        resourceUri: `file://${path.join(cachedScriptsDir, file)}`,
+      }));
+  } catch (error: unknown) {
+    if (error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+}
 

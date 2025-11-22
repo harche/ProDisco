@@ -16,6 +16,10 @@ claude mcp remove kube-mcp # remove when you're done
 
 Only **one tool** (`kubernetes.searchTools`) appears in `tools/list`. Everything else is discovered via resources, so Claude naturally stays in code mode.
 
+### Scripts cache convention
+
+Claude should write any helper scripts to `scripts/cache/<name>.ts` and execute them with `npx tsx scripts/cache/<name>.ts --flag=value`. Passing cluster details (namespace, pod name, selectors, etc.) through CLI arguments or environment variables keeps scripts reusable between prompts. The `kubernetes.searchTools` response now lists any cached scripts so Claude can reuse or update them instead of creating duplicates.
+
 ---
 
 ## What Claude Actually Does
