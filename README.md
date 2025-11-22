@@ -1,6 +1,6 @@
-# Kubernetes MCP Server (Code Execution Pattern)
+# Kubernetes MCP Server (Progressive Disclosure Pattern)
 
-Kubernetes access for Claude that exactly follows Anthropic’s [Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes TypeScript modules, Claude discovers them through the filesystem, writes code, and only the final console output returns to the chat. All Kubernetes auth/client logic stays hidden.
+Kubernetes access for MCP agents that exactly follows Anthropic’s [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes TypeScript modules, agents discover them through the filesystem, write code, and only the final console output returns to the chat.
 
 ---
 
@@ -14,15 +14,15 @@ claude mcp add --transport stdio kube-mcp -- node dist/server.js
 claude mcp remove kube-mcp # remove when you're done
 ```
 
-Only **one tool** (`kubernetes.searchTools`) appears in `tools/list`. Everything else is discovered via resources, so Claude naturally stays in code mode.
+Only **one tool** (`kubernetes.searchTools`) is advertised to the agent. Everything else is discovered via resources, so agents naturally stay in code mode.
 
 ### Scripts cache convention
 
-Claude should write any helper scripts to `scripts/cache/<name>.ts` and execute them with `npx tsx scripts/cache/<name>.ts --flag=value --another=value2` (add as many flags as needed). Scripts must parse CLI args (or env vars) for every required value—never hardcode namespaces, pod names, etc.—and should print a brief usage message if arguments are missing. The `kubernetes.searchTools` response now lists any cached scripts so Claude can reuse or update them instead of creating duplicates.
+Agents should write any helper scripts to `scripts/cache/<name>.ts` and execute them with `npx tsx scripts/cache/<name>.ts --flag=value --another=value2` (add as many flags as needed). Scripts must parse CLI args (or env vars) for every required value—never hardcode namespaces, pod names, etc.—and should print a brief usage message if arguments are missing. The `kubernetes.searchTools` response now lists any cached scripts so agents can reuse or update them instead of creating duplicates.
 
 ---
 
-## What Claude Actually Does
+## What the Agent Actually Does
 
 ### Example 1 – “List nodes of this Kubernetes cluster”
 1. `kubernetes.searchTools(query="node")` → finds `kubernetes.listNodes`
@@ -40,7 +40,7 @@ Node: kubemcp-control-plane
 - Health: Ready ✓  MemoryPressure False ✓ ...
 ```
 
-Actual Claude output:
+Sample agent output:
 ```
 > list nodes of this kubernetes cluster 
 
@@ -142,7 +142,7 @@ Found 11 pods across demo / kube-system / local-path-storage
 All pods healthy; 0 restarts
 ```
 
-Actual Claude output:
+Sample agent output:
 ```
 > list all pods from all namespaces 
 
@@ -231,7 +231,7 @@ Actual Claude output:
   All pods are healthy with 0 restarts and no failing conditions.
 ```
 
-These transcripts prove the progressive-disclosure workflow is live: Claude uses search → reads code → writes and executes TypeScript.
+These transcripts prove the progressive-disclosure workflow is live: the agent uses search → reads code → writes and executes TypeScript.
 
 ---
 
