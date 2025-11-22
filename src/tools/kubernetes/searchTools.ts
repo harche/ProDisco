@@ -32,7 +32,8 @@ type SearchToolsResult = {
     name: string;
     description?: string;
     resourceUri?: string;
-    inputSchema?: unknown;
+    inputSchema: unknown;
+    outputType: string;
   }>;
   totalMatches: number;
 };
@@ -52,15 +53,15 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     const limit = input.limit ?? 20;
 
     // Build list of discoverable Kubernetes tools (excluding search itself to avoid recursion)
-    const discoverableTools = kubernetesToolMetadata.map((entry) => entry.tool);
+    const discoverableTools = kubernetesToolMetadata;
 
     // Filter tools by query
     let matchedTools = discoverableTools;
     if (query) {
       matchedTools = matchedTools.filter(
-        (tool) =>
-          tool.name.toLowerCase().includes(query) ||
-          tool.description.toLowerCase().includes(query),
+        (entry) =>
+          entry.tool.name.toLowerCase().includes(query) ||
+          entry.tool.description.toLowerCase().includes(query),
       );
     }
 
@@ -68,25 +69,31 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     const limitedTools = matchedTools.slice(0, limit);
 
     // Format based on detail level
-    const formattedTools = limitedTools.map((tool) => {
-      const moduleName = tool.name.replace('kubernetes.', '');
+    const formattedTools = limitedTools.map((entry) => {
+      const moduleName = entry.tool.name.replace('kubernetes.', '');
       const resourceUri = `file://${path.join(generatedModulesDir, `${moduleName}.ts`)}`;
+
+      // Always include the schema so consumers can infer inputs without
+      // needing a different detail level.
+      const base = {
+        name: entry.tool.name,
+        resourceUri,
+        inputSchema: entry.tool.schema,
+        outputType: entry.resultType,
+      };
 
       switch (detailLevel) {
         case 'name':
-          return { name: tool.name, resourceUri };
+          return base;
         case 'summary':
           return {
-            name: tool.name,
-            description: tool.description,
-            resourceUri,
+            ...base,
+            description: entry.tool.description,
           };
         case 'full':
           return {
-            name: tool.name,
-            description: tool.description,
-            resourceUri,
-            inputSchema: tool.schema,
+            ...base,
+            description: entry.tool.description,
           };
       }
     });
