@@ -37,7 +37,7 @@ type SearchToolsResult = {
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
   name: 'kubernetes.searchTools',
   description:
-    'Search and discover available Kubernetes tools on-demand. Use this to find relevant tools before calling them, enabling progressive disclosure of the tool set.',
+    'Search and discover available Kubernetes tools on-demand. Use this to find relevant tools before calling them, enabling progressive disclosure of the tool set. When you write your own TypeScript code using these modules, remember to execute it with `npx tsx <your_script>.ts`.',
   schema: SearchToolsInputSchema,
   async execute(input) {
     const query = input.query?.toLowerCase();
