@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { applyManifest as applyKubeManifest } from '../../kube/client.js';
 import { parseManifests } from '../../util/manifest.js';
-import { summarizeMetadata } from '../../util/summary.js';
+import { MetadataSummarySchema, summarizeMetadata } from '../../util/summary.js';
 import type { ToolDefinition } from '../types.js';
 
 const ManifestSchema = z.union([
@@ -11,26 +11,33 @@ const ManifestSchema = z.union([
   z.array(z.record(z.string(), z.unknown())),
 ]);
 
-const ApplyManifestInputSchema = z.object({
+export const ApplyManifestInputSchema = z.object({
   manifest: ManifestSchema,
   dryRun: z.boolean().optional(),
   fieldManager: z.string().optional(),
   forceConflicts: z.boolean().optional(),
 });
 
-type ApplyManifestResult = {
-  applied: Array<{
-    apiVersion?: string;
-    kind?: string;
-    metadata: ReturnType<typeof summarizeMetadata>;
-  }>;
-};
+export type ApplyManifestInput = z.infer<typeof ApplyManifestInputSchema>;
+
+const AppliedResourceSchema = z.object({
+  apiVersion: z.string().optional(),
+  kind: z.string().optional(),
+  metadata: MetadataSummarySchema,
+});
+
+export const ApplyManifestResultSchema = z.object({
+  applied: z.array(AppliedResourceSchema),
+});
+
+export type ApplyManifestResult = z.infer<typeof ApplyManifestResultSchema>;
 
 export const applyManifestTool: ToolDefinition<ApplyManifestResult, typeof ApplyManifestInputSchema> = {
   name: 'kubernetes.applyManifest',
   description:
     'Create or update resources using server-side apply. Accepts YAML or JSON, single or multi-doc.',
   schema: ApplyManifestInputSchema,
+  resultSchema: ApplyManifestResultSchema,
   async execute(input) {
     const manifests = parseManifests(input.manifest);
     const applied = [];

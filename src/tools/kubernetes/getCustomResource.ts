@@ -1,10 +1,10 @@
 import { z } from 'zod';
 
 import { getCustomResource as getCustomResourceApi } from '../../kube/client.js';
-import { summarizeMetadata } from '../../util/summary.js';
+import { MetadataSummarySchema, summarizeMetadata } from '../../util/summary.js';
 import type { ToolDefinition } from '../types.js';
 
-const GetCustomResourceInputSchema = z.object({
+export const GetCustomResourceInputSchema = z.object({
   group: z.string().min(1),
   version: z.string().min(1),
   plural: z.string().min(1),
@@ -13,19 +13,24 @@ const GetCustomResourceInputSchema = z.object({
   includeRaw: z.boolean().default(false).optional(),
 });
 
-type GetCustomResourceResult = {
-  apiVersion?: string;
-  kind?: string;
-  metadata: ReturnType<typeof summarizeMetadata>;
-  spec?: unknown;
-  status?: unknown;
-  raw?: unknown;
-};
+export type GetCustomResourceInput = z.infer<typeof GetCustomResourceInputSchema>;
+
+export const GetCustomResourceResultSchema = z.object({
+  apiVersion: z.string().optional(),
+  kind: z.string().optional(),
+  metadata: MetadataSummarySchema,
+  spec: z.unknown().optional(),
+  status: z.unknown().optional(),
+  raw: z.unknown().optional(),
+});
+
+export type GetCustomResourceResult = z.infer<typeof GetCustomResourceResultSchema>;
 
 export const getCustomResourceTool: ToolDefinition<GetCustomResourceResult, typeof GetCustomResourceInputSchema> = {
   name: 'kubernetes.getCustomResource',
   description: 'Get a custom resource (CRD instance) by group/version/plural/name.',
   schema: GetCustomResourceInputSchema,
+  resultSchema: GetCustomResourceResultSchema,
   async execute(input) {
     const raw = (await getCustomResourceApi({
       group: input.group,

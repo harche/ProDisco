@@ -5,16 +5,18 @@ import type {
   V1Pod,
   V1Service,
 } from '@kubernetes/client-node';
+import { z } from 'zod';
 
-export interface MetadataSummary {
-  name?: string;
-  namespace?: string;
-  uid?: string;
-  labels?: Record<string, string>;
-  annotations?: Record<string, string>;
-  creationTimestamp?: string;
-  ageSeconds?: number | null;
-}
+export const MetadataSummarySchema = z.object({
+  name: z.string().optional(),
+  namespace: z.string().optional(),
+  uid: z.string().optional(),
+  labels: z.record(z.string()).optional(),
+  annotations: z.record(z.string()).optional(),
+  creationTimestamp: z.string().optional(),
+  ageSeconds: z.number().nullable().optional(),
+});
+export type MetadataSummary = z.infer<typeof MetadataSummarySchema>;
 
 export function summarizeMetadata(meta?: V1ObjectMeta | null): MetadataSummary {
   if (!meta) {
@@ -44,7 +46,27 @@ export function calculateAgeSeconds(timestamp: string | Date): number | null {
   return Math.max(0, Math.floor((Date.now() - createdAtMs) / 1000));
 }
 
-export function summarizePod(pod: V1Pod) {
+const ConditionSummarySchema = z.object({
+  type: z.string().optional(),
+  status: z.string().optional(),
+  reason: z.string().optional(),
+  message: z.string().optional(),
+  lastTransitionTime: z.string().optional(),
+});
+
+export const PodSummarySchema = MetadataSummarySchema.extend({
+  phase: z.string().optional(),
+  podIP: z.string().optional(),
+  nodeName: z.string().optional(),
+  qosClass: z.string().optional(),
+  readyContainers: z.number(),
+  totalContainers: z.number(),
+  restarts: z.number(),
+  failingConditions: z.array(ConditionSummarySchema),
+});
+export type PodSummary = z.infer<typeof PodSummarySchema>;
+
+export function summarizePod(pod: V1Pod): PodSummary {
   const metadata = summarizeMetadata(pod.metadata);
   const containerStatuses = pod.status?.containerStatuses ?? [];
   const readyContainers = containerStatuses.filter((status) => status.ready).length;
@@ -72,7 +94,20 @@ export function summarizePod(pod: V1Pod) {
   };
 }
 
-export function summarizeDeployment(deployment: V1Deployment) {
+export const DeploymentSummarySchema = MetadataSummarySchema.extend({
+  strategy: z.string().optional(),
+  replicas: z.object({
+    desired: z.number(),
+    ready: z.number(),
+    available: z.number(),
+    updated: z.number(),
+  }),
+  selector: z.record(z.string()).optional(),
+  failingConditions: z.array(ConditionSummarySchema),
+});
+export type DeploymentSummary = z.infer<typeof DeploymentSummarySchema>;
+
+export function summarizeDeployment(deployment: V1Deployment): DeploymentSummary {
   const metadata = summarizeMetadata(deployment.metadata);
   const conditions =
     deployment.status?.conditions?.filter((condition) => condition.status !== 'True') ?? [];
@@ -97,7 +132,24 @@ export function summarizeDeployment(deployment: V1Deployment) {
   };
 }
 
-export function summarizeService(service: V1Service) {
+const ServicePortSummarySchema = z.object({
+  name: z.string().optional(),
+  protocol: z.string().optional(),
+  port: z.number(),
+  targetPort: z.union([z.string(), z.number()]).optional(),
+  nodePort: z.number().optional(),
+});
+
+export const ServiceSummarySchema = MetadataSummarySchema.extend({
+  type: z.string().optional(),
+  clusterIP: z.string().optional(),
+  externalIPs: z.array(z.string()),
+  selector: z.record(z.string()).optional(),
+  ports: z.array(ServicePortSummarySchema),
+});
+export type ServiceSummary = z.infer<typeof ServiceSummarySchema>;
+
+export function summarizeService(service: V1Service): ServiceSummary {
   const metadata = summarizeMetadata(service.metadata);
 
   return {
@@ -117,7 +169,45 @@ export function summarizeService(service: V1Service) {
   };
 }
 
-export function summarizeNode(node: V1Node) {
+const NodeAddressSchema = z.object({
+  type: z.string().optional(),
+  address: z.string().optional(),
+});
+
+const NodeConditionSchema = z.object({
+  type: z.string().optional(),
+  status: z.string().optional(),
+  reason: z.string().optional(),
+  message: z.string().optional(),
+  lastTransitionTime: z.string().optional(),
+});
+
+const QuantityRecordSchema = z.record(z.union([z.string(), z.number()])).optional();
+
+export const NodeSummarySchema = MetadataSummarySchema.extend({
+  labels: z.record(z.string()).optional(),
+  annotations: z.record(z.string()).optional(),
+  kubeletVersion: z.string().optional(),
+  osImage: z.string().optional(),
+  containerRuntimeVersion: z.string().optional(),
+  capacity: QuantityRecordSchema,
+  allocatable: QuantityRecordSchema,
+  addresses: z.array(NodeAddressSchema).optional(),
+  conditions: z.array(NodeConditionSchema),
+  taints: z
+    .array(
+      z.object({
+        key: z.string().optional(),
+        value: z.string().optional(),
+        effect: z.string().optional(),
+        timeAdded: z.string().optional(),
+      }),
+    )
+    .optional(),
+});
+export type NodeSummary = z.infer<typeof NodeSummarySchema>;
+
+export function summarizeNode(node: V1Node): NodeSummary {
   const metadata = summarizeMetadata(node.metadata);
   const conditions =
     node.status?.conditions?.map((condition) => ({
@@ -137,9 +227,19 @@ export function summarizeNode(node: V1Node) {
     containerRuntimeVersion: node.status?.nodeInfo?.containerRuntimeVersion,
     capacity: node.status?.capacity,
     allocatable: node.status?.allocatable,
-    addresses: node.status?.addresses,
+    addresses:
+      node.status?.addresses?.map((address) => ({
+        type: address.type,
+        address: address.address,
+      })) ?? undefined,
     conditions,
-    taints: node.spec?.taints,
+    taints:
+      node.spec?.taints?.map((taint) => ({
+        key: taint.key,
+        value: taint.value,
+        effect: taint.effect,
+        timeAdded: toIsoString(taint.timeAdded),
+      })) ?? undefined,
   };
 }
 

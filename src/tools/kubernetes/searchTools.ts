@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { z } from 'zod';
 
 import type { ToolDefinition } from '../types.js';
@@ -33,7 +34,7 @@ type SearchToolsResult = {
     description?: string;
     resourceUri?: string;
     inputSchema: unknown;
-    outputType: string;
+    outputSchema?: unknown;
   }>;
   totalMatches: number;
 };
@@ -72,14 +73,18 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     const formattedTools = limitedTools.map((entry) => {
       const moduleName = entry.tool.name.replace('kubernetes.', '');
       const resourceUri = `file://${path.join(generatedModulesDir, `${moduleName}.ts`)}`;
+      const inputSchemaJson = zodToJsonSchema(entry.tool.schema, `${entry.tool.name}Input`);
+      const outputSchemaJson = entry.resultSchema
+        ? zodToJsonSchema(entry.resultSchema, `${entry.tool.name}Result`)
+        : undefined;
 
       // Always include the schema so consumers can infer inputs without
       // needing a different detail level.
       const base = {
         name: entry.tool.name,
         resourceUri,
-        inputSchema: entry.tool.schema,
-        outputType: entry.resultType,
+        inputSchema: inputSchemaJson,
+        outputSchema: outputSchemaJson,
       };
 
       switch (detailLevel) {

@@ -4,6 +4,7 @@ export interface ToolDefinition<TResult = unknown, TSchema extends z.ZodTypeAny 
   name: string;
   description: string;
   schema: TSchema;
+  resultSchema?: z.ZodTypeAny;
   execute: (input: z.infer<TSchema>) => Promise<TResult>;
 }
 

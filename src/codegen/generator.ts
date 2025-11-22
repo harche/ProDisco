@@ -6,16 +6,13 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { zodToJsonSchema } from 'zod-to-json-schema';
-import type { ZodTypeAny } from 'zod';
-
 import { kubernetesToolMetadata } from '../tools/kubernetes/metadata.js';
 
 interface ToolWrapper {
   name: string;
   description: string;
-  inputSchema: unknown;
   functionName: string;
+  pascalName: string;
   modulePath: string;
   exportName: string;
 }
@@ -35,13 +32,13 @@ export async function generateToolWrappers(outputDir: string): Promise<void> {
   for (const entry of kubernetesToolMetadata) {
     const tool = entry.tool;
     const functionName = tool.name.replace('kubernetes.', '');
-    const schema = zodToJsonSchema(tool.schema as ZodTypeAny);
+    const pascalName = toPascalCase(functionName);
     
     const wrapperMeta = {
       name: tool.name,
       description: tool.description,
-      inputSchema: schema,
       functionName,
+      pascalName,
       modulePath: entry.sourceModulePath,
       exportName: entry.exportName,
     };
@@ -52,7 +49,7 @@ export async function generateToolWrappers(outputDir: string): Promise<void> {
       tool.name,
       tool.description,
       functionName,
-      schema,
+      pascalName,
       entry.sourceModulePath,
       entry.exportName,
     );
@@ -74,19 +71,18 @@ async function generateToolWrapper(
   toolName: string,
   description: string,
   functionName: string,
-  schema: unknown,
+  pascalName: string,
   modulePath: string,
   exportName: string,
 ): Promise<void> {
-  // Generate TypeScript interface from JSON Schema
-  const inputInterface = generateInterfaceFromSchema(functionName, schema);
   const toolsDir = path.dirname(fileURLToPath(new URL('../tools/kubernetes/metadata.ts', import.meta.url)));
   const moduleAbsolutePath = path.resolve(toolsDir, modulePath);
   const relativeImportPath = normalizeImportPath(path.relative(dir, moduleAbsolutePath));
+  const inputType = `${pascalName}Input`;
+  const resultType = `${pascalName}Result`;
   
   const wrapperCode = `import { ${exportName} } from '${relativeImportPath}';
-
-${inputInterface}
+import type { ${inputType}, ${resultType} } from '${relativeImportPath}';
 
 /**
  * ${description}
@@ -94,68 +90,12 @@ ${inputInterface}
  * All Kubernetes complexity (authentication, API clients, etc.) is handled
  * by the backend modules. Just provide the input parameters.
  */
-export async function ${functionName}(input: ${functionName}Input): Promise<any> {
+export async function ${functionName}(input: ${inputType}): Promise<${resultType}> {
   return ${exportName}.execute(input);
 }
 `;
 
   await fs.writeFile(path.join(dir, `${functionName}.ts`), wrapperCode);
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function generateInterfaceFromSchema(functionName: string, schema: any): string {
-  const properties = schema.properties || {};
-  const required = schema.required || [];
-  
-  const fields: string[] = [];
-  
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  for (const [propName, propSchema] of Object.entries<any>(properties)) {
-    const isRequired = required.includes(propName);
-    const propType = mapJsonSchemaTypeToTS(propSchema);
-    const optional = isRequired ? '' : '?';
-    
-    // Add JSDoc comment if description exists
-    if (propSchema.description) {
-      fields.push(`  /** ${propSchema.description} */`);
-    }
-    
-    fields.push(`  ${propName}${optional}: ${propType};`);
-  }
-  
-  return `export interface ${functionName}Input {\n${fields.join('\n')}\n}`;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapJsonSchemaTypeToTS(schema: any): string {
-  if (schema.type === 'string') {
-    if (schema.enum) {
-      return schema.enum.map((v: string) => `'${v}'`).join(' | ');
-    }
-    return 'string';
-  }
-  if (schema.type === 'number' || schema.type === 'integer') {
-    return 'number';
-  }
-  if (schema.type === 'boolean') {
-    return 'boolean';
-  }
-  if (schema.type === 'array') {
-    const items = schema.items ? mapJsonSchemaTypeToTS(schema.items) : 'any';
-    return `${items}[]`;
-  }
-  if (schema.type === 'object') {
-    if (schema.additionalProperties) {
-      return 'Record<string, any>';
-    }
-    return 'object';
-  }
-  if (schema.anyOf || schema.oneOf) {
-    const schemas = schema.anyOf || schema.oneOf;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return schemas.map((s: any) => mapJsonSchemaTypeToTS(s)).join(' | ');
-  }
-  return 'any';
 }
 
 async function generateIndexFile(dir: string, wrappers: ToolWrapper[]): Promise<void> {
@@ -232,5 +172,12 @@ function normalizeImportPath(relativePath: string): string {
     return posixPath;
   }
   return `./${posixPath}`;
+}
+
+function toPascalCase(value: string): string {
+  if (!value) {
+    return value;
+  }
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 

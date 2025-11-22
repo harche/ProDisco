@@ -2,26 +2,31 @@ import type { V1Node } from '@kubernetes/client-node';
 import { z } from 'zod';
 
 import { listResources } from '../../kube/client.js';
-import { summarizeNode } from '../../util/summary.js';
+import { NodeSummarySchema, summarizeNode } from '../../util/summary.js';
 import type { ToolDefinition } from '../types.js';
 
-const ListNodesInputSchema = z.object({
+export const ListNodesInputSchema = z.object({
   labelSelector: z.string().optional(),
   fieldSelector: z.string().optional(),
   limit: z.number().int().positive().max(500).optional(),
   continueToken: z.string().optional(),
 });
 
-type ListNodesResult = {
-  items: ReturnType<typeof summarizeNode>[];
-  continueToken?: string;
-  totalItems: number;
-};
+export type ListNodesInput = z.infer<typeof ListNodesInputSchema>;
+
+export const ListNodesResultSchema = z.object({
+  items: z.array(NodeSummarySchema),
+  continueToken: z.string().optional(),
+  totalItems: z.number(),
+});
+
+export type ListNodesResult = z.infer<typeof ListNodesResultSchema>;
 
 export const listNodesTool: ToolDefinition<ListNodesResult, typeof ListNodesInputSchema> = {
   name: 'kubernetes.listNodes',
   description: 'List cluster nodes with status summaries.',
   schema: ListNodesInputSchema,
+  resultSchema: ListNodesResultSchema,
   async execute(input) {
     const nodes = await listResources('v1', 'Node', {
       labelSelector: input.labelSelector,
