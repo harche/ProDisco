@@ -230,57 +230,6 @@ These transcripts prove the progressive-disclosure workflow is live: Claude uses
 
 ---
 
-## How It Works
-
-```
-Claude → (searchTools + listMcpResources) → generated/servers/kubernetes/*.ts
-Claude writes TypeScript (import * as k8s …)
-Generated wrappers → callMCPTool() → MCP server → @kubernetes/client-node → cluster
-Console output → Claude’s context (small & curated)
-```
-
-- `kubernetes.searchTools` is the only advertised tool (helper for discovery).
-- Resources expose the entire `generated/servers/` tree so Claude can read interfaces on demand.
-- Generated wrappers call `callMCPTool()`. In Claude Code, `mcpClient` is injected automatically. When you run scripts locally (e.g., `npx tsx example-code-execution.ts`), the client falls back to executing the compiled tool implementations; disable with `KUBE_MCP_ENABLE_FALLBACK=0` if you want strict MCP-only mode.
-
----
-
-## Repository Layout
-
-```
-src/
-  kube/        Kubernetes client helpers
-  tools/       Actual operations (listPods, listNodes, applyManifest, ...)
-  codegen/     Generates TypeScript wrappers
-generated/
-  servers/
-    client.ts  callMCPTool shim
-    kubernetes/
-      listPods.ts, listNodes.ts, …
-example-code-execution.ts     -> multi-step sample
-list-nodes-example.ts         -> shown in Claude transcript
-list-all-pods.ts              -> created by Claude (kept for reference)
-```
-
-Scripts you can run:
-```bash
-npx tsx example-code-execution.ts
-npx tsx list-nodes-example.ts
-npx tsx list-all-pods.ts
-```
-
-Warnings about “mcpClient not injected” are expected when running outside Claude Code; they simply indicate the fallback path is active.
-
----
-
-## Prompting Tips
-
-- **Ask explicitly for code**: “Write and execute TypeScript using the modules under `./generated/servers/kubernetes/` …”
-- **Encourage discovery**: “Search the kube tools and read the relevant module before writing code.”
-- **Avoid direct tool calls**: if you just say “list pods”, Claude will notice the tool exists and may call it directly (still works, but loses code-mode advantages).
-
----
-
 ## License
 
 MIT
