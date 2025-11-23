@@ -235,6 +235,16 @@ These transcripts prove the progressive-disclosure workflow is live: the agent u
 
 ---
 
+## Integration Tests
+
+End-to-end testing instructions (KIND cluster + Claude Agent SDK driver) now live in `docs/integration-testing.md`. The workflow is manual-only for now and assumes your Anthropic credentials are already configured. Run it locally with:
+
+```bash
+npm run test:integration
+```
+
+---
+
 ## License
 
 MIT
