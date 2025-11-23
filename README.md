@@ -1,4 +1,4 @@
-# ProDisco – Progressive Disclosure Kuberentes MCP Server
+# ProDisco (Progressive Disclosure Kuberentes MCP Server)
 
 ProDisco gives MCP agents Kubernetes access that exactly follows Anthropic’s [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the server exposes TypeScript modules, agents discover them through the filesystem, write code, and only the final console output returns to the chat.
 
