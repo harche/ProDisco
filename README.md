@@ -2,6 +2,17 @@
 
 ProDisco gives MCP agents Kubernetes access that exactly follows Anthropic’s [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the server exposes TypeScript modules, agents discover them through the filesystem, write code, and only the final console output returns to the chat.
 
+## Why Progressive Disclosure Matters
+
+Anthropic’s latest guidance explains why MCP servers should progressively reveal capabilities instead of dumping every tool definition into the model context. When agents explore a filesystem of TypeScript modules, as they do with ProDisco, they only load what they need and process data inside the execution environment, then return a concise result to the chat. This keeps token usage low, improves latency, and avoids copying large intermediate payloads through the model ([source](https://www.anthropic.com/engineering/code-execution-with-mcp)).
+
+In practice that means:
+- Agents only see a single advertised tool (`kubernetes.searchTools`); they call it on demand to discover the TypeScript modules (get pods, list nodes, fetch logs, etc.) that the server exposes, then write their own code to compose those modules without loading unused schemas.
+- Letting the model issue one instruction instead of micromanaging dozens of sequential tool calls.
+- Agents can mix and match multiple Kubernetes modules joining pod stats with node health, or correlating events with logs without shuttling raw outputs between tools in the chat loop, which dramatically cuts token usage.
+
+ProDisco ships with this layout out of the box, so any Claude Code or MCP-enabled agent can immediately adopt the progressive-disclosure workflow.
+
 ---
 
 ## Quick Start
