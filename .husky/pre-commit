@@ -1,8 +1,5 @@
 set -e
 
-npm run lint
-npm run build
-npm test
 npm run codegen
 
 if ! git diff --quiet --ignore-submodules --; then
@@ -10,3 +7,7 @@ if ! git diff --quiet --ignore-submodules --; then
   git status --short
   exit 1
 fi
+
+npm run lint
+npm run build
+npm test
