@@ -5,3 +5,5 @@ artifacts
 .DS_Store
 *.log
 
+# Agent-generated cached scripts
+scripts/cache/*.ts
