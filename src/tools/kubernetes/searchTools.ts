@@ -46,7 +46,7 @@ type SearchToolsResult = {
 
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(thisDir, '../../..');
-const generatedModulesDir = path.join(repoRoot, 'generated/servers/kubernetes');
+const generatedModulesUriPrefix = 'file:///dist/servers/kubernetes';
 const cachedScriptsDir = path.join(repoRoot, 'scripts/cache');
 
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
@@ -78,7 +78,7 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     // Format based on detail level
     const formattedTools = limitedTools.map((entry) => {
       const moduleName = entry.tool.name.replace('kubernetes.', '');
-      const resourceUri = `file://${path.join(generatedModulesDir, `${moduleName}.ts`)}`;
+      const resourceUri = `${generatedModulesUriPrefix}/${moduleName}.ts`;
       const inputSchemaJson = zodToJsonSchema(entry.tool.schema, `${entry.tool.name}Input`);
       const outputSchemaJson = entry.resultSchema
         ? zodToJsonSchema(entry.resultSchema, `${entry.tool.name}Result`)

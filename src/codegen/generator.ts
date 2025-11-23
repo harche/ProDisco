@@ -23,7 +23,7 @@ export async function generateToolWrappers(outputDir: string): Promise<void> {
   const kubernetesDir = path.join(serversDir, 'kubernetes');
   await fs.mkdir(kubernetesDir, { recursive: true });
 
-  // Note: client.ts is manually maintained in generated/servers/client.ts
+  // Note: client.ts is manually maintained in dist/servers/client.ts
   // It provides the callMCPTool function that communicates with the MCP server
 
   // Generate wrapper for each tool metadata entry
@@ -75,8 +75,13 @@ async function generateToolWrapper(
   modulePath: string,
   exportName: string,
 ): Promise<void> {
-  const toolsDir = path.dirname(fileURLToPath(new URL('../tools/kubernetes/metadata.ts', import.meta.url)));
-  const moduleAbsolutePath = path.resolve(toolsDir, modulePath);
+  const toolsDir = path.dirname(
+    fileURLToPath(new URL('../tools/kubernetes/metadata.ts', import.meta.url)),
+  );
+  const repoRoot = path.resolve(toolsDir, '../../..');
+  const distToolsDir = path.join(repoRoot, 'dist/tools/kubernetes');
+  const compiledModulePath = modulePath.replace(/\.ts$/, '.js');
+  const moduleAbsolutePath = path.resolve(distToolsDir, compiledModulePath);
   const relativeImportPath = normalizeImportPath(path.relative(dir, moduleAbsolutePath));
   const inputType = `${pascalName}Input`;
   const resultType = `${pascalName}Result`;
@@ -128,7 +133,7 @@ This directory contains generated TypeScript wrappers for Kubernetes operations.
 ## Usage
 
 \`\`\`typescript
-import * as k8s from './servers/kubernetes';
+import * as k8s from './dist/servers/kubernetes';
 
 // List all pods
 const pods = await k8s.listPods({ namespace: 'default' });
@@ -157,8 +162,8 @@ ${toolList}
 ## Progressive Disclosure
 
 Discover tools by exploring the filesystem:
-1. List \`./servers/\` to see available servers
-2. List \`./servers/kubernetes/\` to see operations
+1. List \`./dist/servers/\` to see available servers
+2. List \`./dist/servers/kubernetes/\` to see operations
 3. Read the tool file you need to see its interface
 4. Import and use it in your code
 `;

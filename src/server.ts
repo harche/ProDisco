@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,11 +9,21 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version?: string };
 import { searchToolsTool } from './tools/kubernetes/searchTools.js';
-import { listGeneratedFiles, readGeneratedFile } from './resources/filesystem.js';
+import {
+  PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH,
+  listGeneratedFiles,
+  readGeneratedFile,
+} from './resources/filesystem.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const GENERATED_DIR = path.join(__dirname, '../generated');
+const GENERATED_DIR = path.resolve(__dirname, '../dist/servers');
+
+if (!existsSync(GENERATED_DIR)) {
+  throw new Error(
+    `Unable to find generated Kubernetes modules at ${GENERATED_DIR}. Run "npm run build && npm run codegen" first.`,
+  );
+}
 
 const server = new McpServer(
   {
@@ -21,7 +32,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      'Kubernetes operations via Code Execution pattern. Explore the filesystem at file:///servers/kubernetes/ to discover available TypeScript modules. Read the .ts files to understand each operation, then write code that imports and uses them. Example: import * as k8s from "./servers/kubernetes/index.js"; const pods = await k8s.listPods({});',
+      'Kubernetes operations via Code Execution pattern. Explore the filesystem at file:///dist/servers/kubernetes/ to discover available TypeScript modules. Read the .ts files to understand each operation, then write code that imports and uses them. Example: import * as k8s from "./dist/servers/kubernetes/index.js"; const pods = await k8s.listPods({});',
   },
 );
 
@@ -52,9 +63,20 @@ server.registerResource(
     description: 'Generated TypeScript modules for Kubernetes operations',
   },
   async (uri) => {
-    // Extract relative path from URI
-    const absolutePath = decodeURIComponent(uri.pathname);
-    const relativePath = path.relative(GENERATED_DIR, absolutePath);
+    // Extract relative path from canonical URI
+    const requestedPath = decodeURIComponent(uri.pathname);
+    const normalizedRoot = PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH;
+
+    if (!requestedPath.startsWith(normalizedRoot)) {
+      throw new Error(`Resource ${requestedPath} is outside ${normalizedRoot}`);
+    }
+
+    const relativePosixPath = requestedPath.slice(normalizedRoot.length);
+    if (!relativePosixPath) {
+      throw new Error('Resource path missing');
+    }
+
+    const relativePath = relativePosixPath.split('/').join(path.sep);
     const content = await readGeneratedFile(GENERATED_DIR, relativePath);
     
     return {
@@ -69,7 +91,7 @@ server.registerResource(
   },
 );
 
-console.error(`📁 Exposed generated/ directory as MCP resources`);
+console.error(`📁 Exposed ${GENERATED_DIR} as MCP resources`);
 
 // Register only the kubernetes.searchTools helper as an exposed tool.
 server.registerTool(

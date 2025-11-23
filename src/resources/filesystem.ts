@@ -13,6 +13,11 @@ export interface FileResource {
   mimeType?: string;
 }
 
+export const PUBLIC_GENERATED_ROOT_PATH = '/dist/servers';
+export const PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH = PUBLIC_GENERATED_ROOT_PATH.endsWith('/')
+  ? PUBLIC_GENERATED_ROOT_PATH
+  : `${PUBLIC_GENERATED_ROOT_PATH}/`;
+
 export async function listGeneratedFiles(generatedDir: string): Promise<FileResource[]> {
   const resources: FileResource[] = [];
   
@@ -35,11 +40,16 @@ async function walkDirectory(baseDir: string, currentDir: string, resources: Fil
     if (entry.isDirectory()) {
       await walkDirectory(baseDir, fullPath, resources);
     } else if (entry.isFile() && entry.name.endsWith('.ts')) {
-      const absolutePath = path.resolve(fullPath);
+      const posixRelativePath = toPosixPath(relativePath);
+      const publicPath = path.posix.join(
+        PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH,
+        posixRelativePath,
+      );
+
       resources.push({
-        uri: `file://${absolutePath}`,
-        name: relativePath,
-        description: `TypeScript module: ${relativePath}`,
+        uri: `file://${encodeURI(publicPath)}`,
+        name: posixRelativePath,
+        description: `TypeScript module: ${posixRelativePath}`,
         mimeType: 'text/typescript',
       });
     }
@@ -58,5 +68,9 @@ export async function readGeneratedFile(generatedDir: string, relativePath: stri
   }
   
   return await fs.readFile(fullPath, 'utf-8');
+}
+
+function toPosixPath(value: string): string {
+  return value.split(path.sep).join('/');
 }
 

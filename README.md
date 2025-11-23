@@ -38,8 +38,8 @@ Agents should write any helper scripts to `scripts/cache/<name>.ts` and execute 
 ### Example 1 – “List nodes of this Kubernetes cluster”
 1. `kubernetes.searchTools(query="node")` → finds `kubernetes.listNodes`
 2. `kubernetes.searchTools(detailLevel="full")` → inspects schema
-3. `listMcpResources` → sees `servers/kubernetes/listNodes.ts`
-4. `readMcpResource("file:///servers/kubernetes/listNodes.ts")`
+3. `listMcpResources` → sees `dist/servers/kubernetes/listNodes.ts`
+4. `readMcpResource("file:///dist/servers/kubernetes/listNodes.ts")`
 5. Reads `list-nodes-example.ts`, then runs `npx tsx list-nodes-example.ts`
 6. Returns a human summary (roles, CPU/memory, kubelet version, pressure signals)
 
@@ -140,8 +140,8 @@ Sample agent output:
 
 ### Example 2 – “List all pods from all namespaces”
 1. `kubernetes.searchTools(query="pod", detail="full")` → sees listPods/getPod/getPodLogs
-2. `Search("**/servers/kubernetes/*.ts")` → enumerates modules
-3. Reads `generated/servers/kubernetes/listPods.ts`
+2. `Search("**/dist/servers/kubernetes/*.ts")` → enumerates modules
+3. Reads `dist/servers/kubernetes/listPods.ts`
 4. Creates `list-all-pods.ts`, imports `listPods`, and runs `npx tsx list-all-pods.ts`
 5. Returns a curated summary (namespaces, readiness, IPs) instead of raw JSON
 
@@ -171,11 +171,11 @@ Sample agent output:
 
 ⏺ Let me check the available TypeScript modules to see how to list pods:
 
-⏺ Search(pattern: "**/servers/kubernetes/*.ts")
+⏺ Search(pattern: "**/dist/servers/kubernetes/*.ts")
 
   ⎿  Found 13 files (ctrl+o to expand)
 
-⏺ Read(generated/servers/kubernetes/listPods.ts)
+⏺ Read(dist/servers/kubernetes/listPods.ts)
 
   ⎿  Read 20 lines
 
@@ -193,7 +193,7 @@ Sample agent output:
 
       */
 
-     import { listPods } from './generated/servers/kubernetes/index.js';
+     import { listPods } from './dist/servers/kubernetes/index.js';
 
      async function main() {
 
