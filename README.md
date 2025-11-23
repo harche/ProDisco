@@ -20,7 +20,6 @@ ProDisco ships with this layout out of the box, so any Claude Code or MCP-enable
 ```bash
 npm install
 npm run build
-npm run codegen
 claude mcp add --transport stdio prodisco -- node dist/server.js
 claude mcp remove prodisco # remove when you're done
 ```

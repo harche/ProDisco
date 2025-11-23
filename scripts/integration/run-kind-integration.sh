@@ -52,7 +52,6 @@ log "Applying sample workload"
 log "Building server artifacts"
 cd "$ROOT_DIR"
 npm run build
-npm run codegen
 
 log "Running Claude Agent SDK driver"
 rm -f "$OUTPUT_PATH"

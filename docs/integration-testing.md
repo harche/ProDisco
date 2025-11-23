@@ -44,7 +44,7 @@ The `scripts/integration/run-kind-integration.sh` script performs the following:
 2. Applies `tests/fixtures/sample-workload.yaml`, which creates a namespace plus
    a two-replica StatefulSet so pod names are deterministic.
 3. Waits until both pods in `demo-int` are Ready.
-4. Builds the MCP server (`npm run build && npm run codegen`).
+4. Builds the MCP server (`npm run build`).
 5. Invokes `scripts/integration/claude-driver.ts`, which:
    - Uses the TypeScript Agent SDK to start the MCP server via stdio transport,
      attaching Claude to it with the structured-output schema described in the
