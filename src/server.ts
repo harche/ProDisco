@@ -33,7 +33,7 @@ const server = new McpServer(
 import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 const resourceTemplate = new ResourceTemplate(
-  'file:///{path}',
+  `file://${PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH}{path}`,
   {
     list: async () => {
       const files = await listGeneratedFiles(GENERATED_DIR);
