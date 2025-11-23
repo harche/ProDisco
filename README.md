@@ -7,7 +7,7 @@ ProDisco gives MCP agents Kubernetes access that exactly follows Anthropic’s [
 Anthropic’s latest guidance explains why MCP servers should progressively reveal capabilities instead of dumping every tool definition into the model context. When agents explore a filesystem of TypeScript modules, as they do with ProDisco, they only load what they need and process data inside the execution environment, then return a concise result to the chat. This keeps token usage low, improves latency, and avoids copying large intermediate payloads through the model ([source](https://www.anthropic.com/engineering/code-execution-with-mcp)).
 
 In practice that means:
-- Agents only see a single advertised tool (`kubernetes.searchTools`); they call it on demand to discover the TypeScript modules (get pods, list nodes, fetch logs, etc.) that the server exposes, then write their own code to compose those modules without loading unused schemas.
+- Agents only see a single advertised tool (`kubernetes.searchTools`); they call it with structured parameters (resourceType, action, scope) to discover the TypeScript modules (get pods, list nodes, fetch logs, etc.) that the server exposes, then write their own code to compose those modules without loading unused schemas.
 - Letting the model issue one instruction instead of micromanaging dozens of sequential tool calls.
 - Agents can mix and match multiple Kubernetes modules joining pod stats with node health, or correlating events with logs without shuttling raw outputs between tools in the chat loop, which dramatically cuts token usage.
 
@@ -38,18 +38,37 @@ ProDisco exposes two main tools for agents to discover and interact with the Kub
 
 ### 1. kubernetes.searchTools
 
-Search for Kubernetes API methods by natural language queries.
+Find Kubernetes API methods by resource type and action.
 
 **Input:**
 ```typescript
 {
-  query: string;        // e.g., "list pods", "get deployment", "delete service"
-  limit?: number;       // Max results (default: 5, max: 50)
+  resourceType: string;  // e.g., "Pod", "Deployment", "Service"
+  action?: string;       // e.g., "list", "read", "create", "delete", "patch", "replace", "connect"
+  scope?: 'namespaced' | 'cluster' | 'all';  // default: 'all'
+  limit?: number;        // Max results (default: 10, max: 50)
 }
+```
+
+**Example Queries:**
+```typescript
+// List all Pod-related methods
+{ resourceType: "Pod" }
+
+// List namespaced Pods
+{ resourceType: "Pod", action: "list", scope: "namespaced" }
+
+// Create Deployment
+{ resourceType: "Deployment", action: "create" }
+
+// Delete Service
+{ resourceType: "Service", action: "delete", scope: "namespaced" }
 ```
 
 **Output Example:**
 ```
+Found 1 method(s) for resource "Pod", action "list", scope "namespaced"
+
 1. CoreV1Api.listNamespacedPod
    method_args: { namespace: "string" }
    return_values: response.items (array of Pod)
@@ -59,10 +78,11 @@ Search for Kubernetes API methods by natural language queries.
 ```
 
 **Key Features:**
-- Natural language search: "list pods", "create deployment", "get pod logs"
+- Structured parameter matching: specify resource type, action, and scope
 - Shows all required parameters (including special cases like CustomObjectsApi)
 - Clear indication of return structure (`response` vs `response.items`)
 - Brief inline type information with key properties
+- Available actions: list, read, create, delete, patch, replace, connect, get, watch
 
 ### 2. kubernetes.getTypeDefinition
 

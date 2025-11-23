@@ -6,15 +6,24 @@ import { join } from 'path';
 import type { ToolDefinition } from '../types.js';
 
 const SearchToolsInputSchema = z.object({
-  query: z
+  resourceType: z
     .string()
-    .describe('Search query to find Kubernetes API methods (e.g., "pod", "deployment", "create namespace")'),
+    .describe('Kubernetes resource type (e.g., "Pod", "Deployment", "Service", "ConfigMap")'),
+  action: z
+    .string()
+    .optional()
+    .describe('API action: list, read, create, delete, patch, replace, connect, get, watch. Omit to return all actions for the resource.'),
+  scope: z
+    .enum(['namespaced', 'cluster', 'all'])
+    .optional()
+    .default('all')
+    .describe('Resource scope: "namespaced" for namespace-scoped resources, "cluster" for cluster-wide resources, "all" for both'),
   limit: z
     .number()
     .int()
     .positive()
     .max(50)
-    .default(5)
+    .default(10)
     .optional()
     .describe('Maximum number of results to return'),
 });
@@ -158,6 +167,7 @@ function extractKubernetesApiMethods(): KubernetesApiMethod[] {
     { class: 'RbacAuthorizationV1Api', constructor: k8s.RbacAuthorizationV1Api, description: 'RBAC (Roles, RoleBindings, ClusterRoles, ClusterRoleBindings, ServiceAccounts)' },
     { class: 'StorageV1Api', constructor: k8s.StorageV1Api, description: 'Storage resources (StorageClasses, PersistentVolumes, VolumeAttachments)' },
     { class: 'CustomObjectsApi', constructor: k8s.CustomObjectsApi, description: 'Custom Resource Definitions (CRDs) and custom resources' },
+    { class: 'ApiextensionsV1Api', constructor: k8s.ApiextensionsV1Api, description: 'API extensions (CustomResourceDefinitions for discovering and managing CRDs)' },
     { class: 'AutoscalingV1Api', constructor: k8s.AutoscalingV1Api, description: 'Autoscaling resources (HorizontalPodAutoscalers)' },
     { class: 'PolicyV1Api', constructor: k8s.PolicyV1Api, description: 'Policy resources (PodDisruptionBudgets)' },
   ];
@@ -370,127 +380,104 @@ function generateUsageExample(apiClass: string, methodName: string, parameters: 
 }
 
 /**
- * Simple, direct search without fuzzy matching
+ * Match methods based on structured parameters: resourceType, action, scope
  */
-function searchMethods(query: string, methods: KubernetesApiMethod[], limit: number): KubernetesApiMethod[] {
-  const lowerQuery = query.toLowerCase();
-  const queryWords = lowerQuery.split(/\s+/).filter(w => w.length > 1);
+function matchMethods(
+  resourceType: string,
+  action: string | undefined,
+  scope: string,
+  methods: KubernetesApiMethod[],
+  limit: number
+): KubernetesApiMethod[] {
+  const lowerResourceType = resourceType.toLowerCase();
   
-  // Map action words to method prefixes
-  const actionMap: Record<string, string[]> = {
-    'get': ['read'],
-    'read': ['read'],
-    'fetch': ['read', 'list'],
-    'list': ['list'],
-    'show': ['list', 'read'],
-    'create': ['create'],
-    'make': ['create'],
-    'add': ['create'],
-    'delete': ['delete'],
-    'remove': ['delete'],
-    'update': ['patch', 'replace'],
-    'patch': ['patch'],
-    'replace': ['replace'],
-    'edit': ['patch'],
-  };
-  
-  // Extract action and resource words
-  let expectedActions: string[] = [];
-  const resourceWords: string[] = [];
-  
-  for (const word of queryWords) {
-    if (actionMap[word]) {
-      expectedActions = actionMap[word];
-    } else {
-      resourceWords.push(word, word.replace(/s$/, '')); // Add singular form
-    }
-  }
-  
-  // Score each method
-  const scored = methods.map(method => {
+  // Filter methods based on criteria
+  const filtered = methods.filter(method => {
     const lowerMethod = method.methodName.toLowerCase();
     const lowerResource = method.resourceType.toLowerCase();
-    let score = 0;
     
-    // Factor 1: Resource type matching (most important)
-    let resourceMatches = 0;
-    let matchedWords = 0;
+    // 1. Exclude WithHttpInfo variants (duplicates)
+    if (lowerMethod.includes('withhttpinfo')) {
+      return false;
+    }
     
-    for (const word of resourceWords) {
-      if (word.length < 3) continue;
+    // 2. Match resource type (case-insensitive)
+    // Support both exact match and partial match (e.g., "pod" matches "Pod", "PodTemplate")
+    const resourceMatches = 
+      lowerResource === lowerResourceType || 
+      lowerResource === lowerResourceType.replace(/s$/, '') || // handle plurals
+      lowerResourceType === lowerResource.replace(/s$/, '') ||
+      lowerResource.includes(lowerResourceType) ||
+      lowerResourceType.includes(lowerResource);
+    
+    if (!resourceMatches) {
+      return false;
+    }
+    
+    // 3. Match action if provided
+    if (action) {
+      const lowerAction = action.toLowerCase();
+      // Flexible matching: method can start with action or contain it early (for compound actions)
+      // e.g., "delete" matches both "deleteNamespacedPod" and "deleteCollectionNamespacedPod"
+      const actionMatches = 
+        lowerMethod.startsWith(lowerAction) ||
+        lowerMethod.includes(lowerAction);
       
-      // Exact match
-      if (lowerResource === word || lowerResource === word.replace(/s$/, '')) {
-        resourceMatches += 1000;
-        matchedWords++;
-      }
-      // Starts with
-      else if (lowerResource.startsWith(word)) {
-        resourceMatches += 100;
-        matchedWords++;
-      }
-      // Contains
-      else if (lowerResource.includes(word)) {
-        resourceMatches += 10;
-        matchedWords++;
+      if (!actionMatches) {
+        return false;
       }
     }
     
-    // Bonus for matching multiple words (e.g., "pod logs" → "PodLog")
-    if (matchedWords > 1) {
-      resourceMatches += 2000 * matchedWords;
+    // 4. Match scope
+    const hasNamespaced = lowerMethod.includes('namespaced');
+    const hasForAllNamespaces = lowerMethod.includes('forallnamespaces');
+    
+    if (scope === 'namespaced' && !hasNamespaced) {
+      return false;
     }
-    
-    score += resourceMatches;
-    
-    // Factor 2: Action matching
-    if (expectedActions.length > 0) {
-      const hasMatchingAction = expectedActions.some(action => lowerMethod.startsWith(action));
-      if (hasMatchingAction) {
-        score += 500;
-      }
+    if (scope === 'cluster' && hasNamespaced && !hasForAllNamespaces) {
+      return false;
     }
+    // scope === 'all' means no filtering
     
-    // Factor 3: Penalize unwanted patterns
-    if (lowerMethod.includes('withhttpinfo')) score -= 1000;
-    if (lowerMethod.includes('connect') || lowerMethod.includes('proxy')) {
-      if (!lowerQuery.includes('proxy') && !lowerQuery.includes('connect')) {
-        score -= 500;
-      }
-    }
-    
-    // Factor 4: Prefer namespaced methods
-    if (lowerMethod.includes('namespaced')) score += 50;
-    
-    // Factor 5: Prefer simpler resource types (shorter names)
-    score -= lowerResource.length;
-    
-    return { method, score };
+    return true;
   });
   
-  // Sort by score (higher = better) and return top results
-  return scored
-    .filter(s => s.score > 0) // Only include methods with positive scores
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(s => s.method);
+  // Sort: prefer exact resource matches, then by method name alphabetically
+  const sorted = filtered.sort((a, b) => {
+    const aExact = a.resourceType.toLowerCase() === lowerResourceType;
+    const bExact = b.resourceType.toLowerCase() === lowerResourceType;
+    
+    if (aExact && !bExact) return -1;
+    if (!aExact && bExact) return 1;
+    
+    // Both exact or both partial: sort alphabetically
+    return a.methodName.localeCompare(b.methodName);
+  });
+  
+  return sorted.slice(0, limit);
 }
 
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
   name: 'kubernetes.searchTools',
   description: 
-    'Search the Kubernetes API to find methods for working with resources. ' +
+    'Find Kubernetes API methods by resource type and action. ' +
     'Returns API methods from @kubernetes/client-node that you can use directly in your scripts. ' +
-    'Example queries: "list pods", "create deployment", "delete service", "get pod logs".',
+    'Parameters: resourceType (e.g., "Pod", "Deployment"), action (optional: list, read, create, delete, patch, replace), scope (namespaced/cluster/all). ' +
+    'Available actions: list (list resources), read (get single resource), create (create resource), delete (delete resource), patch (update resource), replace (replace resource), connect (exec/logs/proxy), get, watch.',
   schema: SearchToolsInputSchema,
   async execute(input) {
-    const { query, limit = 5 } = input;
+    const { resourceType, action, scope = 'all', limit = 10 } = input;
 
     const methods = extractKubernetesApiMethods();
-    const results = searchMethods(query, methods, limit);
+    const results = matchMethods(resourceType, action, scope, methods, limit);
 
     // Structured output - clear and unambiguous
-    let summary = `Write scripts to: scripts/cache/<name>.ts and run with: npx tsx scripts/cache/<name>.ts\n`;
+    let summary = `Found ${results.length} method(s) for resource "${resourceType}"`;
+    if (action) summary += `, action "${action}"`;
+    if (scope !== 'all') summary += `, scope "${scope}"`;
+    summary += '\n\n';
+    summary += `Write scripts to: scripts/cache/<name>.ts and run with: npx tsx scripts/cache/<name>.ts\n`;
     summary += `For detailed type definitions: use kubernetes.getTypeDefinition tool\n\n`;
     
     results.forEach((method, i) => {
@@ -531,6 +518,13 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       
       summary += `\n`;
     });
+
+    if (results.length === 0) {
+      summary += `No methods found. Try:\n`;
+      summary += `- Different resourceType (e.g., "Pod", "Deployment", "Service")\n`;
+      summary += `- Omit action to see all available methods\n`;
+      summary += `- Use scope: "all" to see both namespaced and cluster methods\n`;
+    }
 
     const usage = 
       'USAGE:\n' +
