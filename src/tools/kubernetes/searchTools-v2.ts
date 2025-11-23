@@ -1,8 +1,5 @@
 import { z } from 'zod';
 import * as k8s from '@kubernetes/client-node';
-import * as ts from 'typescript';
-import { readFileSync, existsSync } from 'fs';
-import { join } from 'path';
 import type { ToolDefinition } from '../types.js';
 
 const SearchToolsInputSchema = z.object({
@@ -14,7 +11,7 @@ const SearchToolsInputSchema = z.object({
     .int()
     .positive()
     .max(50)
-    .default(5)
+    .default(20)
     .optional()
     .describe('Maximum number of results to return'),
 });
@@ -32,24 +29,6 @@ type KubernetesApiMethod = {
   }>;
   returnType: string;
   example: string;
-  // Type definition location for agent to read actual types
-  typeDefinitionFile: string;
-  inputSchema: {
-    type: 'object';
-    properties: Record<string, { type: string; description?: string; required?: boolean }>;
-    required: string[];
-    description: string;
-  };
-  outputSchema: {
-    type: 'object';
-    description: string;
-    properties: Record<string, { type: string; description: string; }>;
-  };
-  // Actual TypeScript type definitions
-  typeDefinitions?: {
-    input?: string;
-    output?: string;
-  };
 };
 
 type SearchToolsResult = {
@@ -61,83 +40,6 @@ type SearchToolsResult = {
 
 // Cache for Kubernetes API methods
 let apiMethodsCache: KubernetesApiMethod[] | null = null;
-
-/**
- * Extract type definition from a TypeScript file using TS compiler API
- */
-function extractTypeFromFile(typeName: string): string | null {
-  const basePath = process.cwd();
-  const modelsPath = join(basePath, 'node_modules', '@kubernetes', 'client-node', 'dist', 'gen', 'models');
-  const filePath = join(modelsPath, `${typeName}.d.ts`);
-  
-  if (!existsSync(filePath)) {
-    return null;
-  }
-  
-  try {
-    const sourceCode = readFileSync(filePath, 'utf-8');
-    const sourceFile = ts.createSourceFile(
-      filePath,
-      sourceCode,
-      ts.ScriptTarget.Latest,
-      true
-    );
-    
-    let result: string | null = null;
-    
-    function visit(node: ts.Node) {
-      if ((ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) && 
-          node.name && node.name.text === typeName) {
-        let def = `export class ${typeName} {\n`;
-        
-        node.members?.forEach((member) => {
-          if (ts.isPropertySignature(member) || ts.isPropertyDeclaration(member)) {
-            if (member.name) {
-              const propName = member.name.getText(sourceFile).replace(/['"]/g, '');
-              const propType = member.type?.getText(sourceFile) || 'any';
-              const optional = member.questionToken ? '?' : '';
-              def += `  ${propName}${optional}: ${propType};\n`;
-            }
-          }
-        });
-        
-        def += `}`;
-        result = def;
-      }
-      
-      ts.forEachChild(node, visit);
-    }
-    
-    visit(sourceFile);
-    return result;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Extract input and output type definitions for a method
- */
-function extractMethodTypeDefinitions(apiClass: string, methodName: string, resourceType: string): { input?: string; output?: string } {
-  const result: { input?: string; output?: string } = {};
-  
-  // Determine request type (for methods that take parameters)
-  if (methodName.includes('create') || methodName.includes('replace') || methodName.includes('patch')) {
-    const requestTypeName = `${apiClass}${methodName.charAt(0).toUpperCase() + methodName.slice(1)}Request`;
-    result.input = extractTypeFromFile(requestTypeName) || undefined;
-  }
-  
-  // Determine response type based on method
-  if (methodName.startsWith('list')) {
-    const listTypeName = `V1${resourceType}List`;
-    result.output = extractTypeFromFile(listTypeName) || undefined;
-  } else if (methodName.startsWith('read') || methodName.startsWith('create') || methodName.startsWith('replace')) {
-    const singleTypeName = `V1${resourceType}`;
-    result.output = extractTypeFromFile(singleTypeName) || undefined;
-  }
-  
-  return result;
-}
 
 /**
  * Extract all API methods from @kubernetes/client-node
@@ -176,12 +78,8 @@ function extractKubernetesApiMethods(): KubernetesApiMethod[] {
 
       const resourceType = extractResourceType(methodName);
       const description = generateDescriptionFromMethodName(methodName, className, classDesc);
-      const parameters = inferParameters(methodName, className);
+      const parameters = inferParameters(methodName);
       const example = generateUsageExample(className, methodName, parameters);
-      const inputSchema = generateInputSchema(methodName, parameters);
-      const outputSchema = generateOutputSchema(methodName, resourceType);
-      const typeDefinitionFile = `node_modules/@kubernetes/client-node/dist/gen/apis/${className}.d.ts`;
-      const typeDefinitions = extractMethodTypeDefinitions(className, methodName, resourceType);
 
       methods.push({
         apiClass: className,
@@ -191,16 +89,12 @@ function extractKubernetesApiMethods(): KubernetesApiMethod[] {
         parameters,
         returnType: 'Promise<any>',
         example,
-        typeDefinitionFile,
-        inputSchema,
-        outputSchema,
-        typeDefinitions: Object.keys(typeDefinitions).length > 0 ? typeDefinitions : undefined,
       });
     }
   }
 
   apiMethodsCache = methods;
-  console.error(`Indexed ${methods.length} Kubernetes API methods`);
+  console.error(`✅ Indexed ${methods.length} Kubernetes API methods`);
   return methods;
 }
 
@@ -231,33 +125,9 @@ function generateDescriptionFromMethodName(methodName: string, apiClass: string,
   return desc;
 }
 
-function inferParameters(methodName: string, apiClass: string): Array<{ name: string; type: string; optional: boolean; description?: string }> {
+function inferParameters(methodName: string): Array<{ name: string; type: string; optional: boolean; description?: string }> {
   const parameters: Array<{ name: string; type: string; optional: boolean; description?: string }> = [];
   
-  // CustomObjectsApi has special parameter requirements
-  if (apiClass === 'CustomObjectsApi') {
-    if (methodName.includes('CustomObject')) {
-      parameters.push({ name: 'group', type: 'string', optional: false, description: 'API group (e.g., "webapp.example.com")' });
-      parameters.push({ name: 'version', type: 'string', optional: false, description: 'API version (e.g., "v1")' });
-      
-      if (methodName.includes('Namespaced')) {
-        parameters.push({ name: 'namespace', type: 'string', optional: false, description: 'Namespace scope' });
-      }
-      
-      parameters.push({ name: 'plural', type: 'string', optional: false, description: 'Resource plural name (e.g., "guestbooks")' });
-      
-      if (methodName.includes('get') && !methodName.includes('list')) {
-        parameters.push({ name: 'name', type: 'string', optional: false, description: 'Resource name' });
-      }
-      
-      if (methodName.includes('create') || methodName.includes('replace')) {
-        parameters.push({ name: 'body', type: 'object', optional: false, description: 'Custom resource object' });
-      }
-    }
-    return parameters;
-  }
-  
-  // Standard API classes (CoreV1Api, AppsV1Api, etc.)
   if (methodName.includes('Namespaced')) {
     if (methodName.startsWith('list')) {
       parameters.push({ name: 'namespace', type: 'string', optional: false, description: 'Namespace scope' });
@@ -279,62 +149,6 @@ function inferParameters(methodName: string, apiClass: string): Array<{ name: st
   return parameters;
 }
 
-function generateInputSchema(methodName: string, parameters: Array<{ name: string; type: string; optional: boolean; description?: string }>) {
-  const properties: Record<string, { type: string; description?: string; required?: boolean }> = {};
-  const required: string[] = [];
-  
-  for (const param of parameters) {
-    properties[param.name] = {
-      type: param.type,
-      description: param.description,
-      required: !param.optional,
-    };
-    if (!param.optional) {
-      required.push(param.name);
-    }
-  }
-  
-  // CRITICAL: Always accept an object, even if empty
-  const hasRequiredParams = required.length > 0;
-  
-  return {
-    type: 'object' as const,
-    properties,
-    required,
-    description: hasRequiredParams 
-      ? `Parameters object. Required fields: ${required.join(', ')}`
-      : 'Empty object {}. This method takes no required parameters, but you MUST still pass an empty object.',
-  };
-}
-
-function generateOutputSchema(methodName: string, resourceType: string) {
-  const isList = methodName.startsWith('list');
-  const isRead = methodName.startsWith('read');
-  const isCreate = methodName.startsWith('create');
-  const isDelete = methodName.startsWith('delete');
-  
-  let description = 'Response from Kubernetes API';
-  
-  if (isList) {
-    description = `Response has 'items' array containing ${resourceType} resources. Access: response.items[]`;
-  } else if (isRead || isCreate) {
-    description = `Response IS the ${resourceType} object. Access: response.metadata, response.spec, response.status`;
-  } else if (isDelete) {
-    description = 'Response IS the status object. Access: response.status';
-  }
-  
-  return {
-    type: 'object' as const,
-    description,
-    properties: {
-      items: {
-        type: isList ? 'array' : 'undefined',
-        description: isList ? `Array of ${resourceType} objects` : 'Not applicable',
-      },
-    },
-  };
-}
-
 function generateUsageExample(apiClass: string, methodName: string, parameters: Array<{ name: string; type: string; optional: boolean }>): string {
   const apiVar = apiClass.charAt(0).toLowerCase() + apiClass.slice(1);
   const requiredParams = parameters.filter(p => !p.optional);
@@ -352,18 +166,18 @@ function generateUsageExample(apiClass: string, methodName: string, parameters: 
     paramStr = `{ ${paramPairs.join(', ')} }`;
   }
   
-  example += `// IMPORTANT: Always pass object parameter (even if empty {})\nconst response = await ${apiVar}.${methodName}(${paramStr});\n\n`;
+  example += `// Call the API method (ALWAYS uses object parameters - even if empty {})\nconst response = await ${apiVar}.${methodName}(${paramStr});\n\n`;
   
   if (methodName.startsWith('list')) {
-    example += `// Response structure: response.items is an array\nconst items = response.items;\nconsole.log(\`Found \${items.length} resources\`);\n// Access: items[0].metadata.name`;
+    example += `// Response structure:\n// response.body.items = array of resources\nconst items = response.body.items;\nconsole.log(\`Found \${items.length} resources\`);`;
   } else if (methodName.startsWith('read') || methodName.startsWith('get')) {
-    example += `// Response IS the resource object\nconsole.log(\`Resource: \${response.metadata?.name}\`);\n// Access: response.spec, response.status, etc.`;
+    example += `// Response structure:\n// response.body = single resource object\nconst resource = response.body;\nconsole.log(\`Resource: \${resource.metadata?.name}\`);`;
   } else if (methodName.startsWith('create')) {
-    example += `// Response IS the created resource\nconsole.log(\`Created: \${response.metadata?.name}\`);`;
+    example += `// Response structure:\n// response.body = created resource\nconst created = response.body;\nconsole.log(\`Created: \${created.metadata?.name}\`);`;
   } else if (methodName.startsWith('delete')) {
-    example += `// Response IS the status object\nconsole.log(\`Status: \${response.status}\`);`;
+    example += `// Response structure:\n// response.body = status info\nconst status = response.body;\nconsole.log(\`Status: \${status.status}\`);`;
   } else {
-    example += `// Response contains the result directly\nconsole.log(response);`;
+    example += `// Response: response.body contains the result\nconsole.log(response.body);`;
   }
   
   return example;
@@ -414,31 +228,21 @@ function searchMethods(query: string, methods: KubernetesApiMethod[], limit: num
     
     // Factor 1: Resource type matching (most important)
     let resourceMatches = 0;
-    let matchedWords = 0;
-    
     for (const word of resourceWords) {
       if (word.length < 3) continue;
       
       // Exact match
       if (lowerResource === word || lowerResource === word.replace(/s$/, '')) {
         resourceMatches += 1000;
-        matchedWords++;
       }
       // Starts with
       else if (lowerResource.startsWith(word)) {
         resourceMatches += 100;
-        matchedWords++;
       }
       // Contains
       else if (lowerResource.includes(word)) {
         resourceMatches += 10;
-        matchedWords++;
       }
-    }
-    
-    // Bonus for matching multiple words (e.g., "pod logs" → "PodLog")
-    if (matchedWords > 1) {
-      resourceMatches += 2000 * matchedWords;
     }
     
     score += resourceMatches;
@@ -476,7 +280,7 @@ function searchMethods(query: string, methods: KubernetesApiMethod[], limit: num
     .map(s => s.method);
 }
 
-export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
+export const searchToolsToolV2: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
   name: 'kubernetes.searchTools',
   description: 
     'Search the Kubernetes API to find methods for working with resources. ' +
@@ -484,62 +288,28 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     'Example queries: "list pods", "create deployment", "delete service", "get pod logs".',
   schema: SearchToolsInputSchema,
   async execute(input) {
-    const { query, limit = 5 } = input;
+    const { query, limit = 20 } = input;
 
     const methods = extractKubernetesApiMethods();
     const results = searchMethods(query, methods, limit);
 
-    // Structured output - clear and unambiguous
-    let summary = `Write scripts to: scripts/cache/<name>.ts and run with: npx tsx scripts/cache/<name>.ts\n`;
-    summary += `For detailed type definitions: use kubernetes.getTypeDefinition tool\n\n`;
-    
+    // Create summary
+    let summary = `Found ${results.length} Kubernetes API method(s) matching "${query}":\n\n`;
     results.forEach((method, i) => {
       summary += `${i + 1}. ${method.apiClass}.${method.methodName}\n`;
-      
-      // Method arguments
-      if (method.inputSchema.required.length > 0) {
-        const params = method.inputSchema.required.map(r => 
-          `${r}: "${method.inputSchema.properties[r]?.type || 'string'}"`
-        ).join(', ');
-        summary += `   method_args: { ${params} }\n`;
-      } else {
-        summary += `   method_args: {} (empty object - required)\n`;
-      }
-      
-      // Return values
-      const isList = method.methodName.startsWith('list');
-      if (isList) {
-        summary += `   return_values: response.items (array of ${method.resourceType})\n`;
-      } else {
-        summary += `   return_values: response (${method.resourceType} object)\n`;
-      }
-      
-      // Include inline type definitions if available (brief overview)
-      if (method.typeDefinitions && method.typeDefinitions.output) {
-        const lines = method.typeDefinitions.output.split('\n');
-        const typeName = lines[0]?.trim() || 'unknown';
-        
-        // Extract key properties (just first 2-3)
-        const propertyLines = lines.slice(1, 4).filter(l => l.trim() && !l.includes('}'));
-        
-        summary += `   return_types: ${typeName}\n`;
-        if (propertyLines.length > 0) {
-          summary += `     key properties: ${propertyLines.map(l => l.trim()).join(', ')}\n`;
-        }
-        summary += `     (use kubernetes.getTypeDefinition for complete type details)\n`;
-      }
-      
-      summary += `\n`;
+      summary += `   ${method.description}\n`;
     });
 
     const usage = 
-      'USAGE:\n' +
-      '- All methods require object parameter: await api.method({ param: value })\n' +
-      '- No required params: await api.method({})\n' +
-      '- List operations return: response.items (array)\n' +
-      '- Single resource operations return: response (object)\n' +
-      '- Write scripts to: scripts/cache/<yourscript>.ts\n' +
-      '- Run scripts with: npx tsx scripts/cache/<yourscript>.ts';
+      '⚠️  CRITICAL: All methods use OBJECT PARAMETERS, not positional!\n\n' +
+      '1. API method signature (IMPORTANT):\n' +
+      '   ✅ CORRECT:   await api.listNamespacedPod({ namespace: \'default\' })\n' +
+      '   ❌ WRONG:     await api.listNamespacedPod(\'default\')\n\n' +
+      '2. All API methods return a response object:\n' +
+      '   { body: <resource>, response: <http response> }\n' +
+      '   - For list operations: response.body.items = array\n' +
+      '   - For single resource: response.body = resource object\n\n' +
+      '3. See the "example" field in each method for complete, working code.';
 
     return {
       summary,

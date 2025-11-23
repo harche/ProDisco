@@ -245,6 +245,83 @@ These transcripts prove the progressive-disclosure workflow is live: the agent u
 
 ---
 
+## Available Tools
+
+ProDisco exposes two main tools for agents to discover and interact with the Kubernetes API:
+
+### 1. kubernetes.searchTools
+
+Search for Kubernetes API methods by natural language queries.
+
+**Input:**
+```typescript
+{
+  query: string;        // e.g., "list pods", "get deployment", "delete service"
+  limit?: number;       // Max results (default: 5, max: 50)
+}
+```
+
+**Output Example:**
+```
+1. CoreV1Api.listNamespacedPod
+   method_args: { namespace: "string" }
+   return_values: response.items (array of Pod)
+   return_types: export class V1PodList {
+     key properties: apiVersion?: string;, items: Array<V1Pod>;, kind?: string;
+     (use kubernetes.getTypeDefinition for complete type details)
+```
+
+**Key Features:**
+- Natural language search: "list pods", "create deployment", "get pod logs"
+- Shows all required parameters (including special cases like CustomObjectsApi)
+- Clear indication of return structure (`response` vs `response.items`)
+- Brief inline type information with key properties
+
+### 2. kubernetes.getTypeDefinition
+
+Get detailed TypeScript type definitions for Kubernetes types.
+
+**Input:**
+```typescript
+{
+  types: string[];      // Type names or property paths
+                        // Examples: ["V1Pod", "V1Deployment.spec", "V1Pod.spec.containers"]
+  depth?: number;       // Nested type depth (default: 1, max: 2)
+}
+```
+
+**Dot Notation Support:**
+Navigate directly to nested types:
+- `V1Deployment.spec` → Returns `V1DeploymentSpec` type
+- `V1Pod.spec.containers` → Returns `V1Container` type (array element)
+- `V1Pod.status.conditions` → Returns `V1PodCondition` type
+
+**Example Output:**
+```typescript
+{
+  "V1Pod": {
+    "name": "V1Pod",
+    "definition": "V1Pod {\n  apiVersion?: string\n  kind?: string\n  metadata?: V1ObjectMeta\n  spec?: V1PodSpec\n  status?: V1PodStatus\n  ...\n}",
+    "nestedTypes": ["V1ObjectMeta", "V1PodSpec", "V1PodStatus"]
+  }
+}
+```
+
+**Key Features:**
+- Native TypeScript parsing (uses TypeScript Compiler API, no regex)
+- Dot notation for navigating nested types
+- Automatic resolution of `Array<T>`, unions, and type references
+- Controlled depth to avoid overwhelming output
+
+**Type Definitions Location:**
+All type definitions are read from:
+```
+node_modules/@kubernetes/client-node/dist/gen/models/
+```
+This directory contains 852 `.d.ts` files with complete Kubernetes type information.
+
+---
+
 ## Integration Tests
 
 End-to-end testing instructions (KIND cluster + Claude Agent SDK driver) now live in `docs/integration-testing.md`. The workflow is manual-only for now and assumes your Anthropic credentials are already configured. Run it locally with:

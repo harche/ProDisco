@@ -8,6 +8,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version?: string };
 import { searchToolsTool } from './tools/kubernetes/searchTools.js';
+import { getTypeDefinitionTool } from './tools/kubernetes/typeDefinitions.js';
 import {
   PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH,
   listGeneratedFiles,
@@ -86,7 +87,7 @@ server.registerResource(
 
 console.error(`📁 Exposed ${GENERATED_DIR} as MCP resources`);
 
-// Register only the kubernetes.searchTools helper as an exposed tool.
+// Register kubernetes.searchTools helper as an exposed tool.
 server.registerTool(
   searchToolsTool.name,
   {
@@ -106,6 +107,33 @@ server.registerTool(
         {
           type: 'text',
           text: JSON.stringify(result.tools, null, 2),
+        },
+      ],
+      structuredContent: result,
+    };
+  },
+);
+
+// Register kubernetes.getTypeDefinition helper as an exposed tool.
+server.registerTool(
+  getTypeDefinitionTool.name,
+  {
+    title: 'Kubernetes Type Definition',
+    description: getTypeDefinitionTool.description,
+    inputSchema: getTypeDefinitionTool.schema,
+  },
+  async (args) => {
+    const parsedArgs = await getTypeDefinitionTool.schema.parseAsync(args);
+    const result = await getTypeDefinitionTool.execute(parsedArgs);
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result.summary,
+        },
+        {
+          type: 'text',
+          text: JSON.stringify(result.types, null, 2),
         },
       ],
       structuredContent: result,
