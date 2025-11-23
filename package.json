@@ -12,8 +12,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "lint": "ESLINT_USE_FLAT_CONFIG=false eslint \"src/**/*.{ts,tsx}\"",
-    "codegen": "tsx src/codegen/cli.ts",
-    "prepublishOnly": "npm run build && npm run codegen",
+    "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:integration": "scripts/integration/run-kind-integration.sh",
     "prepare": "husky"

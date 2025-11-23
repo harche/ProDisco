@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { z } from 'zod';
 
@@ -46,7 +46,7 @@ type SearchToolsResult = {
 
 const thisDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(thisDir, '../../..');
-const generatedModulesUriPrefix = 'file:///dist/servers/kubernetes';
+const distToolsDir = path.join(repoRoot, 'dist/tools/kubernetes');
 const cachedScriptsDir = path.join(repoRoot, 'scripts/cache');
 
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
@@ -77,8 +77,9 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
 
     // Format based on detail level
     const formattedTools = limitedTools.map((entry) => {
-      const moduleName = entry.tool.name.replace('kubernetes.', '');
-      const resourceUri = `${generatedModulesUriPrefix}/${moduleName}.ts`;
+      const normalizedPath = entry.sourceModulePath.replace(/^\.\//, '').replace(/\.ts$/, '.d.ts');
+      const modulePath = path.join(distToolsDir, normalizedPath);
+      const resourceUri = pathToFileURL(modulePath).toString();
       const inputSchemaJson = zodToJsonSchema(entry.tool.schema, `${entry.tool.name}Input`);
       const outputSchemaJson = entry.resultSchema
         ? zodToJsonSchema(entry.resultSchema, `${entry.tool.name}Result`)

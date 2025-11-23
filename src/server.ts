@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,13 +16,7 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const GENERATED_DIR = path.resolve(__dirname, '../dist/servers');
-
-if (!existsSync(GENERATED_DIR)) {
-  throw new Error(
-    `Unable to find generated Kubernetes modules at ${GENERATED_DIR}. Run "npm run build && npm run codegen" first.`,
-  );
-}
+const GENERATED_DIR = path.resolve(__dirname, 'tools/kubernetes');
 
 const server = new McpServer(
   {
@@ -32,7 +25,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      'Kubernetes operations via Code Execution pattern. Explore the filesystem at file:///dist/servers/kubernetes/ to discover available TypeScript modules. Read the .ts files to understand each operation, then write code that imports and uses them. Example: import * as k8s from "./dist/servers/kubernetes/index.js"; const pods = await k8s.listPods({});',
+      'Kubernetes operations via Progressive Disclosure. Use the kubernetes.searchTools tool to discover available operations. The tool returns file:// URIs pointing to TypeScript declaration files (.d.ts) that show input/output types. Use these types to write scripts that import from "dist/tools/kubernetes/*.js". Example: import { listPodsTool } from "./dist/tools/kubernetes/listPods.js"; const result = await listPodsTool.execute({ namespace: "default" });',
   },
 );
 

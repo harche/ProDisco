@@ -13,7 +13,7 @@ export interface FileResource {
   mimeType?: string;
 }
 
-export const PUBLIC_GENERATED_ROOT_PATH = '/dist/servers';
+export const PUBLIC_GENERATED_ROOT_PATH = '/dist/tools/kubernetes';
 export const PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH = PUBLIC_GENERATED_ROOT_PATH.endsWith('/')
   ? PUBLIC_GENERATED_ROOT_PATH
   : `${PUBLIC_GENERATED_ROOT_PATH}/`;
@@ -39,7 +39,7 @@ async function walkDirectory(baseDir: string, currentDir: string, resources: Fil
     
     if (entry.isDirectory()) {
       await walkDirectory(baseDir, fullPath, resources);
-    } else if (entry.isFile() && entry.name.endsWith('.ts')) {
+    } else if (entry.isFile() && entry.name.endsWith('.d.ts')) {
       const posixRelativePath = toPosixPath(relativePath);
       const publicPath = path.posix.join(
         PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH,
@@ -49,7 +49,7 @@ async function walkDirectory(baseDir: string, currentDir: string, resources: Fil
       resources.push({
         uri: `file://${encodeURI(publicPath)}`,
         name: posixRelativePath,
-        description: `TypeScript module: ${posixRelativePath}`,
+        description: `TypeScript declaration file: ${posixRelativePath}`,
         mimeType: 'text/typescript',
       });
     }

@@ -1,13 +1,5 @@
 set -e
 
-npm run codegen
-
-if ! git diff --quiet --ignore-submodules --; then
-  echo "Detected unstaged changes after running codegen. Run 'npm run codegen' and commit the outputs."
-  git status --short
-  exit 1
-fi
-
 npm run lint
 npm run build
 npm test
