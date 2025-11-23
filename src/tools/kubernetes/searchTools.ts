@@ -35,7 +35,6 @@ type SearchToolsResult = {
     description?: string;
     resourceUri?: string;
     inputSchema: unknown;
-    outputSchema?: unknown;
   }>;
   totalMatches: number;
   cachedScripts: Array<{
@@ -81,9 +80,6 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       const modulePath = path.join(distToolsDir, normalizedPath);
       const resourceUri = pathToFileURL(modulePath).toString();
       const inputSchemaJson = zodToJsonSchema(entry.tool.schema, `${entry.tool.name}Input`);
-      const outputSchemaJson = entry.resultSchema
-        ? zodToJsonSchema(entry.resultSchema, `${entry.tool.name}Result`)
-        : undefined;
 
       // Always include the schema so consumers can infer inputs without
       // needing a different detail level.
@@ -91,7 +87,6 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
         name: entry.tool.name,
         resourceUri,
         inputSchema: inputSchemaJson,
-        outputSchema: outputSchemaJson,
       };
 
       switch (detailLevel) {

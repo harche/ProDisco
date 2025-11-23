@@ -4,33 +4,24 @@ import { getPodLogs } from '../../kube/client.js';
 import type { ToolDefinition } from '../types.js';
 
 export const GetPodLogsInputSchema = z.object({
-  namespace: z.string().min(1),
-  podName: z.string().min(1),
-  container: z.string().optional(),
-  tailLines: z.number().int().positive().max(2000).default(200).optional(),
-  timestamps: z.boolean().default(true).optional(),
-  previous: z.boolean().default(false).optional(),
+  namespace: z.string().min(1).describe('Namespace of the pod'),
+  podName: z.string().min(1).describe('Name of the pod'),
+  container: z.string().optional().describe('Container name (defaults to first container if not specified)'),
+  tailLines: z.number().int().positive().max(2000).default(200).optional().describe('Number of lines to tail from the end of logs'),
+  timestamps: z.boolean().default(true).optional().describe('Include timestamps in log output'),
+  previous: z.boolean().default(false).optional().describe('Get logs from previous terminated container'),
 });
 
 export type GetPodLogsInput = z.infer<typeof GetPodLogsInputSchema>;
 
-export const GetPodLogsResultSchema = z.object({
-  namespace: z.string(),
-  podName: z.string(),
-  container: z.string().optional(),
-  tailLines: z.number().optional(),
-  logs: z.string(),
-});
-
-export type GetPodLogsResult = z.infer<typeof GetPodLogsResultSchema>;
+export type GetPodLogsResult = string;
 
 export const getPodLogsTool: ToolDefinition<GetPodLogsResult, typeof GetPodLogsInputSchema> = {
   name: 'kubernetes.getPodLogs',
-  description: 'Stream recent pod logs (tail by default) for troubleshooting.',
+  description: 'Get recent pod logs for troubleshooting. Returns log output as a string.',
   schema: GetPodLogsInputSchema,
-  resultSchema: GetPodLogsResultSchema,
   async execute(input) {
-    const logs = await getPodLogs({
+    return await getPodLogs({
       namespace: input.namespace,
       podName: input.podName,
       container: input.container,
@@ -38,14 +29,6 @@ export const getPodLogsTool: ToolDefinition<GetPodLogsResult, typeof GetPodLogsI
       timestamps: input.timestamps,
       previous: input.previous,
     });
-
-    return {
-      namespace: input.namespace,
-      podName: input.podName,
-      container: input.container,
-      tailLines: input.tailLines,
-      logs,
-    };
   },
 };
 

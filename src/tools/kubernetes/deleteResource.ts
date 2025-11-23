@@ -1,9 +1,7 @@
-import type { KubernetesObject } from '@kubernetes/client-node';
 import { z } from 'zod';
 
 import { deleteResource as deleteKubeResource } from '../../kube/client.js';
 import { parseManifests } from '../../util/manifest.js';
-import { MetadataSummarySchema, summarizeMetadata } from '../../util/summary.js';
 import type { ToolDefinition } from '../types.js';
 
 const ManifestSchema = z.union([
@@ -13,14 +11,14 @@ const ManifestSchema = z.union([
 
 export const DeleteResourceInputSchema = z
   .object({
-    manifest: ManifestSchema.optional(),
-    apiVersion: z.string().optional(),
-    kind: z.string().optional(),
-    name: z.string().optional(),
-    namespace: z.string().optional(),
-    dryRun: z.boolean().optional(),
-    gracePeriodSeconds: z.number().int().nonnegative().optional(),
-    propagationPolicy: z.enum(['Foreground', 'Background', 'Orphan']).optional(),
+    manifest: ManifestSchema.optional().describe('YAML or JSON manifest of resource to delete'),
+    apiVersion: z.string().optional().describe('API version (e.g., v1, apps/v1)'),
+    kind: z.string().optional().describe('Resource kind (e.g., Pod, Deployment)'),
+    name: z.string().optional().describe('Resource name'),
+    namespace: z.string().optional().describe('Resource namespace'),
+    dryRun: z.boolean().optional().describe('Perform a dry run without actually deleting'),
+    gracePeriodSeconds: z.number().int().nonnegative().optional().describe('Grace period in seconds before forcing deletion'),
+    propagationPolicy: z.enum(['Foreground', 'Background', 'Orphan']).optional().describe('Deletion propagation policy'),
   })
   .refine(
     (data) => !!data.manifest || (data.apiVersion && data.kind && data.name),
@@ -29,26 +27,22 @@ export const DeleteResourceInputSchema = z
 
 export type DeleteResourceInput = z.infer<typeof DeleteResourceInputSchema>;
 
-const DeletedManifestSchema = z.object({
-  apiVersion: z.string().optional(),
-  kind: z.string().optional(),
-  metadata: MetadataSummarySchema,
-});
-
-export const DeleteResourceResultSchema = z.object({
-  manifest: DeletedManifestSchema,
-  dryRun: z.boolean().optional(),
-});
-
-export type DeleteResourceResult = z.infer<typeof DeleteResourceResultSchema>;
+export interface DeleteResourceResult {
+  success: true;
+  deletedResource: {
+    apiVersion?: string;
+    kind?: string;
+    metadata?: { name?: string; namespace?: string; [key: string]: unknown };
+    [key: string]: unknown;
+  };
+}
 
 export const deleteResourceTool: ToolDefinition<DeleteResourceResult, typeof DeleteResourceInputSchema> = {
   name: 'kubernetes.deleteResource',
-  description: 'Delete a Kubernetes resource by manifest or apiVersion/kind/name reference.',
+  description: 'Delete a Kubernetes resource by manifest or apiVersion/kind/name reference. Returns the deleted resource object.',
   schema: DeleteResourceInputSchema,
-  resultSchema: DeleteResourceResultSchema,
   async execute(input) {
-    const manifest: KubernetesObject | undefined =
+    const manifest =
       input.manifest !== undefined
         ? parseManifests(input.manifest)[0]
         : {
@@ -68,12 +62,8 @@ export const deleteResourceTool: ToolDefinition<DeleteResourceResult, typeof Del
     });
 
     return {
-      manifest: {
-        apiVersion: manifest.apiVersion,
-        kind: manifest.kind,
-        metadata: summarizeMetadata(manifest.metadata as never),
-      },
-      dryRun: input.dryRun,
+      success: true,
+      deletedResource: manifest as DeleteResourceResult['deletedResource'],
     };
   },
 };
