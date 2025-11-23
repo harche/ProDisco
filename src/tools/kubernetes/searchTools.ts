@@ -520,7 +520,12 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     '(2) Multiple actions: { actions: ["delete", "create"] } excludes both delete and create methods. ' +
     '(3) By API class: { apiClasses: ["CoreV1Api"] } excludes all CoreV1Api methods. ' +
     '(4) Both action and apiClass (AND logic): { actions: ["delete"], apiClasses: ["CoreV1Api"] } excludes only delete methods from CoreV1Api, keeping other CoreV1Api methods and delete methods from other API classes. ' +
-    'Exclude is especially useful when searching broad resource types (e.g., "Pod" returns methods from CoreV1Api, AutoscalingV1Api, PolicyV1Api).',
+    'Exclude is especially useful when searching broad resource types (e.g., "Pod" returns methods from CoreV1Api, AutoscalingV1Api, PolicyV1Api). ' +
+    'CUSTOM SCRIPTS: Before writing new scripts, check scripts/cache/ directory for existing implementations. ' +
+    'When creating custom scripts in scripts/cache/, follow Kubernetes library naming pattern to make them easily discoverable: ' +
+    'use action-scope-resource format (e.g., "list-namespaced-pod", "read-namespaced-pod-log", "create-namespaced-deployment"). ' +
+    'Example: For listing etcd pods in kube-system, name it "list-namespaced-etcd-pods.ts" NOT "get-etcd-pods.ts". ' +
+    'This naming convention makes scripts searchable and helps avoid duplicates.',
   schema: SearchToolsInputSchema,
   async execute(input) {
     const { resourceType, action, scope = 'all', exclude, limit = 10 } = input;
@@ -542,6 +547,8 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     }
     summary += '\n\n';
     summary += `Write scripts to: scripts/cache/<name>.ts and run with: npx tsx scripts/cache/<name>.ts\n`;
+    summary += `IMPORTANT: Check scripts/cache/ directory first to avoid duplicating existing implementations\n`;
+    summary += `Custom script naming convention: Use k8s library pattern (e.g., list-namespaced-pod, read-namespaced-pod-log)\n`;
     summary += `For detailed type definitions: use kubernetes.getTypeDefinition tool\n\n`;
     
     results.forEach((method, i) => {
