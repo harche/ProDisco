@@ -13,36 +13,84 @@ export const ListPodsInputSchema = z.object({
 
 export type ListPodsInput = z.infer<typeof ListPodsInputSchema>;
 
+/**
+ * PodList is a list of Pods.
+ */
 export interface ListPodsResult {
+  /** APIVersion defines the versioned schema of this representation of an object. */
   apiVersion?: string;
+  /** Kind is a string value representing the REST resource this object represents. */
   kind?: string;
+  /** Standard list metadata. */
   metadata?: {
+    /** String that identifies the server's internal version of this object. */
     resourceVersion?: string;
+    /** Continue token for pagination. */
     continue?: string;
+    /** Continue token for pagination (alternative field name). */
     _continue?: string;
   };
+  /** List of pods. */
   items: Array<{
+    /** APIVersion defines the versioned schema of this representation of an object. */
     apiVersion?: string;
+    /** Kind is a string value representing the REST resource this object represents. */
     kind?: string;
+    /** Standard object metadata. */
     metadata?: {
+      /** Name must be unique within a namespace. */
       name?: string;
+      /** Namespace defines the space within which each name must be unique. */
       namespace?: string;
+      /** UID is the unique identifier for this object. */
       uid?: string;
+      /** Map of string keys and values that can be used to organize and categorize objects. */
       labels?: Record<string, string>;
+      /** Annotations is an unstructured key value map stored with a resource. */
       annotations?: Record<string, string>;
+      /** CreationTimestamp is a timestamp representing when this object was created. */
       creationTimestamp?: string;
     };
+    /** Specification of the desired behavior of the pod. */
     spec?: {
-      containers: Array<{ name: string; image?: string; [key: string]: unknown }>;
+      /** List of containers belonging to the pod. */
+      containers: Array<{
+        /** Name of the container. */
+        name: string;
+        /** Container image name. */
+        image?: string;
+        [key: string]: unknown;
+      }>;
+      /** NodeName indicates on which node this pod is scheduled. */
       nodeName?: string;
       [key: string]: unknown;
     };
+    /** Most recently observed status of the pod. */
     status?: {
+      /** The phase of a Pod is a simple, high-level summary of where the Pod is in its lifecycle. */
       phase?: string;
+      /** Pod's IP address. */
       podIP?: string;
+      /** IP address of the host to which the pod is assigned. */
       hostIP?: string;
-      containerStatuses?: Array<{ name?: string; ready?: boolean; restartCount?: number; [key: string]: unknown }>;
-      conditions?: Array<{ type?: string; status?: string; [key: string]: unknown }>;
+      /** The list has one entry per container in the manifest. */
+      containerStatuses?: Array<{
+        /** Name of the container. */
+        name?: string;
+        /** Specifies whether the container has passed its readiness probe. */
+        ready?: boolean;
+        /** The number of times the container has been restarted. */
+        restartCount?: number;
+        [key: string]: unknown;
+      }>;
+      /** Current service state of pod. */
+      conditions?: Array<{
+        /** Type of condition. */
+        type?: string;
+        /** Status of the condition (True, False, Unknown). */
+        status?: string;
+        [key: string]: unknown;
+      }>;
       [key: string]: unknown;
     };
   }>;
