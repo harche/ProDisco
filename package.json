@@ -13,7 +13,8 @@
     "start": "node dist/server.js",
     "lint": "ESLINT_USE_FLAT_CONFIG=false eslint \"src/**/*.{ts,tsx}\"",
     "codegen": "tsx src/codegen/cli.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepare": "husky"
   },
   "keywords": [
     "kubernetes",
@@ -35,6 +36,7 @@
     "@typescript-eslint/eslint-plugin": "^8.47.0",
     "@typescript-eslint/parser": "^8.47.0",
     "eslint": "^9.39.1",
+    "husky": "^9.1.7",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
     "vitest": "^4.0.13"
