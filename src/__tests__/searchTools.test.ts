@@ -60,5 +60,61 @@ describe('searchToolsTool', () => {
     // Cluster-scoped Node methods should NOT include 'namespaced' (unless ForAllNamespaces)
     expect(clusterResult.tools.some(t => !t.methodName.toLowerCase().includes('namespaced'))).toBe(true);
   });
+
+  it('excludes methods by action', async () => {
+    const result = await searchToolsTool.execute({
+      resourceType: 'Pod',
+      scope: 'namespaced',
+      exclude: { actions: ['delete'] },
+      limit: 20,
+    });
+
+    // Should not contain any delete methods
+    expect(result.tools.every(t => !t.methodName.toLowerCase().includes('delete'))).toBe(true);
+    expect(result.tools.length).toBeGreaterThan(0);
+  });
+
+  it('excludes methods by multiple actions', async () => {
+    const result = await searchToolsTool.execute({
+      resourceType: 'Pod',
+      scope: 'namespaced',
+      exclude: { actions: ['delete', 'create'] },
+      limit: 20,
+    });
+
+    // Should not contain delete or create methods
+    expect(result.tools.every(t => !t.methodName.toLowerCase().includes('delete'))).toBe(true);
+    expect(result.tools.every(t => !t.methodName.toLowerCase().includes('create'))).toBe(true);
+  });
+
+  it('excludes methods by apiClass', async () => {
+    const result = await searchToolsTool.execute({
+      resourceType: 'Pod',
+      exclude: { apiClasses: ['CoreV1Api'] },
+      limit: 20,
+    });
+
+    // Should not contain any CoreV1Api methods
+    expect(result.tools.every(t => t.apiClass !== 'CoreV1Api')).toBe(true);
+    expect(result.tools.length).toBeGreaterThan(0);
+  });
+
+  it('excludes with AND logic when both action and apiClass specified', async () => {
+    const result = await searchToolsTool.execute({
+      resourceType: 'Pod',
+      exclude: { 
+        actions: ['delete'], 
+        apiClasses: ['CoreV1Api'] 
+      },
+      limit: 20,
+    });
+
+    // Should still have CoreV1Api methods (non-delete ones)
+    expect(result.tools.some(t => t.apiClass === 'CoreV1Api')).toBe(true);
+    
+    // Should not have delete methods from CoreV1Api
+    const coreV1Methods = result.tools.filter(t => t.apiClass === 'CoreV1Api');
+    expect(coreV1Methods.every(t => !t.methodName.toLowerCase().includes('delete'))).toBe(true);
+  });
 });
 

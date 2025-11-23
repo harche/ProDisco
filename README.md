@@ -46,6 +46,10 @@ Find Kubernetes API methods by resource type and action.
   resourceType: string;  // e.g., "Pod", "Deployment", "Service"
   action?: string;       // e.g., "list", "read", "create", "delete", "patch", "replace", "connect"
   scope?: 'namespaced' | 'cluster' | 'all';  // default: 'all'
+  exclude?: {            // Optional: filter out methods
+    actions?: string[];     // e.g., ["delete", "create"]
+    apiClasses?: string[];  // e.g., ["CoreV1Api"]
+  };
   limit?: number;        // Max results (default: 10, max: 50)
 }
 ```
@@ -61,8 +65,14 @@ Find Kubernetes API methods by resource type and action.
 // Create Deployment
 { resourceType: "Deployment", action: "create" }
 
-// Delete Service
-{ resourceType: "Service", action: "delete", scope: "namespaced" }
+// Pod methods excluding delete actions
+{ resourceType: "Pod", exclude: { actions: ["delete"] } }
+
+// Pod methods excluding CoreV1Api (shows only PolicyV1Api, AutoscalingV1Api, etc.)
+{ resourceType: "Pod", exclude: { apiClasses: ["CoreV1Api"] } }
+
+// Pod methods excluding delete from CoreV1Api only (AND logic)
+{ resourceType: "Pod", exclude: { actions: ["delete"], apiClasses: ["CoreV1Api"] } }
 ```
 
 **Output Example:**
@@ -79,10 +89,43 @@ Found 1 method(s) for resource "Pod", action "list", scope "namespaced"
 
 **Key Features:**
 - Structured parameter matching: specify resource type, action, and scope
+- **Exclude filtering for precise results**: Use the `exclude` parameter to filter out unwanted methods by actions and/or API classes
+  - Actions only: `{ actions: ["delete"] }` excludes all delete methods
+  - Multiple actions: `{ actions: ["delete", "create"] }` excludes both
+  - API classes only: `{ apiClasses: ["CoreV1Api"] }` excludes all CoreV1Api methods
+  - Both (AND logic): `{ actions: ["delete"], apiClasses: ["CoreV1Api"] }` excludes **only** delete methods from CoreV1Api (keeps other CoreV1Api methods and delete methods from other classes)
+  - **TIP**: Exclude is especially useful when broad searches return too many results (e.g., "Pod" matches CoreV1Api, AutoscalingV1Api, PolicyV1Api methods)
 - Shows all required parameters (including special cases like CustomObjectsApi)
 - Clear indication of return structure (`response` vs `response.items`)
 - Brief inline type information with key properties
 - Available actions: list, read, create, delete, patch, replace, connect, get, watch
+
+**Common Search Patterns:**
+```typescript
+// Pod logs: use "Log" or "PodLog", not "Pod" with "connect"
+{ resourceType: "Log" }  // Returns: CoreV1Api.readNamespacedPodLog
+
+// Pod exec/attach: use "Pod" with "connect"
+{ resourceType: "Pod", action: "connect" }  // Returns: connectGetNamespacedPodExec, connectPostNamespacedPodAttach
+
+// Pod eviction (drain nodes): use "Eviction" or "PodEviction"
+{ resourceType: "Eviction" }  // Returns: CoreV1Api.createNamespacedPodEviction
+
+// Binding pods to nodes: use "Binding" or "PodBinding"
+{ resourceType: "Binding" }  // Returns: CoreV1Api.createNamespacedPodBinding
+
+// Service account tokens: use "ServiceAccountToken"
+{ resourceType: "ServiceAccountToken" }  // Returns: CoreV1Api.createNamespacedServiceAccountToken
+
+// Cluster health: use "ComponentStatus"
+{ resourceType: "ComponentStatus" }  // Returns: CoreV1Api.listComponentStatus
+
+// Status subresources: search for the full resource name
+{ resourceType: "DeploymentStatus" }  // Returns: readNamespacedDeploymentStatus, patchNamespacedDeploymentStatus
+
+// Scale subresources: similar pattern
+{ resourceType: "DeploymentScale" }  // Returns: readNamespacedDeploymentScale, patchNamespacedDeploymentScale
+```
 
 ### 2. kubernetes.getTypeDefinition
 

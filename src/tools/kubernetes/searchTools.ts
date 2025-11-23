@@ -18,6 +18,19 @@ const SearchToolsInputSchema = z.object({
     .optional()
     .default('all')
     .describe('Resource scope: "namespaced" for namespace-scoped resources, "cluster" for cluster-wide resources, "all" for both'),
+  exclude: z
+    .object({
+      actions: z
+        .array(z.string())
+        .optional()
+        .describe('Actions to exclude (e.g., ["connect", "watch"]). Filters out methods with these action prefixes.'),
+      apiClasses: z
+        .array(z.string())
+        .optional()
+        .describe('API classes to exclude (e.g., ["CustomObjectsApi"]). Filters out methods from these API classes.'),
+    })
+    .optional()
+    .describe('Exclusion criteria. If both actions and apiClasses are specified, both must match (AND logic) to exclude a method.'),
   limit: z
     .number()
     .int()
@@ -380,12 +393,13 @@ function generateUsageExample(apiClass: string, methodName: string, parameters: 
 }
 
 /**
- * Match methods based on structured parameters: resourceType, action, scope
+ * Match methods based on structured parameters: resourceType, action, scope, exclude
  */
 function matchMethods(
   resourceType: string,
   action: string | undefined,
   scope: string,
+  exclude: { actions?: string[]; apiClasses?: string[] } | undefined,
   methods: KubernetesApiMethod[],
   limit: number
 ): KubernetesApiMethod[] {
@@ -401,7 +415,35 @@ function matchMethods(
       return false;
     }
     
-    // 2. Match resource type (case-insensitive)
+    // 2. Apply exclusion criteria
+    if (exclude) {
+      const hasActions = exclude.actions && exclude.actions.length > 0;
+      const hasApiClasses = exclude.apiClasses && exclude.apiClasses.length > 0;
+      
+      if (hasActions || hasApiClasses) {
+        const matchesActionExclusion = hasActions && 
+          exclude.actions!.some(a => lowerMethod.startsWith(a.toLowerCase()) || lowerMethod.includes(a.toLowerCase()));
+        const matchesApiClassExclusion = hasApiClasses && 
+          exclude.apiClasses!.includes(method.apiClass);
+        
+        // If both specified, must match both (AND logic) to be excluded
+        if (hasActions && hasApiClasses) {
+          if (matchesActionExclusion && matchesApiClassExclusion) {
+            return false;
+          }
+        }
+        // If only actions specified, exclude if action matches
+        else if (hasActions && matchesActionExclusion) {
+          return false;
+        }
+        // If only apiClasses specified, exclude if apiClass matches
+        else if (hasApiClasses && matchesApiClassExclusion) {
+          return false;
+        }
+      }
+    }
+    
+    // 3. Match resource type (case-insensitive)
     // Support both exact match and partial match (e.g., "pod" matches "Pod", "PodTemplate")
     const resourceMatches = 
       lowerResource === lowerResourceType || 
@@ -414,7 +456,7 @@ function matchMethods(
       return false;
     }
     
-    // 3. Match action if provided
+    // 4. Match action if provided
     if (action) {
       const lowerAction = action.toLowerCase();
       // Flexible matching: method can start with action or contain it early (for compound actions)
@@ -428,7 +470,7 @@ function matchMethods(
       }
     }
     
-    // 4. Match scope
+    // 5. Match scope
     const hasNamespaced = lowerMethod.includes('namespaced');
     const hasForAllNamespaces = lowerMethod.includes('forallnamespaces');
     
@@ -463,19 +505,41 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
   description: 
     'Find Kubernetes API methods by resource type and action. ' +
     'Returns API methods from @kubernetes/client-node that you can use directly in your scripts. ' +
-    'Parameters: resourceType (e.g., "Pod", "Deployment"), action (optional: list, read, create, delete, patch, replace), scope (namespaced/cluster/all). ' +
-    'Available actions: list (list resources), read (get single resource), create (create resource), delete (delete resource), patch (update resource), replace (replace resource), connect (exec/logs/proxy), get, watch.',
+    'Parameters: resourceType (e.g., "Pod", "Deployment"), action (optional: list, read, create, delete, patch, replace), scope (namespaced/cluster/all), exclude (optional: filter out by actions and/or apiClasses). ' +
+    'Available actions: list (list resources), read (get single resource), create (create resource), delete (delete resource), patch (update resource), replace (replace resource), connect (exec/logs/proxy), get, watch. ' +
+    'COMMON SEARCH PATTERNS: (1) Pod logs: use resourceType "Log" or "PodLog" (NOT "Pod" with action "connect"). Example: { resourceType: "Log" } returns CoreV1Api.readNamespacedPodLog. ' +
+    '(2) Pod exec/attach: use { resourceType: "Pod", action: "connect" } returns connectGetNamespacedPodExec, connectPostNamespacedPodAttach. ' +
+    '(3) Pod eviction (drain nodes): use { resourceType: "Eviction" } or { resourceType: "PodEviction" } returns CoreV1Api.createNamespacedPodEviction. ' +
+    '(4) Binding pods to nodes: use { resourceType: "Binding" } or { resourceType: "PodBinding" } returns CoreV1Api.createNamespacedPodBinding. ' +
+    '(5) Service account tokens: use { resourceType: "ServiceAccountToken" } returns CoreV1Api.createNamespacedServiceAccountToken. ' +
+    '(6) Cluster health: use { resourceType: "ComponentStatus" } returns CoreV1Api.listComponentStatus. ' +
+    '(7) Status subresources: use full resource name like { resourceType: "DeploymentStatus" }. ' +
+    '(8) Scale subresources: use full resource name like { resourceType: "DeploymentScale" }. ' +
+    'TIP: Use the exclude parameter to get more precise results by filtering out unwanted methods. ' +
+    'Exclude examples: (1) Only action: { actions: ["delete"] } excludes all delete methods. ' +
+    '(2) Multiple actions: { actions: ["delete", "create"] } excludes both delete and create methods. ' +
+    '(3) By API class: { apiClasses: ["CoreV1Api"] } excludes all CoreV1Api methods. ' +
+    '(4) Both action and apiClass (AND logic): { actions: ["delete"], apiClasses: ["CoreV1Api"] } excludes only delete methods from CoreV1Api, keeping other CoreV1Api methods and delete methods from other API classes. ' +
+    'Exclude is especially useful when searching broad resource types (e.g., "Pod" returns methods from CoreV1Api, AutoscalingV1Api, PolicyV1Api).',
   schema: SearchToolsInputSchema,
   async execute(input) {
-    const { resourceType, action, scope = 'all', limit = 10 } = input;
+    const { resourceType, action, scope = 'all', exclude, limit = 10 } = input;
 
     const methods = extractKubernetesApiMethods();
-    const results = matchMethods(resourceType, action, scope, methods, limit);
+    const results = matchMethods(resourceType, action, scope, exclude, methods, limit);
 
     // Structured output - clear and unambiguous
     let summary = `Found ${results.length} method(s) for resource "${resourceType}"`;
     if (action) summary += `, action "${action}"`;
     if (scope !== 'all') summary += `, scope "${scope}"`;
+    if (exclude) {
+      if (exclude.actions && exclude.actions.length > 0) {
+        summary += `, excluding actions: [${exclude.actions.join(', ')}]`;
+      }
+      if (exclude.apiClasses && exclude.apiClasses.length > 0) {
+        summary += `, excluding API classes: [${exclude.apiClasses.join(', ')}]`;
+      }
+    }
     summary += '\n\n';
     summary += `Write scripts to: scripts/cache/<name>.ts and run with: npx tsx scripts/cache/<name>.ts\n`;
     summary += `For detailed type definitions: use kubernetes.getTypeDefinition tool\n\n`;
