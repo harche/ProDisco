@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import * as k8s from '@kubernetes/client-node';
 import * as ts from 'typescript';
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import * as os from 'os';
 import type { ToolDefinition } from '../types.js';
@@ -83,13 +83,43 @@ type SearchToolsResult = {
   usage: string;
   paths: {
     scriptsDirectory: string;
-    packageDirectory: string;
   };
   cachedScripts: string[];
 };
 
 // Cache for Kubernetes API methods
 let apiMethodsCache: KubernetesApiMethod[] | null = null;
+
+/**
+ * Initialize scripts directory with node_modules symlink for package resolution
+ */
+function initializeScriptsDirectory(scriptsDir: string): void {
+  try {
+    // Ensure scripts directory exists
+    if (!existsSync(scriptsDir)) {
+      mkdirSync(scriptsDir, { recursive: true });
+    }
+    
+    // Create symlink to node_modules if it doesn't exist
+    // When installed via npx, dependencies are hoisted to the cache root
+    // PACKAGE_ROOT is like: /path/to/npx/cache/node_modules/@prodisco/k8s-mcp
+    // Dependencies are in: /path/to/npx/cache/node_modules
+    const nodeModulesLink = join(scriptsDir, 'node_modules');
+    const nodeModulesTarget = join(PACKAGE_ROOT, '../..');
+    
+    if (!existsSync(nodeModulesLink) && existsSync(nodeModulesTarget)) {
+      try {
+        symlinkSync(nodeModulesTarget, nodeModulesLink, 'dir');
+      } catch (err) {
+        // Symlink creation might fail on some systems, that's okay
+        console.error('Could not create symlink to node_modules:', err);
+      }
+    }
+  } catch (err) {
+    // If initialization fails, scripts can still work with NODE_PATH
+    console.error('Could not initialize scripts directory:', err);
+  }
+}
 
 /**
  * Extract type definition from a TypeScript file using TS compiler API
@@ -369,7 +399,8 @@ function generateUsageExample(apiClass: string, methodName: string, parameters: 
   const apiVar = apiClass.charAt(0).toLowerCase() + apiClass.slice(1);
   const requiredParams = parameters.filter(p => !p.optional);
   
-  let example = `// Initialize the Kubernetes client\nconst kc = new k8s.KubeConfig();\nkc.loadFromDefault();\nconst ${apiVar} = kc.makeApiClient(k8s.${apiClass});\n\n`;
+  // Start with import and async function wrapper to avoid top-level await issues
+  let example = `import * as k8s from '@kubernetes/client-node';\n\nasync function main() {\n  // Initialize the Kubernetes client\n  const kc = new k8s.KubeConfig();\n  kc.loadFromDefault();\n  const ${apiVar} = kc.makeApiClient(k8s.${apiClass});\n\n`;
   
   let paramStr = '{}';
   if (requiredParams.length > 0) {
@@ -382,19 +413,22 @@ function generateUsageExample(apiClass: string, methodName: string, parameters: 
     paramStr = `{ ${paramPairs.join(', ')} }`;
   }
   
-  example += `// IMPORTANT: Always pass object parameter (even if empty {})\nconst response = await ${apiVar}.${methodName}(${paramStr});\n\n`;
+  example += `  // IMPORTANT: Always pass object parameter (even if empty {})\n  const response = await ${apiVar}.${methodName}(${paramStr});\n\n`;
   
   if (methodName.startsWith('list')) {
-    example += `// Response structure: response.items is an array\nconst items = response.items;\nconsole.log(\`Found \${items.length} resources\`);\n// Access: items[0].metadata.name`;
+    example += `  // Response structure: response.items is an array\n  const items = response.items;\n  console.log(\`Found \${items.length} resources\`);\n  // Access: items[0].metadata.name`;
   } else if (methodName.startsWith('read') || methodName.startsWith('get')) {
-    example += `// Response IS the resource object\nconsole.log(\`Resource: \${response.metadata?.name}\`);\n// Access: response.spec, response.status, etc.`;
+    example += `  // Response IS the resource object\n  console.log(\`Resource: \${response.metadata?.name}\`);\n  // Access: response.spec, response.status, etc.`;
   } else if (methodName.startsWith('create')) {
-    example += `// Response IS the created resource\nconsole.log(\`Created: \${response.metadata?.name}\`);`;
+    example += `  // Response IS the created resource\n  console.log(\`Created: \${response.metadata?.name}\`);`;
   } else if (methodName.startsWith('delete')) {
-    example += `// Response IS the status object\nconsole.log(\`Status: \${response.status}\`);`;
+    example += `  // Response IS the status object\n  console.log(\`Status: \${response.status}\`);`;
   } else {
-    example += `// Response contains the result directly\nconsole.log(response);`;
+    example += `  // Response contains the result directly\n  console.log(response);`;
   }
+  
+  // Close the function and add the call
+  example += `\n}\n\n// Execute the function\nmain();`;
   
   return example;
 }
@@ -542,6 +576,9 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
 
     // Define paths early so they can be used in summary
     const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+    
+    // Initialize scripts directory with node_modules symlink
+    initializeScriptsDirectory(scriptsDirectory);
 
     // List existing cached scripts
     let cachedScripts: string[] = [];
@@ -636,8 +673,9 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       '- List operations return: response.items (array)\n' +
       '- Single resource operations return: response (object)\n' +
       `- Write scripts to: ${scriptsDirectory}/<yourscript>.ts\n` +
-      `- Run scripts with: npx tsx ${scriptsDirectory}/<yourscript>.ts\n` +
-      `- Import dependencies from: ${PACKAGE_ROOT}/node_modules/@kubernetes/client-node`;
+      `- IMPORTANT: Import using package name: import * as k8s from '@kubernetes/client-node';\n` +
+      `- Run with: npx tsx ${scriptsDirectory}/<yourscript>.ts\n` +
+      `- The @kubernetes/client-node package is available (installed with this MCP server)`;
 
     return {
       summary,
@@ -646,7 +684,6 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       usage,
       paths: {
         scriptsDirectory,
-        packageDirectory: PACKAGE_ROOT,
       },
       cachedScripts,
     };
