@@ -8,7 +8,8 @@
     "prodisco-k8s": "dist/server.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
