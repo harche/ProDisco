@@ -1,9 +1,12 @@
 {
-  "name": "kubernetes-mcp",
+  "name": "@prodisco/k8s-mcp",
   "version": "0.1.0",
-  "description": "Kubernetes MCP server with progressive disclosure and CRD support",
+  "description": "ProDisco: Kubernetes MCP server with progressive disclosure",
   "type": "module",
   "main": "dist/server.js",
+  "bin": {
+    "prodisco-k8s": "dist/server.js"
+  },
   "files": [
     "dist"
   ],
@@ -19,12 +22,24 @@
   },
   "keywords": [
     "kubernetes",
+    "k8s",
     "mcp",
+    "model-context-protocol",
+    "prodisco",
+    "progressive-disclosure",
     "agent",
+    "claude",
     "typescript"
   ],
-  "author": "",
+  "author": "Harshal Patil",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/harche/ProDisco.git"
+  },
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@kubernetes/client-node": "^1.4.0",
     "@modelcontextprotocol/sdk": "^1.22.0",
