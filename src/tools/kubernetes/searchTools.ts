@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import * as k8s from '@kubernetes/client-node';
 import * as ts from 'typescript';
-import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, symlinkSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, mkdirSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import * as os from 'os';
 import type { ToolDefinition } from '../types.js';
