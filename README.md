@@ -1,10 +1,12 @@
-# ProDisco (Progressive Disclosure Kuberentes MCP Server)
+# ProDisco (Progressive Disclosure Kubernetes MCP Server)
 
-ProDisco gives MCP agents Kubernetes access that exactly follows Anthropic’s [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the server exposes TypeScript modules, agents discover them through the filesystem, write code, and only the final console output returns to the chat.
+ProDisco gives AI agents Kubernetes access that closely follows Anthropic’s [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes search tools which in turn surface TypeScript modules, agents discover them to write code, and only the final console output returns to the agent.
 
 ## Why Progressive Disclosure Matters
 
-Anthropic’s latest guidance explains why MCP servers should progressively reveal capabilities instead of dumping every tool definition into the model context. When agents explore a filesystem of TypeScript modules, as they do with ProDisco, they only load what they need and process data inside the execution environment, then return a concise result to the chat. This keeps token usage low, improves latency, and avoids copying large intermediate payloads through the model ([source](https://www.anthropic.com/engineering/code-execution-with-mcp)).
+Anthropic’s latest guidance explains why MCP servers should progressively reveal capabilities instead of dumping every tool definition into the model context. When agents explore a filesystem of TypeScript modules, they only load what they need and process data inside the execution environment, then return a concise result to the chat. This keeps token usage low, improves latency, and avoids copying large intermediate payloads through the model ([source](https://www.anthropic.com/engineering/code-execution-with-mcp)).
+
+ProDisco goes a step further: instead of exposing custom TypeScript modules, it provides a structured parameter search tool that returns the most suitable methods from the official Kubernetes client library, including the type definitions for their input and return values. This lets agents dynamically interact with the upstream Kubernetes library while avoiding any ongoing maintenance burden in this repository to mirror or wrap those APIs.
 
 In practice that means:
 - Agents only see a single advertised tool (`kubernetes.searchTools`); they call it with structured parameters (resourceType, action, scope) to discover the TypeScript modules (get pods, list nodes, fetch logs, etc.) that the server exposes, then write their own code to compose those modules without loading unused schemas.
