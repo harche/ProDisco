@@ -1,6 +1,8 @@
 import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -26,7 +28,13 @@ const server = new McpServer(
   },
   {
     instructions:
-      'Kubernetes operations via Progressive Disclosure. Use the kubernetes.searchTools tool to discover available operations. The tool returns file:// URIs pointing to TypeScript declaration files (.d.ts) that show input/output types. Use these types to write scripts that import from "dist/tools/kubernetes/*.js". Example: import { listPodsTool } from "./dist/tools/kubernetes/listPods.js"; const result = await listPodsTool.execute({ namespace: "default" });',
+      'Kubernetes operations via Progressive Disclosure. Use the kubernetes.searchTools tool to discover available operations. ' +
+      'The tool returns available Kubernetes API methods and includes a "paths" object with: ' +
+      '(1) scriptsDirectory: where to write helper scripts (e.g., ~/.prodisco/scripts/cache/), ' +
+      '(2) packageDirectory: where dependencies are installed (use for imports). ' +
+      'Write scripts to the scriptsDirectory path and import dependencies from packageDirectory/node_modules/@kubernetes/client-node. ' +
+      'Example: import * as k8s from \'/path/from/packageDirectory/node_modules/@kubernetes/client-node\'. ' +
+      'Always use absolute paths from the paths object to ensure scripts work from any directory.',
   },
 );
 
@@ -142,6 +150,11 @@ server.registerTool(
 );
 
 async function main() {
+  // Ensure ~/.prodisco/scripts/cache/ directory exists
+  const scriptsDir = path.join(os.homedir(), '.prodisco', 'scripts', 'cache');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  console.error(`📝 Scripts directory: ${scriptsDir}`);
+  
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('Kubernetes MCP server ready on stdio');

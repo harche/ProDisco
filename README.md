@@ -28,7 +28,33 @@ Only **one tool** (`kubernetes.searchTools`) is advertised to the agent. Everyth
 
 ### Scripts cache convention
 
-Agents should write any helper scripts to `scripts/cache/<name>.ts` and execute them with `npx tsx scripts/cache/<name>.ts --flag=value --another=value2` (add as many flags as needed). Scripts must parse CLI args (or env vars) for every required value—never hardcode namespaces, pod names, etc.—and should print a brief usage message if arguments are missing. The `kubernetes.searchTools` response now lists any cached scripts so agents can reuse or update them instead of creating duplicates.
+**Script Location:** `~/.prodisco/scripts/cache/`
+
+ProDisco automatically creates a `~/.prodisco/scripts/cache/` directory in your home directory for storing helper scripts. This ensures scripts work from any directory and persist across sessions.
+
+**How it works:**
+
+1. Call `kubernetes.searchTools` to get the `paths` object:
+   - `scriptsDirectory`: Where to write scripts (e.g., `~/.prodisco/scripts/cache/`)
+   - `packageDirectory`: Where dependencies are installed (use for imports)
+
+2. Write scripts to the `scriptsDirectory` path
+
+3. Import Kubernetes client from the `packageDirectory`:
+   ```typescript
+   import * as k8s from '/path/to/packageDirectory/node_modules/@kubernetes/client-node';
+   ```
+
+4. Execute with absolute paths:
+   ```bash
+   npx tsx ~/.prodisco/scripts/cache/<yourscript>.ts --flag=value
+   ```
+
+**Best practices:**
+- Always use paths from `kubernetes.searchTools` response (don't hardcode)
+- Scripts must parse CLI args or env vars for all required values
+- Print a brief usage message if arguments are missing
+- Scripts persist across sessions and work from any directory
 
 ---
 
@@ -85,6 +111,18 @@ Found 1 method(s) for resource "Pod", action "list", scope "namespaced"
    return_types: export class V1PodList {
      key properties: apiVersion?: string;, items: Array<V1Pod>;, kind?: string;
      (use kubernetes.getTypeDefinition for complete type details)
+
+USAGE:
+- All methods require object parameter: await api.method({ param: value })
+- Write scripts to: /Users/you/.prodisco/scripts/cache/<yourscript>.ts
+- Run scripts with: npx tsx /Users/you/.prodisco/scripts/cache/<yourscript>.ts
+- Import dependencies from: /path/to/package/node_modules/@kubernetes/client-node
+
+Paths (use these in your scripts):
+{
+  "scriptsDirectory": "/Users/you/.prodisco/scripts/cache",
+  "packageDirectory": "/path/to/kubernetes-mcp"
+}
 ```
 
 **Key Features:**

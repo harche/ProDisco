@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import * as k8s from '@kubernetes/client-node';
 import * as ts from 'typescript';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join } from 'path';
+import * as os from 'os';
 import type { ToolDefinition } from '../types.js';
+import { PACKAGE_ROOT } from '../../util/paths.js';
 
 const SearchToolsInputSchema = z.object({
   resourceType: z
@@ -79,6 +81,11 @@ type SearchToolsResult = {
   tools: KubernetesApiMethod[];
   totalMatches: number;
   usage: string;
+  paths: {
+    scriptsDirectory: string;
+    packageDirectory: string;
+  };
+  cachedScripts: string[];
 };
 
 // Cache for Kubernetes API methods
@@ -533,6 +540,21 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     const methods = extractKubernetesApiMethods();
     const results = matchMethods(resourceType, action, scope, exclude, methods, limit);
 
+    // Define paths early so they can be used in summary
+    const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+
+    // List existing cached scripts
+    let cachedScripts: string[] = [];
+    try {
+      if (existsSync(scriptsDirectory)) {
+        cachedScripts = readdirSync(scriptsDirectory)
+          .filter(f => f.endsWith('.ts'))
+          .sort();
+      }
+    } catch {
+      // Ignore errors if directory doesn't exist or can't be read
+    }
+
     // Structured output - clear and unambiguous
     let summary = `Found ${results.length} method(s) for resource "${resourceType}"`;
     if (action) summary += `, action "${action}"`;
@@ -546,8 +568,18 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       }
     }
     summary += '\n\n';
-    summary += `Write scripts to: scripts/cache/<name>.ts and run with: npx tsx scripts/cache/<name>.ts\n`;
-    summary += `IMPORTANT: Check scripts/cache/ directory first to avoid duplicating existing implementations\n`;
+    
+    // Show existing cached scripts if any
+    if (cachedScripts.length > 0) {
+      summary += `📝 EXISTING CACHED SCRIPTS (${cachedScripts.length}):\n`;
+      cachedScripts.forEach(script => {
+        summary += `   - ${script}\n`;
+      });
+      summary += `   (Location: ${scriptsDirectory})\n\n`;
+    }
+    
+    summary += `Write scripts to: ${scriptsDirectory}/<name>.ts and run with: npx tsx ${scriptsDirectory}/<name>.ts\n`;
+    summary += `IMPORTANT: Check existing cached scripts above before creating new ones to avoid duplicates\n`;
     summary += `Custom script naming convention: Use k8s library pattern (e.g., list-namespaced-pod, read-namespaced-pod-log)\n`;
     summary += `For detailed type definitions: use kubernetes.getTypeDefinition tool\n\n`;
     
@@ -603,14 +635,20 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       '- No required params: await api.method({})\n' +
       '- List operations return: response.items (array)\n' +
       '- Single resource operations return: response (object)\n' +
-      '- Write scripts to: scripts/cache/<yourscript>.ts\n' +
-      '- Run scripts with: npx tsx scripts/cache/<yourscript>.ts';
+      `- Write scripts to: ${scriptsDirectory}/<yourscript>.ts\n` +
+      `- Run scripts with: npx tsx ${scriptsDirectory}/<yourscript>.ts\n` +
+      `- Import dependencies from: ${PACKAGE_ROOT}/node_modules/@kubernetes/client-node`;
 
     return {
       summary,
       tools: results,
       totalMatches: results.length,
       usage,
+      paths: {
+        scriptsDirectory,
+        packageDirectory: PACKAGE_ROOT,
+      },
+      cachedScripts,
     };
   },
 };
