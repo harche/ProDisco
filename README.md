@@ -8,12 +8,6 @@ Anthropic’s latest guidance explains why MCP servers should progressively reve
 
 ProDisco goes a step further: instead of exposing custom TypeScript modules, it provides a structured parameter search tool that returns the most suitable methods from the official Kubernetes client library, including the type definitions for their input and return values. This lets agents dynamically interact with the upstream Kubernetes library while avoiding any ongoing maintenance burden in this repository to mirror or wrap those APIs.
 
-In practice that means:
-- Agents only see a single advertised tool (`kubernetes.searchTools`); they call it with structured parameters (resourceType, action, scope) to discover the TypeScript modules (get pods, list nodes, fetch logs, etc.) that the server exposes, then write their own code to compose those modules without loading unused schemas.
-- Letting the model issue one instruction instead of micromanaging dozens of sequential tool calls.
-- Agents can mix and match multiple Kubernetes modules joining pod stats with node health, or correlating events with logs without shuttling raw outputs between tools in the chat loop, which dramatically cuts token usage.
-
-ProDisco ships with this layout out of the box, so any Claude Code or MCP-enabled agent can immediately adopt the progressive-disclosure workflow.
 
 ---
 
