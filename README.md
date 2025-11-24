@@ -22,12 +22,11 @@ ProDisco ships with this layout out of the box, so any Claude Code or MCP-enable
 Add ProDisco to Claude Code with a single command:
 
 ```bash
-# For published package (once available on npm)
 claude mcp add ProDisco --env KUBECONFIG="${HOME}/.kube/config" -- npx -y @prodisco/k8s-mcp
 ```
 Remove if needed:
 ```bash
-claude mcp remove ProDisco -s local
+claude mcp remove ProDisco
 ```
 
 **Optional environment variables:**
