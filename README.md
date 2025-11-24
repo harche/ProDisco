@@ -17,14 +17,6 @@ ProDisco ships with this layout out of the box, so any Claude Code or MCP-enable
 
 ## Quick Start
 
-### Install via npx (Recommended)
-
-No installation required! Run directly with `npx`:
-
-```bash
-npx @prodisco/k8s-mcp
-```
-
 ### Add to Claude Code
 
 Add ProDisco to Claude Code with a single command:
@@ -32,7 +24,7 @@ Add ProDisco to Claude Code with a single command:
 ```bash
 # For published package (once available on npm)
 claude mcp add ProDisco --env KUBECONFIG="${HOME}/.kube/config" -- npx -y @prodisco/k8s-mcp
-
+```
 Remove if needed:
 ```bash
 claude mcp remove ProDisco -s local
