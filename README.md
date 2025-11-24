@@ -17,7 +17,38 @@ ProDisco ships with this layout out of the box, so any Claude Code or MCP-enable
 
 ## Quick Start
 
+### Install via npx (Recommended)
+
+No installation required! Run directly with `npx`:
+
 ```bash
+npx @prodisco/k8s-mcp
+```
+
+### Add to Claude Code
+
+Add ProDisco to Claude Code with a single command:
+
+```bash
+# For published package (once available on npm)
+claude mcp add ProDisco --env KUBECONFIG="${HOME}/.kube/config" -- npx -y @prodisco/k8s-mcp
+
+Remove if needed:
+```bash
+claude mcp remove ProDisco -s local
+```
+
+**Optional environment variables:**
+- `KUBECONFIG`: Path to your kubeconfig file (defaults to `~/.kube/config`)
+- `K8S_CONTEXT`: Kubernetes context to use (defaults to current context)
+
+### Development Setup
+
+For local development:
+
+```bash
+git clone https://github.com/harche/ProDisco.git
+cd ProDisco
 npm install
 npm run build
 claude mcp add --transport stdio prodisco -- node dist/server.js
