@@ -17,10 +17,7 @@ ProDisco ships with this layout out of the box, so any Claude Code or MCP-enable
 
 ## Demo
 
-<video controls width="960">
-  <source src="https://github.com/harche/ProDisco/raw/main/docs/demo.mp4" type="video/mp4" />
-  Your browser does not support the video tag.
-</video>
+![Demo](docs/demo.gif)
 
 ---
 
