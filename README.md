@@ -58,27 +58,35 @@ ProDisco automatically creates a `~/.prodisco/scripts/cache/` directory in your 
 
 ## Available Tools
 
-ProDisco exposes two main tools for agents to discover and interact with the Kubernetes API:
+ProDisco exposes a single tool with two modes for agents to discover and interact with the Kubernetes API:
 
-### 1. kubernetes.searchTools
+### kubernetes.searchTools
 
-Find Kubernetes API methods by resource type and action.
+Find Kubernetes API methods or get type definitions.
 
 **Input:**
 ```typescript
 {
-  resourceType: string;  // e.g., "Pod", "Deployment", "Service"
-  action?: string;       // e.g., "list", "read", "create", "delete", "patch", "replace", "connect"
+  // Mode selection
+  mode?: 'methods' | 'types';  // default: 'methods'
+
+  // Methods mode parameters
+  resourceType?: string;  // e.g., "Pod", "Deployment", "Service"
+  action?: string;        // e.g., "list", "read", "create", "delete", "patch", "replace", "connect"
   scope?: 'namespaced' | 'cluster' | 'all';  // default: 'all'
-  exclude?: {            // Optional: filter out methods
-    actions?: string[];     // e.g., ["delete", "create"]
-    apiClasses?: string[];  // e.g., ["CoreV1Api"]
+  exclude?: {             // Optional: filter out methods
+    actions?: string[];      // e.g., ["delete", "create"]
+    apiClasses?: string[];   // e.g., ["CoreV1Api"]
   };
-  limit?: number;        // Max results (default: 10, max: 50)
+  limit?: number;         // Max results (default: 10, max: 50)
+
+  // Types mode parameters
+  types?: string[];       // Type names or property paths
+  depth?: number;         // Nested type depth (default: 1, max: 2)
 }
 ```
 
-**Example Queries:**
+**Methods Mode Examples:**
 ```typescript
 // List all Pod-related methods
 { resourceType: "Pod" }
@@ -94,29 +102,24 @@ Find Kubernetes API methods by resource type and action.
 
 // Pod methods excluding CoreV1Api (shows only PolicyV1Api, AutoscalingV1Api, etc.)
 { resourceType: "Pod", exclude: { apiClasses: ["CoreV1Api"] } }
-
-// Pod methods excluding delete from CoreV1Api only (AND logic)
-{ resourceType: "Pod", exclude: { actions: ["delete"], apiClasses: ["CoreV1Api"] } }
 ```
 
-### 2. kubernetes.getTypeDefinition
-
-Get detailed TypeScript type definitions for Kubernetes types.
-
-**Input:**
+**Types Mode Examples:**
 ```typescript
-{
-  types: string[];      // Type names or property paths
-                        // Examples: ["V1Pod", "V1Deployment.spec", "V1Pod.spec.containers"]
-  depth?: number;       // Nested type depth (default: 1, max: 2)
-}
-```
+// Get V1Pod type definition
+{ mode: "types", types: ["V1Pod"] }
 
-**Dot Notation Support:**
-Navigate directly to nested types:
-- `V1Deployment.spec` → Returns `V1DeploymentSpec` type
-- `V1Pod.spec.containers` → Returns `V1Container` type (array element)
-- `V1Pod.status.conditions` → Returns `V1PodCondition` type
+// Get multiple types
+{ mode: "types", types: ["V1Pod", "V1Deployment", "V1Service"] }
+
+// Navigate to nested types using dot notation
+{ mode: "types", types: ["V1Deployment.spec"] }  // Returns V1DeploymentSpec
+{ mode: "types", types: ["V1Pod.spec.containers"] }  // Returns V1Container (array element)
+{ mode: "types", types: ["V1Pod.status.conditions"] }  // Returns V1PodCondition
+
+// Include nested types at depth 2
+{ mode: "types", types: ["V1Pod"], depth: 2 }
+```
 
 ---
 
