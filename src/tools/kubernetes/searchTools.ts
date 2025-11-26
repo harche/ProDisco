@@ -2003,7 +2003,8 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     'Params: searchTerm (optional), limit, offset. ' +
     'Example: { mode: "scripts", searchTerm: "pod" } ' +
     'Actions: list, read, create, delete, patch, replace, connect, get, watch. ' +
-    'Scopes: namespaced, cluster, all.',
+    'Scopes: namespaced, cluster, all. ' +
+    'Docs: https://github.com/harche/ProDisco/blob/main/docs/search-tools.md',
   schema: SearchToolsInputSchema,
   async execute(input) {
     const { mode = 'methods' } = input;

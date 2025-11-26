@@ -58,17 +58,19 @@ ProDisco automatically creates a `~/.prodisco/scripts/cache/` directory in your 
 
 ## Available Tools
 
-ProDisco exposes a single tool with two modes for agents to discover and interact with the Kubernetes API:
+ProDisco exposes a single tool with three modes for agents to discover and interact with the Kubernetes API.
+
+For comprehensive documentation including architecture details and example workflows, see [docs/search-tools.md](docs/search-tools.md).
 
 ### kubernetes.searchTools
 
-Find Kubernetes API methods or get type definitions.
+Find Kubernetes API methods, get type definitions, or search cached scripts.
 
 **Input:**
 ```typescript
 {
   // Mode selection
-  mode?: 'methods' | 'types';  // default: 'methods'
+  mode?: 'methods' | 'types' | 'scripts';  // default: 'methods'
 
   // Methods mode parameters
   resourceType?: string;  // e.g., "Pod", "Deployment", "Service"
@@ -78,11 +80,17 @@ Find Kubernetes API methods or get type definitions.
     actions?: string[];      // e.g., ["delete", "create"]
     apiClasses?: string[];   // e.g., ["CoreV1Api"]
   };
-  limit?: number;         // Max results (default: 10, max: 50)
 
   // Types mode parameters
   types?: string[];       // Type names or property paths
   depth?: number;         // Nested type depth (default: 1, max: 2)
+
+  // Scripts mode parameters
+  searchTerm?: string;    // Search term (omit to list all scripts)
+
+  // Shared parameters (all modes)
+  limit?: number;         // Max results (default: 10, max: 50)
+  offset?: number;        // Skip N results for pagination (default: 0)
 }
 ```
 
@@ -119,6 +127,21 @@ Find Kubernetes API methods or get type definitions.
 
 // Include nested types at depth 2
 { mode: "types", types: ["V1Pod"], depth: 2 }
+```
+
+**Scripts Mode Examples:**
+```typescript
+// List all cached scripts
+{ mode: "scripts" }
+
+// Search for pod-related scripts
+{ mode: "scripts", searchTerm: "pod" }
+
+// Search for logging scripts
+{ mode: "scripts", searchTerm: "logs" }
+
+// Paginate through scripts
+{ mode: "scripts", limit: 5, offset: 5 }
 ```
 
 ---
