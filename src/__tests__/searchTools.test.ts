@@ -13,6 +13,7 @@ const searchTools = searchToolsTool.execute.bind(searchToolsTool) as (input: {
     apiClasses?: string[];
   };
   limit?: number;
+  offset?: number;
 }) => ReturnType<typeof searchToolsTool.execute>;
 
 describe('kubernetes.searchTools', () => {
@@ -465,6 +466,449 @@ describe('kubernetes.searchTools', () => {
       const result = await searchTools({ resourceType: 'Pod', limit });
 
       expect(result.tools.length).toBeLessThanOrEqual(limit);
+    });
+  });
+
+  describe('Pagination', () => {
+    it('returns pagination metadata in results', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 5 });
+
+      expect(result).toHaveProperty('pagination');
+      expect(result.pagination).toHaveProperty('offset');
+      expect(result.pagination).toHaveProperty('limit');
+      expect(result.pagination).toHaveProperty('hasMore');
+      expect(typeof result.pagination.offset).toBe('number');
+      expect(typeof result.pagination.limit).toBe('number');
+      expect(typeof result.pagination.hasMore).toBe('boolean');
+    });
+
+    it('defaults offset to 0', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 5 });
+
+      expect(result.pagination.offset).toBe(0);
+    });
+
+    it('respects offset parameter', async () => {
+      const limit = 5;
+      const firstPage = await searchTools({ resourceType: 'Pod', limit, offset: 0 });
+      const secondPage = await searchTools({ resourceType: 'Pod', limit, offset: 5 });
+
+      expect(firstPage.pagination.offset).toBe(0);
+      expect(secondPage.pagination.offset).toBe(5);
+
+      // Results should be different between pages
+      if (firstPage.tools.length > 0 && secondPage.tools.length > 0) {
+        const firstPageIds = firstPage.tools.map(t => `${t.apiClass}.${t.methodName}`);
+        const secondPageIds = secondPage.tools.map(t => `${t.apiClass}.${t.methodName}`);
+
+        // No overlap between pages
+        const overlap = firstPageIds.filter(id => secondPageIds.includes(id));
+        expect(overlap.length).toBe(0);
+      }
+    });
+
+    it('sets hasMore to true when more results exist', async () => {
+      // Get all Pod methods first to know total count
+      const allResults = await searchTools({ resourceType: 'Pod', limit: 50 });
+
+      if (allResults.totalMatches > 5) {
+        const result = await searchTools({ resourceType: 'Pod', limit: 5, offset: 0 });
+        expect(result.pagination.hasMore).toBe(true);
+      }
+    });
+
+    it('sets hasMore to false on last page', async () => {
+      // Get a page that should be the last
+      const allResults = await searchTools({ resourceType: 'Pod', limit: 50 });
+      const total = allResults.totalMatches;
+
+      // Request from an offset that leaves no more results
+      const result = await searchTools({ resourceType: 'Pod', limit: 50, offset: 0 });
+
+      if (result.tools.length === total) {
+        expect(result.pagination.hasMore).toBe(false);
+      }
+    });
+
+    it('returns empty results when offset exceeds total', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 5, offset: 1000 });
+
+      expect(result.tools.length).toBe(0);
+      expect(result.pagination.hasMore).toBe(false);
+    });
+
+    it('totalMatches reflects total filtered results, not page size', async () => {
+      const limit = 3;
+      const result = await searchTools({ resourceType: 'Pod', limit });
+
+      // totalMatches should be >= the number of tools returned
+      expect(result.totalMatches).toBeGreaterThanOrEqual(result.tools.length);
+
+      // If there are more results, totalMatches should be greater than limit
+      if (result.pagination.hasMore) {
+        expect(result.totalMatches).toBeGreaterThan(limit);
+      }
+    });
+
+    it('pagination works with action filter', async () => {
+      const firstPage = await searchTools({
+        resourceType: 'Pod',
+        action: 'list',
+        limit: 2,
+        offset: 0
+      });
+      const secondPage = await searchTools({
+        resourceType: 'Pod',
+        action: 'list',
+        limit: 2,
+        offset: 2
+      });
+
+      // Both should only have list methods
+      expect(firstPage.tools.every(t => t.methodName.toLowerCase().includes('list'))).toBe(true);
+      expect(secondPage.tools.every(t => t.methodName.toLowerCase().includes('list'))).toBe(true);
+
+      // Should be different results
+      if (firstPage.tools.length > 0 && secondPage.tools.length > 0) {
+        const firstIds = firstPage.tools.map(t => t.methodName);
+        const secondIds = secondPage.tools.map(t => t.methodName);
+        const overlap = firstIds.filter(id => secondIds.includes(id));
+        expect(overlap.length).toBe(0);
+      }
+    });
+
+    it('pagination works with exclude filter', async () => {
+      const result = await searchTools({
+        resourceType: 'Pod',
+        exclude: { actions: ['delete'] },
+        limit: 5,
+        offset: 5
+      });
+
+      // Should still exclude delete methods on paginated results
+      expect(result.tools.every(t => !t.methodName.toLowerCase().includes('delete'))).toBe(true);
+      expect(result.pagination.offset).toBe(5);
+    });
+
+    it('includes pagination info in summary when paginating', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 5, offset: 5 });
+
+      // Summary should mention page info when offset > 0
+      expect(result.summary).toContain('Page:');
+    });
+  });
+
+  describe('Typo Tolerance', () => {
+    it('finds results with minor typos in resource type', async () => {
+      // "Deplyment" instead of "Deployment" (one letter missing - within tolerance)
+      const result = await searchTools({ resourceType: 'Deplyment' });
+
+      // Typo tolerance should find Deployment
+      // Note: if this fails, it means the typo is too different
+      expect(result.tools.length).toBeGreaterThan(0);
+      expect(result.tools.some(t => t.resourceType === 'Deployment')).toBe(true);
+    });
+
+    it('finds results with case variations', async () => {
+      const lowercase = await searchTools({ resourceType: 'pod' });
+      const uppercase = await searchTools({ resourceType: 'POD' });
+      const mixedCase = await searchTools({ resourceType: 'PoD' });
+
+      expect(lowercase.tools.length).toBeGreaterThan(0);
+      expect(uppercase.tools.length).toBeGreaterThan(0);
+      expect(mixedCase.tools.length).toBeGreaterThan(0);
+
+      // All should find Pod resources
+      expect(lowercase.tools.some(t => t.resourceType === 'Pod')).toBe(true);
+      expect(uppercase.tools.some(t => t.resourceType === 'Pod')).toBe(true);
+      expect(mixedCase.tools.some(t => t.resourceType === 'Pod')).toBe(true);
+    });
+  });
+
+  describe('Facets', () => {
+    it('returns facets in results', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 10 });
+
+      expect(result).toHaveProperty('facets');
+      expect(result.facets).toHaveProperty('apiClass');
+      expect(result.facets).toHaveProperty('action');
+      expect(result.facets).toHaveProperty('scope');
+    });
+
+    it('facets contain counts for each category', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 50 });
+
+      // Should have at least some API class facets
+      expect(Object.keys(result.facets!.apiClass).length).toBeGreaterThan(0);
+
+      // Each facet value should be a number
+      for (const count of Object.values(result.facets!.apiClass)) {
+        expect(typeof count).toBe('number');
+        expect(count).toBeGreaterThan(0);
+      }
+    });
+
+    it('facets include CoreV1Api for Pod resources', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 10 });
+
+      expect(result.facets!.apiClass).toHaveProperty('CoreV1Api');
+    });
+  });
+
+  describe('Search Metadata', () => {
+    it('returns searchTime in results', async () => {
+      const result = await searchTools({ resourceType: 'Pod' });
+
+      expect(result).toHaveProperty('searchTime');
+      expect(typeof result.searchTime).toBe('number');
+      expect(result.searchTime).toBeGreaterThanOrEqual(0);
+    });
+
+    it('returns paths in results', async () => {
+      const result = await searchTools({ resourceType: 'Pod' });
+
+      expect(result).toHaveProperty('paths');
+      expect(result.paths).toHaveProperty('scriptsDirectory');
+      expect(typeof result.paths.scriptsDirectory).toBe('string');
+      expect(result.paths.scriptsDirectory).toContain('.prodisco');
+    });
+
+    it('returns cachedScripts array in results', async () => {
+      const result = await searchTools({ resourceType: 'Pod' });
+
+      expect(result).toHaveProperty('cachedScripts');
+      expect(Array.isArray(result.cachedScripts)).toBe(true);
+    });
+  });
+
+  describe('Additional Actions', () => {
+    it('filters by "replace" action', async () => {
+      const result = await searchTools({
+        resourceType: 'Deployment',
+        action: 'replace',
+      });
+
+      expect(result.tools.length).toBeGreaterThan(0);
+      expect(result.tools.every(t => t.methodName.toLowerCase().includes('replace'))).toBe(true);
+    });
+
+    it('filters by "watch" action', async () => {
+      const result = await searchTools({
+        resourceType: 'Pod',
+        action: 'watch',
+      });
+
+      // Watch methods may or may not exist depending on the k8s client version
+      if (result.tools.length > 0) {
+        expect(result.tools.every(t => t.methodName.toLowerCase().includes('watch'))).toBe(true);
+      }
+    });
+
+    it('filters by "get" action', async () => {
+      const result = await searchTools({
+        resourceType: 'Pod',
+        action: 'get',
+      });
+
+      if (result.tools.length > 0) {
+        expect(result.tools.every(t => t.methodName.toLowerCase().startsWith('get'))).toBe(true);
+      }
+    });
+  });
+
+  describe('Edge Cases', () => {
+    it('handles empty exclude arrays gracefully', async () => {
+      const result = await searchTools({
+        resourceType: 'Pod',
+        exclude: { actions: [], apiClasses: [] },
+      });
+
+      // Should return results as if no exclusions were applied
+      expect(result.tools.length).toBeGreaterThan(0);
+    });
+
+    it('handles multiple API class exclusions', async () => {
+      const result = await searchTools({
+        resourceType: 'Pod',
+        exclude: { apiClasses: ['CoreV1Api', 'AutoscalingV1Api'] },
+      });
+
+      expect(result.tools.every(t => t.apiClass !== 'CoreV1Api')).toBe(true);
+      expect(result.tools.every(t => t.apiClass !== 'AutoscalingV1Api')).toBe(true);
+    });
+
+    it('handles non-existent resource type', async () => {
+      const result = await searchTools({ resourceType: 'NonExistentResource12345' });
+
+      expect(result.tools.length).toBe(0);
+      expect(result.totalMatches).toBe(0);
+    });
+
+    it('returns results for very short resource type', async () => {
+      // "Job" is a valid 3-letter resource
+      const result = await searchTools({ resourceType: 'Job' });
+
+      expect(result.tools.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('ForAllNamespaces Scope', () => {
+    it('cluster scope includes forAllNamespaces methods', async () => {
+      const result = await searchTools({
+        resourceType: 'Pod',
+        action: 'list',
+        scope: 'cluster',
+        limit: 20,
+      });
+
+      // Should include listPodForAllNamespaces
+      expect(result.tools.some(t =>
+        t.methodName.toLowerCase().includes('forallnamespaces')
+      )).toBe(true);
+    });
+
+    it('namespaced scope excludes forAllNamespaces methods', async () => {
+      const result = await searchTools({
+        resourceType: 'Pod',
+        action: 'list',
+        scope: 'namespaced',
+        limit: 20,
+      });
+
+      // Should NOT include forAllNamespaces methods
+      expect(result.tools.every(t =>
+        !t.methodName.toLowerCase().includes('forallnamespaces')
+      )).toBe(true);
+    });
+  });
+
+  describe('Custom Resources', () => {
+    it('finds CustomObjectsApi methods', async () => {
+      const result = await searchTools({
+        resourceType: 'CustomObject',
+        limit: 20,
+      });
+
+      expect(result.tools.length).toBeGreaterThan(0);
+      expect(result.tools.some(t => t.apiClass === 'CustomObjectsApi')).toBe(true);
+    });
+  });
+
+  describe('Method Details', () => {
+    it('includes valid example code', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 1 });
+
+      expect(result.tools.length).toBeGreaterThan(0);
+      const method = result.tools[0];
+
+      expect(method.example).toContain('import * as k8s');
+      expect(method.example).toContain('KubeConfig');
+      expect(method.example).toContain(method.apiClass);
+    });
+
+    it('inputSchema has correct structure', async () => {
+      const result = await searchTools({ resourceType: 'Pod', action: 'list', scope: 'namespaced', limit: 1 });
+
+      expect(result.tools.length).toBeGreaterThan(0);
+      const method = result.tools[0];
+
+      expect(method.inputSchema).toHaveProperty('type', 'object');
+      expect(method.inputSchema).toHaveProperty('properties');
+      expect(method.inputSchema).toHaveProperty('required');
+      expect(method.inputSchema).toHaveProperty('description');
+      expect(Array.isArray(method.inputSchema.required)).toBe(true);
+    });
+
+    it('outputSchema has correct structure', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 1 });
+
+      expect(result.tools.length).toBeGreaterThan(0);
+      const method = result.tools[0];
+
+      expect(method.outputSchema).toHaveProperty('type', 'object');
+      expect(method.outputSchema).toHaveProperty('description');
+      expect(method.outputSchema).toHaveProperty('properties');
+    });
+
+    it('list methods indicate array return in outputSchema', async () => {
+      const result = await searchTools({ resourceType: 'Pod', action: 'list', limit: 1 });
+
+      expect(result.tools.length).toBeGreaterThan(0);
+      const method = result.tools[0];
+
+      expect(method.outputSchema.description).toContain('items');
+      expect(method.outputSchema.properties.items.type).toBe('array');
+    });
+
+    it('parameters array contains required fields', async () => {
+      const result = await searchTools({ resourceType: 'Pod', action: 'read', scope: 'namespaced', limit: 1 });
+
+      expect(result.tools.length).toBeGreaterThan(0);
+      const method = result.tools[0];
+
+      // read namespaced methods require name and namespace
+      expect(method.parameters.some(p => p.name === 'name')).toBe(true);
+      expect(method.parameters.some(p => p.name === 'namespace')).toBe(true);
+
+      // Each parameter should have required fields
+      for (const param of method.parameters) {
+        expect(param).toHaveProperty('name');
+        expect(param).toHaveProperty('type');
+        expect(param).toHaveProperty('optional');
+      }
+    });
+  });
+
+  describe('Summary Content', () => {
+    it('summary includes search criteria', async () => {
+      const result = await searchTools({
+        resourceType: 'Deployment',
+        action: 'create',
+        scope: 'namespaced',
+      });
+
+      expect(result.summary).toContain('Deployment');
+      expect(result.summary).toContain('create');
+      expect(result.summary).toContain('namespaced');
+    });
+
+    it('summary includes exclusion info when excluding', async () => {
+      const result = await searchTools({
+        resourceType: 'Pod',
+        exclude: { actions: ['delete'] },
+      });
+
+      expect(result.summary).toContain('excluding');
+      expect(result.summary).toContain('delete');
+    });
+
+    it('summary includes search time', async () => {
+      const result = await searchTools({ resourceType: 'Pod' });
+
+      expect(result.summary).toContain('search:');
+      expect(result.summary).toContain('ms');
+    });
+
+    it('summary includes method count', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 5 });
+
+      expect(result.summary).toContain('method(s)');
+    });
+  });
+
+  describe('Usage Field', () => {
+    it('usage contains helpful instructions', async () => {
+      const result = await searchTools({ resourceType: 'Pod' });
+
+      expect(result.usage).toContain('USAGE');
+      expect(result.usage).toContain('await');
+      expect(result.usage).toContain('@kubernetes/client-node');
+    });
+
+    it('usage mentions scripts directory', async () => {
+      const result = await searchTools({ resourceType: 'Pod' });
+
+      expect(result.usage).toContain(result.paths.scriptsDirectory);
     });
   });
 });

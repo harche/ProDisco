@@ -43,6 +43,13 @@ const SearchToolsInputSchema = z.object({
     .default(10)
     .optional()
     .describe('Maximum number of results to return'),
+  offset: z
+    .number()
+    .int()
+    .nonnegative()
+    .default(0)
+    .optional()
+    .describe('Number of results to skip for pagination (default: 0)'),
 });
 
 type KubernetesApiMethod = {
@@ -87,13 +94,19 @@ type SearchToolsResult = {
     scriptsDirectory: string;
   };
   cachedScripts: string[];
-  // New: Orama-powered facets for discovery
+  // Orama-powered facets for discovery
   facets?: {
     apiClass: Record<string, number>;
     action: Record<string, number>;
     scope: Record<string, number>;
   };
   searchTime?: number;
+  // Pagination metadata
+  pagination: {
+    offset: number;
+    limit: number;
+    hasMore: boolean;
+  };
 };
 
 // Cache for Kubernetes API methods
@@ -249,9 +262,11 @@ async function searchWithOrama(
   action: string | undefined,
   scope: string,
   exclude: { actions?: string[]; apiClasses?: string[] } | undefined,
-  limit: number
+  limit: number,
+  offset: number = 0
 ): Promise<{
   results: OramaK8sDocument[];
+  totalFilteredCount: number;
   facets: {
     apiClass: Record<string, number>;
     action: Record<string, number>;
@@ -282,8 +297,8 @@ async function searchWithOrama(
     // Typo tolerance: allow 1 typo per word for better UX
     tolerance: 1,
 
-    // Get more results initially to allow for post-search filtering
-    limit: Math.max(limit * 5, 50),
+    // Get more results initially to allow for post-search filtering and offset
+    limit: Math.max((offset + limit) * 3, 100),
 
     // Generate facets for discovery
     facets: {
@@ -385,8 +400,12 @@ async function searchWithOrama(
     return (b.score || 0) - (a.score || 0);
   });
 
+  // Total count of filtered results (before applying offset/limit) for pagination
+  const totalFilteredCount = sortedHits.length;
+
   return {
-    results: sortedHits.slice(0, limit).map(hit => hit.document),
+    results: sortedHits.slice(offset, offset + limit).map(hit => hit.document),
+    totalFilteredCount,
     facets,
     searchTime,
   };
@@ -740,7 +759,7 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
   description: 
     'Find Kubernetes API methods by resource type and action. ' +
     'Returns API methods from @kubernetes/client-node that you can use directly in your scripts. ' +
-    'Parameters: resourceType (e.g., "Pod", "Deployment"), action (optional: list, read, create, delete, patch, replace), scope (namespaced/cluster/all), exclude (optional: filter out by actions and/or apiClasses). ' +
+    'Parameters: resourceType (e.g., "Pod", "Deployment"), action (optional: list, read, create, delete, patch, replace), scope (namespaced/cluster/all), exclude (optional: filter out by actions and/or apiClasses), limit (default: 10, max: 50), offset (default: 0, for pagination). ' +
     'Available actions: list (list resources), read (get single resource), create (create resource), delete (delete resource), patch (update resource), replace (replace resource), connect (exec/logs/proxy), get, watch. ' +
     'COMMON SEARCH PATTERNS: (1) Pod logs: use resourceType "Log" or "PodLog" (NOT "Pod" with action "connect"). Example: { resourceType: "Log" } returns CoreV1Api.readNamespacedPodLog. ' +
     '(2) Pod exec/attach: use { resourceType: "Pod", action: "connect" } returns connectGetNamespacedPodExec, connectPostNamespacedPodAttach. ' +
@@ -763,15 +782,16 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     'This naming convention makes scripts searchable and helps avoid duplicates.',
   schema: SearchToolsInputSchema,
   async execute(input) {
-    const { resourceType, action, scope = 'all', exclude, limit = 10 } = input;
+    const { resourceType, action, scope = 'all', exclude, limit = 10, offset = 0 } = input;
 
     // Use Orama for intelligent full-text search with typo tolerance and relevance scoring
-    const { results: oramaResults, facets, searchTime } = await searchWithOrama(
+    const { results: oramaResults, totalFilteredCount, facets, searchTime } = await searchWithOrama(
       resourceType,
       action,
       scope,
       exclude,
-      limit
+      limit,
+      offset
     );
 
     // Get full method details for the matched results
@@ -800,6 +820,9 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       // Ignore errors if directory doesn't exist or can't be read
     }
 
+    // Calculate pagination metadata
+    const hasMore = offset + results.length < totalFilteredCount;
+
     // Structured output - clear and unambiguous
     let summary = `Found ${results.length} method(s) for resource "${resourceType}"`;
     if (action) summary += `, action "${action}"`;
@@ -812,7 +835,13 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
         summary += `, excluding API classes: [${exclude.apiClasses.join(', ')}]`;
       }
     }
-    summary += ` (search: ${searchTime.toFixed(2)}ms)\n\n`;
+    summary += ` (search: ${searchTime.toFixed(2)}ms)`;
+
+    // Add pagination info to summary
+    if (offset > 0 || hasMore) {
+      summary += ` | Page: ${Math.floor(offset / limit) + 1}, showing ${offset + 1}-${offset + results.length} of ${totalFilteredCount}`;
+    }
+    summary += `\n\n`;
 
     // Show facets for discovery (what else is available)
     if (Object.keys(facets.apiClass).length > 0) {
@@ -897,7 +926,7 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     return {
       summary,
       tools: results,
-      totalMatches: results.length,
+      totalMatches: totalFilteredCount,
       usage,
       paths: {
         scriptsDirectory,
@@ -905,6 +934,11 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       cachedScripts,
       facets,
       searchTime,
+      pagination: {
+        offset,
+        limit,
+        hasMore,
+      },
     };
   },
 };

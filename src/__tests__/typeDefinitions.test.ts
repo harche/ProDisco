@@ -198,6 +198,221 @@ describe('kubernetes.getTypeDefinition', () => {
       // Should indicate it couldn't resolve the path
       expect(result.types['V1Pod.nonexistent.path'].definition).toContain('Could not resolve');
     });
+
+    it('handles empty types array', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: [],
+      });
+
+      expect(result.types).toEqual({});
+      expect(result.summary).toBeDefined();
+    });
+
+    it('handles mixed valid and invalid types', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Pod', 'NonExistentType', 'V1Service'],
+      });
+
+      // Valid types should be found
+      expect(result.types['V1Pod'].file).not.toBe('not found');
+      expect(result.types['V1Service'].file).not.toBe('not found');
+
+      // Invalid type should indicate not found
+      expect(result.types['NonExistentType'].file).toBe('not found');
+    });
+  });
+
+  describe('Default Behavior', () => {
+    it('uses default depth of 1 when not specified', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Pod'],
+      });
+
+      // Should work without depth parameter
+      expect(result.types).toHaveProperty('V1Pod');
+      expect(result.types['V1Pod'].definition).toContain('V1Pod');
+    });
+  });
+
+  describe('Deep Nested Paths', () => {
+    it('navigates deeply nested paths (3+ levels)', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Deployment.spec.template.spec'],
+      });
+
+      expect(result.types).toHaveProperty('V1Deployment.spec.template.spec');
+      const typeInfo = result.types['V1Deployment.spec.template.spec'];
+      // Should resolve to V1PodSpec (the spec of the pod template)
+      expect(typeInfo.name).toBe('V1PodSpec');
+    });
+
+    it('navigates to container ports in pod spec', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Pod.spec.containers'],
+      });
+
+      expect(result.types).toHaveProperty('V1Pod.spec.containers');
+      // Should resolve to V1Container
+      expect(result.types['V1Pod.spec.containers'].name).toBe('V1Container');
+    });
+  });
+
+  describe('Types from Different API Groups', () => {
+    it('resolves Batch API types (V1Job)', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Job'],
+      });
+
+      expect(result.types).toHaveProperty('V1Job');
+      expect(result.types['V1Job'].definition).toContain('V1Job');
+      expect(result.types['V1Job'].file).not.toBe('not found');
+    });
+
+    it('resolves Apps API types (V1StatefulSet)', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1StatefulSet'],
+      });
+
+      expect(result.types).toHaveProperty('V1StatefulSet');
+      expect(result.types['V1StatefulSet'].definition).toContain('V1StatefulSet');
+    });
+
+    it('resolves Networking API types (V1Ingress)', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Ingress'],
+      });
+
+      expect(result.types).toHaveProperty('V1Ingress');
+      expect(result.types['V1Ingress'].definition).toContain('V1Ingress');
+    });
+
+    it('resolves RBAC types (V1Role)', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Role'],
+      });
+
+      expect(result.types).toHaveProperty('V1Role');
+      expect(result.types['V1Role'].definition).toContain('V1Role');
+    });
+  });
+
+  describe('Nested Types Array', () => {
+    it('nestedTypes contains referenced type names', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Pod'],
+        depth: 1,
+      });
+
+      const nestedTypes = result.types['V1Pod'].nestedTypes;
+      expect(Array.isArray(nestedTypes)).toBe(true);
+
+      // V1Pod should reference common types
+      // These are types that appear in V1Pod's properties
+      expect(nestedTypes.length).toBeGreaterThan(0);
+    });
+
+    it('nestedTypes are valid Kubernetes type names', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Deployment'],
+        depth: 1,
+      });
+
+      const nestedTypes = result.types['V1Deployment'].nestedTypes;
+
+      // All nested types should follow K8s naming convention (V1*, K8s*)
+      for (const typeName of nestedTypes) {
+        expect(typeName).toMatch(/^[VK]\d+[A-Z]/);
+      }
+    });
+  });
+
+  describe('File Path Format', () => {
+    it('file path is relative (starts with dot)', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Pod'],
+      });
+
+      const filePath = result.types['V1Pod'].file;
+      expect(filePath).toMatch(/^\./);
+    });
+
+    it('file path contains kubernetes client-node path', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Pod'],
+      });
+
+      const filePath = result.types['V1Pod'].file;
+      expect(filePath).toContain('@kubernetes/client-node');
+      expect(filePath).toContain('.d.ts');
+    });
+  });
+
+  describe('Summary Content', () => {
+    it('summary mentions fetched count', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Pod', 'V1Service'],
+      });
+
+      expect(result.summary).toContain('Fetched');
+      expect(result.summary).toContain('type definition');
+    });
+
+    it('summary mentions nested types when depth > 1', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Pod'],
+        depth: 2,
+      });
+
+      // Summary should mention the requested type
+      expect(result.summary).toContain('V1Pod');
+    });
+
+    it('summary lists requested types with nested count', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Deployment'],
+      });
+
+      expect(result.summary).toContain('V1Deployment');
+      expect(result.summary).toContain('nested type');
+    });
+  });
+
+  describe('Definition Content', () => {
+    it('definition shows property types', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Pod'],
+      });
+
+      const definition = result.types['V1Pod'].definition;
+
+      // Should contain common V1Pod properties
+      expect(definition).toContain('metadata');
+      expect(definition).toContain('spec');
+      expect(definition).toContain('status');
+    });
+
+    it('definition shows optional markers', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Pod'],
+      });
+
+      const definition = result.types['V1Pod'].definition;
+
+      // Optional properties should have ? marker
+      expect(definition).toContain('?:');
+    });
+
+    it('definition uses proper formatting with braces', async () => {
+      const result = await getTypeDefinitionTool.execute({
+        types: ['V1Container'],
+      });
+
+      const definition = result.types['V1Container'].definition;
+
+      // Should have proper structure
+      expect(definition).toContain('V1Container {');
+      expect(definition).toContain('}');
+    });
   });
 });
 
