@@ -120,6 +120,20 @@ server.registerTool(
         ],
         structuredContent: result,
       };
+    } else if (result.mode === 'scripts') {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: result.summary,
+          },
+          {
+            type: 'text',
+            text: JSON.stringify(result.scripts, null, 2),
+          },
+        ],
+        structuredContent: result,
+      };
     } else {
       // mode === 'methods'
       return {

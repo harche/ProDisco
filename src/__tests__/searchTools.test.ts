@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeAll, afterAll } from 'vitest';
+import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
+import { join } from 'path';
+import * as os from 'os';
 
 import { searchToolsTool } from '../tools/kubernetes/searchTools.js';
 
@@ -15,6 +18,26 @@ const searchTools = searchToolsTool.execute.bind(searchToolsTool) as (input: {
   limit?: number;
   offset?: number;
 }) => ReturnType<typeof searchToolsTool.execute>;
+
+// Helper for scripts mode
+const searchScripts = searchToolsTool.execute.bind(searchToolsTool) as (input: {
+  mode: 'scripts';
+  searchTerm?: string;
+  limit?: number;
+  offset?: number;
+}) => Promise<{
+  mode: 'scripts';
+  summary: string;
+  scripts: Array<{
+    filename: string;
+    filePath: string;
+    description: string;
+    apiClasses: string[];
+  }>;
+  totalMatches: number;
+  paths: { scriptsDirectory: string };
+  pagination: { offset: number; limit: number; hasMore: boolean };
+}>;
 
 describe('kubernetes.searchTools', () => {
   describe('Basic Functionality', () => {
@@ -909,6 +932,564 @@ describe('kubernetes.searchTools', () => {
       const result = await searchTools({ resourceType: 'Pod' });
 
       expect(result.usage).toContain(result.paths.scriptsDirectory);
+    });
+  });
+
+  describe('Relevant Scripts in Methods Mode', () => {
+    it('includes relevantScripts field in methods mode results', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 5 });
+
+      expect(result).toHaveProperty('relevantScripts');
+      expect(Array.isArray(result.relevantScripts)).toBe(true);
+    });
+
+    it('relevantScripts have correct structure', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 5 });
+
+      // If there are any relevant scripts, check their structure
+      if (result.relevantScripts.length > 0) {
+        const script = result.relevantScripts[0];
+        expect(script).toHaveProperty('filename');
+        expect(script).toHaveProperty('filePath');
+        expect(script).toHaveProperty('description');
+        expect(script).toHaveProperty('apiClasses');
+        expect(typeof script.filename).toBe('string');
+        expect(typeof script.filePath).toBe('string');
+        expect(typeof script.description).toBe('string');
+        expect(Array.isArray(script.apiClasses)).toBe(true);
+      }
+    });
+
+    it('summary shows relevant scripts section when scripts exist', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 5 });
+
+      // If there are relevant scripts, they should be in the summary
+      if (result.relevantScripts.length > 0) {
+        expect(result.summary).toContain('RELEVANT CACHED SCRIPTS');
+      }
+    });
+
+    it('summary shows API METHODS section', async () => {
+      const result = await searchTools({ resourceType: 'Pod', limit: 5 });
+
+      expect(result.summary).toContain('API METHODS');
+    });
+  });
+});
+
+describe('kubernetes.searchTools - Scripts Mode', () => {
+  const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+  const testScriptName = 'test-search-pods.ts';
+  const testScriptPath = join(scriptsDirectory, testScriptName);
+  const testScriptContent = `/**
+ * Test script for searching pods in a namespace.
+ * Uses CoreV1Api to list pods.
+ */
+import * as k8s from '@kubernetes/client-node';
+
+const kc = new k8s.KubeConfig();
+kc.loadFromDefault();
+const api = kc.makeApiClient(k8s.CoreV1Api);
+
+async function main() {
+  const response = await api.listNamespacedPod({ namespace: 'default' });
+  console.log(response.items);
+}
+
+main();
+`;
+
+  // Create a test script before tests run
+  beforeAll(() => {
+    // Ensure directory exists
+    if (!existsSync(scriptsDirectory)) {
+      mkdirSync(scriptsDirectory, { recursive: true });
+    }
+    // Create test script
+    writeFileSync(testScriptPath, testScriptContent);
+    // Give the watcher time to pick up the file
+    return new Promise(resolve => setTimeout(resolve, 100));
+  });
+
+  // Clean up test script after tests
+  afterAll(() => {
+    if (existsSync(testScriptPath)) {
+      unlinkSync(testScriptPath);
+    }
+  });
+
+  describe('Basic Scripts Mode Functionality', () => {
+    it('returns scripts mode result with correct structure', async () => {
+      const result = await searchScripts({ mode: 'scripts' });
+
+      expect(result.mode).toBe('scripts');
+      expect(result).toHaveProperty('summary');
+      expect(result).toHaveProperty('scripts');
+      expect(result).toHaveProperty('totalMatches');
+      expect(result).toHaveProperty('paths');
+      expect(result).toHaveProperty('pagination');
+      expect(typeof result.summary).toBe('string');
+      expect(Array.isArray(result.scripts)).toBe(true);
+      expect(typeof result.totalMatches).toBe('number');
+    });
+
+    it('lists all scripts when no searchTerm provided', async () => {
+      const result = await searchScripts({ mode: 'scripts' });
+
+      expect(result.totalMatches).toBeGreaterThan(0);
+      expect(result.scripts.length).toBeGreaterThan(0);
+    });
+
+    it('includes paths.scriptsDirectory in result', async () => {
+      const result = await searchScripts({ mode: 'scripts' });
+
+      expect(result.paths.scriptsDirectory).toContain('.prodisco');
+      expect(result.paths.scriptsDirectory).toContain('scripts');
+      expect(result.paths.scriptsDirectory).toContain('cache');
+    });
+
+    it('returns pagination metadata', async () => {
+      const result = await searchScripts({ mode: 'scripts', limit: 5 });
+
+      expect(result.pagination).toHaveProperty('offset');
+      expect(result.pagination).toHaveProperty('limit');
+      expect(result.pagination).toHaveProperty('hasMore');
+      expect(typeof result.pagination.offset).toBe('number');
+      expect(typeof result.pagination.limit).toBe('number');
+      expect(typeof result.pagination.hasMore).toBe('boolean');
+    });
+  });
+
+  describe('Script Search', () => {
+    it('finds scripts matching searchTerm', async () => {
+      const result = await searchScripts({ mode: 'scripts', searchTerm: 'pod' });
+
+      expect(result.totalMatches).toBeGreaterThan(0);
+      // Should find our test script which has "pod" in filename and content
+      expect(result.scripts.some(s => s.filename.toLowerCase().includes('pod'))).toBe(true);
+    });
+
+    it('finds test script by filename', async () => {
+      // List all scripts and find by filename (more reliable than Orama search for exact filename)
+      const result = await searchScripts({ mode: 'scripts', limit: 100 });
+
+      expect(result.scripts.some(s => s.filename === testScriptName)).toBe(true);
+    });
+
+    it('returns empty results for non-matching searchTerm', async () => {
+      const result = await searchScripts({ mode: 'scripts', searchTerm: 'xyznonexistent12345' });
+
+      expect(result.totalMatches).toBe(0);
+      expect(result.scripts.length).toBe(0);
+    });
+
+    it('search is case-insensitive', async () => {
+      const lowerResult = await searchScripts({ mode: 'scripts', searchTerm: 'pod' });
+      const upperResult = await searchScripts({ mode: 'scripts', searchTerm: 'POD' });
+      const mixedResult = await searchScripts({ mode: 'scripts', searchTerm: 'PoD' });
+
+      expect(lowerResult.totalMatches).toBeGreaterThan(0);
+      expect(upperResult.totalMatches).toBeGreaterThan(0);
+      expect(mixedResult.totalMatches).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Script Metadata Extraction', () => {
+    it('extracts description from first comment block', async () => {
+      // List all scripts and find by filename (more reliable than Orama search)
+      const result = await searchScripts({ mode: 'scripts', limit: 100 });
+      const testScript = result.scripts.find(s => s.filename === testScriptName);
+
+      expect(testScript).toBeDefined();
+      expect(testScript!.description).toContain('Test script');
+      expect(testScript!.description).toContain('searching pods');
+    });
+
+    it('extracts API classes from script content', async () => {
+      // List all scripts and find by filename (more reliable than Orama search)
+      const result = await searchScripts({ mode: 'scripts', limit: 100 });
+      const testScript = result.scripts.find(s => s.filename === testScriptName);
+
+      expect(testScript).toBeDefined();
+      // Should extract CoreV1Api from the script content
+      expect(testScript!.apiClasses.includes('CoreV1Api')).toBe(true);
+    });
+
+    it('provides full file path', async () => {
+      // List all scripts and find by filename (more reliable than Orama search)
+      const result = await searchScripts({ mode: 'scripts', limit: 100 });
+      const testScript = result.scripts.find(s => s.filename === testScriptName);
+
+      expect(testScript).toBeDefined();
+      expect(testScript!.filePath).toBe(testScriptPath);
+    });
+  });
+
+  describe('Scripts Mode Pagination', () => {
+    it('respects limit parameter', async () => {
+      const result = await searchScripts({ mode: 'scripts', limit: 2 });
+
+      expect(result.scripts.length).toBeLessThanOrEqual(2);
+    });
+
+    it('respects offset parameter', async () => {
+      const firstPage = await searchScripts({ mode: 'scripts', limit: 2, offset: 0 });
+      const secondPage = await searchScripts({ mode: 'scripts', limit: 2, offset: 2 });
+
+      expect(firstPage.pagination.offset).toBe(0);
+      expect(secondPage.pagination.offset).toBe(2);
+
+      // If both pages have results, they should be different
+      if (firstPage.scripts.length > 0 && secondPage.scripts.length > 0) {
+        const firstFilenames = firstPage.scripts.map(s => s.filename);
+        const secondFilenames = secondPage.scripts.map(s => s.filename);
+        const overlap = firstFilenames.filter(f => secondFilenames.includes(f));
+        expect(overlap.length).toBe(0);
+      }
+    });
+
+    it('sets hasMore correctly', async () => {
+      const allScripts = await searchScripts({ mode: 'scripts', limit: 100 });
+
+      if (allScripts.totalMatches > 2) {
+        const limitedResult = await searchScripts({ mode: 'scripts', limit: 2 });
+        expect(limitedResult.pagination.hasMore).toBe(true);
+      }
+    });
+
+    it('pagination works with searchTerm', async () => {
+      const result = await searchScripts({
+        mode: 'scripts',
+        searchTerm: 'pod',
+        limit: 2,
+        offset: 0
+      });
+
+      expect(result.pagination.offset).toBe(0);
+      expect(result.pagination.limit).toBe(2);
+    });
+  });
+
+  describe('Scripts Mode Summary', () => {
+    it('summary indicates total matches', async () => {
+      const result = await searchScripts({ mode: 'scripts' });
+
+      expect(result.summary).toContain('CACHED SCRIPTS');
+      expect(result.summary).toMatch(/\(\d+ total\)/);
+    });
+
+    it('summary indicates search term when provided', async () => {
+      const result = await searchScripts({ mode: 'scripts', searchTerm: 'pod' });
+
+      expect(result.summary).toContain('matching "pod"');
+    });
+
+    it('summary includes script details', async () => {
+      const result = await searchScripts({ mode: 'scripts', limit: 5 });
+
+      if (result.scripts.length > 0) {
+        // Should list script filenames
+        expect(result.summary).toContain('.ts');
+        // Should include run command
+        expect(result.summary).toContain('npx tsx');
+      }
+    });
+
+    it('summary includes pagination info when paginating', async () => {
+      const allScripts = await searchScripts({ mode: 'scripts', limit: 100 });
+
+      if (allScripts.totalMatches > 2) {
+        const result = await searchScripts({ mode: 'scripts', limit: 2, offset: 2 });
+        expect(result.summary).toContain('Page');
+      }
+    });
+
+    it('summary includes scripts directory path', async () => {
+      const result = await searchScripts({ mode: 'scripts' });
+
+      expect(result.summary).toContain('Scripts directory:');
+      expect(result.summary).toContain('.prodisco');
+    });
+  });
+});
+
+describe('kubernetes.searchTools - Script Indexing', () => {
+  const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+
+  describe('Script Indexing at Search Time', () => {
+    it('scripts are indexed and searchable', async () => {
+      // Search for scripts should work
+      const result = await searchScripts({ mode: 'scripts' });
+
+      expect(result.totalMatches).toBeGreaterThanOrEqual(0);
+    });
+
+    it('newly created scripts are indexed', async () => {
+      const newScriptName = 'temp-test-deployment-script.ts';
+      const newScriptPath = join(scriptsDirectory, newScriptName);
+      const newScriptContent = `// Temporary test script for deployments
+import * as k8s from '@kubernetes/client-node';
+const api = kc.makeApiClient(k8s.AppsV1Api);
+`;
+
+      try {
+        // Create a new script
+        writeFileSync(newScriptPath, newScriptContent);
+
+        // Wait for watcher to pick it up
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // List all scripts and find by filename (more reliable than Orama search)
+        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+
+        expect(result.scripts.some(s => s.filename === newScriptName)).toBe(true);
+      } finally {
+        // Clean up
+        if (existsSync(newScriptPath)) {
+          unlinkSync(newScriptPath);
+        }
+      }
+    });
+  });
+
+  describe('Script Content Extraction', () => {
+    it('extracts block comments as description', async () => {
+      const scriptWithBlockComment = 'temp-block-comment-test.ts';
+      const scriptPath = join(scriptsDirectory, scriptWithBlockComment);
+      const content = `/**
+ * This is a block comment description.
+ * It spans multiple lines.
+ */
+console.log('test');
+`;
+
+      try {
+        writeFileSync(scriptPath, content);
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // List all scripts and find by filename (more reliable than search)
+        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const script = result.scripts.find(s => s.filename === scriptWithBlockComment);
+
+        expect(script).toBeDefined();
+        expect(script!.description).toContain('block comment description');
+      } finally {
+        if (existsSync(scriptPath)) {
+          unlinkSync(scriptPath);
+        }
+      }
+    });
+
+    it('extracts single-line comments as description', async () => {
+      const scriptWithLineComments = 'temp-line-comment-test.ts';
+      const scriptPath = join(scriptsDirectory, scriptWithLineComments);
+      const content = `// This is a single line comment description
+// It can span multiple lines
+console.log('test');
+`;
+
+      try {
+        writeFileSync(scriptPath, content);
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const script = result.scripts.find(s => s.filename === scriptWithLineComments);
+
+        expect(script).toBeDefined();
+        expect(script!.description).toContain('single line comment');
+      } finally {
+        if (existsSync(scriptPath)) {
+          unlinkSync(scriptPath);
+        }
+      }
+    });
+
+    it('uses filename as fallback when no comments', async () => {
+      const scriptNoComment = 'temp-no-comment-script.ts';
+      const scriptPath = join(scriptsDirectory, scriptNoComment);
+      const content = `console.log('no comment at the top');
+`;
+
+      try {
+        writeFileSync(scriptPath, content);
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const script = result.scripts.find(s => s.filename === scriptNoComment);
+
+        expect(script).toBeDefined();
+        // Description should contain something derived from filename
+        expect(script!.description).toContain('Script:');
+      } finally {
+        if (existsSync(scriptPath)) {
+          unlinkSync(scriptPath);
+        }
+      }
+    });
+  });
+
+  describe('API Signal Extraction', () => {
+    it('extracts CoreV1Api from script content', async () => {
+      const scriptPath = join(scriptsDirectory, 'temp-corev1-test.ts');
+      const content = `// Test CoreV1Api extraction
+import * as k8s from '@kubernetes/client-node';
+const kc = new k8s.KubeConfig();
+const api = kc.makeApiClient(k8s.CoreV1Api);
+`;
+
+      try {
+        writeFileSync(scriptPath, content);
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const script = result.scripts.find(s => s.filename === 'temp-corev1-test.ts');
+
+        expect(script).toBeDefined();
+        expect(script!.apiClasses).toContain('CoreV1Api');
+      } finally {
+        if (existsSync(scriptPath)) {
+          unlinkSync(scriptPath);
+        }
+      }
+    });
+
+    it('extracts AppsV1Api from script content', async () => {
+      const scriptPath = join(scriptsDirectory, 'temp-appsv1-test.ts');
+      const content = `// Test AppsV1Api extraction
+import * as k8s from '@kubernetes/client-node';
+const kc = new k8s.KubeConfig();
+const api = kc.makeApiClient(k8s.AppsV1Api);
+`;
+
+      try {
+        writeFileSync(scriptPath, content);
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const script = result.scripts.find(s => s.filename === 'temp-appsv1-test.ts');
+
+        expect(script).toBeDefined();
+        expect(script!.apiClasses).toContain('AppsV1Api');
+      } finally {
+        if (existsSync(scriptPath)) {
+          unlinkSync(scriptPath);
+        }
+      }
+    });
+
+    it('extracts BatchV1Api from script content', async () => {
+      const scriptPath = join(scriptsDirectory, 'temp-batchv1-test.ts');
+      const content = `// Test BatchV1Api extraction
+import * as k8s from '@kubernetes/client-node';
+const kc = new k8s.KubeConfig();
+const api = kc.makeApiClient(k8s.BatchV1Api);
+`;
+
+      try {
+        writeFileSync(scriptPath, content);
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const script = result.scripts.find(s => s.filename === 'temp-batchv1-test.ts');
+
+        expect(script).toBeDefined();
+        expect(script!.apiClasses).toContain('BatchV1Api');
+      } finally {
+        if (existsSync(scriptPath)) {
+          unlinkSync(scriptPath);
+        }
+      }
+    });
+  });
+});
+
+describe('kubernetes.searchTools - Filesystem Watcher', () => {
+  const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+
+  describe('Watcher Events', () => {
+    it('indexes newly added scripts', async () => {
+      const newScript = 'temp-watcher-add-test.ts';
+      const newScriptPath = join(scriptsDirectory, newScript);
+      const content = `// Watcher add test script
+console.log('test');
+`;
+
+      try {
+        // Create script
+        writeFileSync(newScriptPath, content);
+
+        // Wait for watcher to process
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // List all scripts and find by filename
+        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        expect(result.scripts.some(s => s.filename === newScript)).toBe(true);
+      } finally {
+        if (existsSync(newScriptPath)) {
+          unlinkSync(newScriptPath);
+        }
+      }
+    });
+
+    it('removes deleted scripts from index', async () => {
+      const tempScript = 'temp-watcher-delete-test.ts';
+      const tempScriptPath = join(scriptsDirectory, tempScript);
+      const content = `// Watcher delete test script
+console.log('test');
+`;
+
+      // Create script
+      writeFileSync(tempScriptPath, content);
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Verify it exists by listing all
+      let result = await searchScripts({ mode: 'scripts', limit: 100 });
+      expect(result.scripts.some(s => s.filename === tempScript)).toBe(true);
+
+      // Delete script
+      unlinkSync(tempScriptPath);
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Should no longer be found when listing all
+      result = await searchScripts({ mode: 'scripts', limit: 100 });
+      expect(result.scripts.some(s => s.filename === tempScript)).toBe(false);
+    });
+
+    it('re-indexes modified scripts', async () => {
+      const modScript = 'temp-watcher-modify-test.ts';
+      const modScriptPath = join(scriptsDirectory, modScript);
+      const originalContent = `// Original description for modify test
+console.log('original');
+`;
+      const modifiedContent = `// Modified description with new content
+console.log('modified');
+`;
+
+      try {
+        // Create with original content
+        writeFileSync(modScriptPath, originalContent);
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Verify original description by listing all
+        let result = await searchScripts({ mode: 'scripts', limit: 100 });
+        let script = result.scripts.find(s => s.filename === modScript);
+        expect(script).toBeDefined();
+        expect(script!.description).toContain('Original description');
+
+        // Modify the script
+        writeFileSync(modScriptPath, modifiedContent);
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Verify modified description
+        result = await searchScripts({ mode: 'scripts', limit: 100 });
+        script = result.scripts.find(s => s.filename === modScript);
+        expect(script).toBeDefined();
+        expect(script!.description).toContain('Modified description');
+      } finally {
+        if (existsSync(modScriptPath)) {
+          unlinkSync(modScriptPath);
+        }
+      }
     });
   });
 });
