@@ -11,7 +11,6 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version?: string };
 import { searchToolsTool } from './tools/kubernetes/searchTools.js';
-import { getTypeDefinitionTool } from './tools/kubernetes/typeDefinitions.js';
 import {
   PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH,
   listGeneratedFiles,
@@ -97,56 +96,49 @@ server.registerResource(
 console.error(`📁 Exposed ${GENERATED_DIR} as MCP resources`);
 
 // Register kubernetes.searchTools helper as an exposed tool.
+// This tool now supports both modes: 'methods' (API discovery) and 'types' (type definitions)
 server.registerTool(
   searchToolsTool.name,
   {
-    title: 'Kubernetes Tool Search',
+    title: 'Kubernetes Search Tools',
     description: searchToolsTool.description,
     inputSchema: searchToolsTool.schema,
   },
-  async (args) => {
+  async (args: Record<string, unknown>) => {
     const parsedArgs = await searchToolsTool.schema.parseAsync(args);
     const result = await searchToolsTool.execute(parsedArgs);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: result.summary,
-        },
-        {
-          type: 'text',
-          text: JSON.stringify(result.tools, null, 2),
-        },
-      ],
-      structuredContent: result,
-    };
-  },
-);
 
-// Register kubernetes.getTypeDefinition helper as an exposed tool.
-server.registerTool(
-  getTypeDefinitionTool.name,
-  {
-    title: 'Kubernetes Type Definition',
-    description: getTypeDefinitionTool.description,
-    inputSchema: getTypeDefinitionTool.schema,
-  },
-  async (args) => {
-    const parsedArgs = await getTypeDefinitionTool.schema.parseAsync(args);
-    const result = await getTypeDefinitionTool.execute(parsedArgs);
-    return {
-      content: [
-        {
-          type: 'text',
-          text: result.summary,
-        },
-        {
-          type: 'text',
-          text: JSON.stringify(result.types, null, 2),
-        },
-      ],
-      structuredContent: result,
-    };
+    // Handle different result modes
+    if (result.mode === 'types') {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: result.summary,
+          },
+          {
+            type: 'text',
+            text: JSON.stringify(result.types, null, 2),
+          },
+        ],
+        structuredContent: result,
+      };
+    } else {
+      // mode === 'methods'
+      return {
+        content: [
+          {
+            type: 'text',
+            text: result.summary,
+          },
+          {
+            type: 'text',
+            text: JSON.stringify(result.tools, null, 2),
+          },
+        ],
+        structuredContent: result,
+      };
+    }
   },
 );
 

@@ -10,31 +10,56 @@ import { create, insert, search } from '@orama/orama';
 import type { Orama, Results, SearchParams } from '@orama/orama';
 
 const SearchToolsInputSchema = z.object({
+  // Mode selection - determines which operation to perform
+  mode: z
+    .enum(['methods', 'types'])
+    .default('methods')
+    .optional()
+    .describe('Search mode: "methods" to find API methods (default), "types" to get type definitions'),
+
+  // === Method mode parameters (mode: 'methods') ===
   resourceType: z
     .string()
-    .describe('Kubernetes resource type (e.g., "Pod", "Deployment", "Service", "ConfigMap")'),
+    .optional()
+    .describe('(methods mode) Kubernetes resource type (e.g., "Pod", "Deployment", "Service", "ConfigMap")'),
   action: z
     .string()
     .optional()
-    .describe('API action: list, read, create, delete, patch, replace, connect, get, watch. Omit to return all actions for the resource.'),
+    .describe('(methods mode) API action: list, read, create, delete, patch, replace, connect, get, watch'),
   scope: z
     .enum(['namespaced', 'cluster', 'all'])
     .optional()
     .default('all')
-    .describe('Resource scope: "namespaced" for namespace-scoped resources, "cluster" for cluster-wide resources, "all" for both'),
+    .describe('(methods mode) Resource scope: "namespaced", "cluster", or "all"'),
   exclude: z
     .object({
       actions: z
         .array(z.string())
         .optional()
-        .describe('Actions to exclude (e.g., ["connect", "watch"]). Filters out methods with these action prefixes.'),
+        .describe('Actions to exclude (e.g., ["connect", "watch"])'),
       apiClasses: z
         .array(z.string())
         .optional()
-        .describe('API classes to exclude (e.g., ["CustomObjectsApi"]). Filters out methods from these API classes.'),
+        .describe('API classes to exclude (e.g., ["CustomObjectsApi"])'),
     })
     .optional()
-    .describe('Exclusion criteria. If both actions and apiClasses are specified, both must match (AND logic) to exclude a method.'),
+    .describe('(methods mode) Exclusion criteria'),
+
+  // === Type mode parameters (mode: 'types') ===
+  types: z
+    .array(z.string())
+    .optional()
+    .describe('(types mode) Type names or paths (e.g., ["V1Pod", "V1Deployment.spec.template.spec"])'),
+  depth: z
+    .number()
+    .int()
+    .positive()
+    .max(2)
+    .default(1)
+    .optional()
+    .describe('(types mode) Depth of nested type definitions (1-2, default: 1)'),
+
+  // === Shared parameters ===
   limit: z
     .number()
     .int()
@@ -85,7 +110,9 @@ type KubernetesApiMethod = {
   };
 };
 
-type SearchToolsResult = {
+// Result type for methods mode
+type MethodModeResult = {
+  mode: 'methods';
   summary: string;
   tools: KubernetesApiMethod[];
   totalMatches: number;
@@ -94,20 +121,428 @@ type SearchToolsResult = {
     scriptsDirectory: string;
   };
   cachedScripts: string[];
-  // Orama-powered facets for discovery
   facets?: {
     apiClass: Record<string, number>;
     action: Record<string, number>;
     scope: Record<string, number>;
   };
   searchTime?: number;
-  // Pagination metadata
   pagination: {
     offset: number;
     limit: number;
     hasMore: boolean;
   };
 };
+
+// Result type for types mode
+type TypeModeResult = {
+  mode: 'types';
+  summary: string;
+  types: Record<string, {
+    name: string;
+    definition: string;
+    file: string;
+    nestedTypes: string[];
+  }>;
+};
+
+// Union type for both modes
+type SearchToolsResult = MethodModeResult | TypeModeResult;
+
+// ============================================================================
+// Type Definition Helper Types and Functions (from typeDefinitions.ts)
+// ============================================================================
+
+interface PropertyInfo {
+  name: string;
+  type: string;
+  optional: boolean;
+  description?: string;
+}
+
+interface TypeInfo {
+  name: string;
+  properties: PropertyInfo[];
+  description?: string;
+}
+
+/**
+ * Extract JSDoc comment from a node
+ */
+function getJSDocDescription(node: ts.Node, _sourceFile: ts.SourceFile): string | undefined {
+  const jsDocComments = ts.getJSDocCommentsAndTags(node);
+  for (const comment of jsDocComments) {
+    if (ts.isJSDoc(comment) && comment.comment) {
+      if (typeof comment.comment === 'string') {
+        return comment.comment;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Extract nested type references from a type string
+ */
+function extractNestedTypeRefs(typeStr: string): string[] {
+  const refs: string[] = [];
+  const typeRefRegex = /\b([VK]\d+[A-Z][a-zA-Z0-9]*|Core[A-Z][a-zA-Z0-9]*)\b/g;
+  let match;
+
+  while ((match = typeRefRegex.exec(typeStr)) !== null) {
+    const ref = match[1];
+    if (ref && !refs.includes(ref)) {
+      refs.push(ref);
+    }
+  }
+
+  return refs;
+}
+
+/**
+ * Extract type definition from TypeScript declaration file using TypeScript compiler API
+ */
+function extractTypeDefinitionWithTS(typeName: string, filePath: string): { typeInfo: TypeInfo; nestedTypes: string[] } | null {
+  const sourceCode = readFileSync(filePath, 'utf-8');
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    sourceCode,
+    ts.ScriptTarget.Latest,
+    true
+  );
+
+  let typeInfo: TypeInfo | null = null;
+  const nestedTypes = new Set<string>();
+
+  function visit(node: ts.Node) {
+    if ((ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) && node.name && node.name.text === typeName) {
+      const properties: PropertyInfo[] = [];
+      const description = getJSDocDescription(node, sourceFile);
+
+      node.members?.forEach((member) => {
+        if (ts.isPropertySignature(member) || ts.isPropertyDeclaration(member)) {
+          if (member.name) {
+            const propName = member.name.getText(sourceFile);
+            const propType = member.type?.getText(sourceFile) || 'any';
+            const isOptional = !!member.questionToken;
+            const propDescription = getJSDocDescription(member, sourceFile);
+
+            properties.push({
+              name: propName.replace(/['"]/g, ''),
+              type: propType,
+              optional: isOptional,
+              description: propDescription,
+            });
+
+            const typeRefs = extractNestedTypeRefs(propType);
+            typeRefs.forEach(ref => {
+              if (ref !== typeName) {
+                nestedTypes.add(ref);
+              }
+            });
+          }
+        }
+      });
+
+      typeInfo = {
+        name: typeName,
+        properties,
+        description,
+      };
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+
+  if (!typeInfo) {
+    return null;
+  }
+
+  return {
+    typeInfo,
+    nestedTypes: Array.from(nestedTypes),
+  };
+}
+
+/**
+ * Extract the main type identifier from a TypeScript type node
+ * Handles: Array<V1Pod>, V1PodSpec | undefined, V1Container[], etc.
+ */
+function extractTypeIdentifier(typeNode: ts.TypeNode): string | null {
+  if (ts.isUnionTypeNode(typeNode)) {
+    for (const type of typeNode.types) {
+      if (type.kind === ts.SyntaxKind.UndefinedKeyword || type.kind === ts.SyntaxKind.NullKeyword) {
+        continue;
+      }
+      return extractTypeIdentifier(type);
+    }
+    return null;
+  }
+
+  if (ts.isArrayTypeNode(typeNode)) {
+    return extractTypeIdentifier(typeNode.elementType);
+  }
+
+  if (ts.isTypeReferenceNode(typeNode)) {
+    const typeName = typeNode.typeName.getText();
+
+    if (typeName === 'Array' && typeNode.typeArguments && typeNode.typeArguments.length > 0) {
+      const firstArg = typeNode.typeArguments[0];
+      if (firstArg) {
+        return extractTypeIdentifier(firstArg);
+      }
+    }
+
+    return typeName;
+  }
+
+  if (ts.isTypeLiteralNode(typeNode)) {
+    return null;
+  }
+
+  return null;
+}
+
+/**
+ * Format type info as a readable string
+ */
+function formatTypeInfo(typeInfo: TypeInfo, maxProperties: number = 20): string {
+  let result = `${typeInfo.name} {\n`;
+
+  const propsToShow = typeInfo.properties.slice(0, maxProperties);
+  const hasMore = typeInfo.properties.length > maxProperties;
+
+  for (const prop of propsToShow) {
+    const optionalMarker = prop.optional ? '?' : '';
+    result += `  ${prop.name}${optionalMarker}: ${prop.type}\n`;
+  }
+
+  if (hasMore) {
+    result += `  ... ${typeInfo.properties.length - maxProperties} more properties\n`;
+  }
+
+  result += `}`;
+  return result;
+}
+
+/**
+ * Find type definition file in Kubernetes client-node package
+ */
+function findTypeDefinitionFile(typeName: string, basePath: string): string | null {
+  const k8sPath = join(basePath, 'node_modules', '@kubernetes', 'client-node', 'dist', 'gen', 'models');
+  const filePath = join(k8sPath, `${typeName}.d.ts`);
+
+  if (existsSync(filePath)) {
+    return filePath;
+  }
+
+  return null;
+}
+
+/**
+ * Parse a type path into base type and property path
+ * e.g., "V1Deployment.spec.template" -> { baseType: "V1Deployment", path: ["spec", "template"] }
+ */
+function parseTypePath(typePath: string): { baseType: string; path: string[] } | null {
+  const parts = typePath.split('.');
+  const baseType = parts[0];
+  if (!baseType) {
+    return null;
+  }
+  const path = parts.slice(1);
+  return { baseType, path };
+}
+
+/**
+ * Navigate through type properties to find a subtype
+ */
+function navigateToSubtype(
+  typeInfo: TypeInfo,
+  propertyPath: string[],
+  basePath: string,
+  cache: Map<string, TypeInfo>
+): { typeInfo: TypeInfo; propertyPath: string; typeName: string } | null {
+  if (propertyPath.length === 0) {
+    return null;
+  }
+
+  let currentTypeInfo = typeInfo;
+  let currentTypeName = typeInfo.name;
+  const pathSegments: string[] = [currentTypeName];
+
+  for (let i = 0; i < propertyPath.length; i++) {
+    const propertyName = propertyPath[i];
+    if (!propertyName) {
+      return null;
+    }
+
+    const property = currentTypeInfo.properties.find(p => p.name === propertyName);
+
+    if (!property) {
+      return null;
+    }
+
+    pathSegments.push(propertyName);
+
+    const filePath = findTypeDefinitionFile(currentTypeName, basePath);
+    if (!filePath) {
+      return null;
+    }
+
+    const sourceCode = readFileSync(filePath, 'utf-8');
+    const sourceFile = ts.createSourceFile(filePath, sourceCode, ts.ScriptTarget.Latest, true);
+
+    let propertyTypeNode: ts.TypeNode | null = null;
+
+    function findPropertyType(node: ts.Node) {
+      if ((ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) &&
+          node.name && node.name.text === currentTypeName) {
+        node.members?.forEach((member) => {
+          if ((ts.isPropertySignature(member) || ts.isPropertyDeclaration(member)) &&
+              member.name && member.type) {
+            const memberName = member.name.getText(sourceFile).replace(/['"]/g, '');
+            if (memberName === propertyName) {
+              propertyTypeNode = member.type;
+            }
+          }
+        });
+      }
+      if (!propertyTypeNode) {
+        ts.forEachChild(node, findPropertyType);
+      }
+    }
+
+    findPropertyType(sourceFile);
+
+    if (!propertyTypeNode) {
+      return null;
+    }
+
+    const nextTypeName = extractTypeIdentifier(propertyTypeNode);
+    if (!nextTypeName) {
+      return null;
+    }
+
+    if (i === propertyPath.length - 1) {
+      return {
+        typeInfo: currentTypeInfo,
+        propertyPath: pathSegments.join('.'),
+        typeName: nextTypeName,
+      };
+    }
+
+    let nextTypeInfo = cache.get(nextTypeName);
+
+    if (!nextTypeInfo) {
+      const filePath = findTypeDefinitionFile(nextTypeName, basePath);
+      if (!filePath) {
+        return null;
+      }
+
+      const extracted = extractTypeDefinitionWithTS(nextTypeName, filePath);
+      if (!extracted) {
+        return null;
+      }
+
+      nextTypeInfo = extracted.typeInfo;
+      cache.set(nextTypeName, nextTypeInfo);
+    }
+
+    currentTypeInfo = nextTypeInfo;
+    currentTypeName = nextTypeName;
+  }
+
+  return null;
+}
+
+/**
+ * Get type information for a subtype at a specific path
+ */
+function getSubtypeInfo(
+  baseTypeName: string,
+  propertyPath: string[],
+  basePath: string,
+  cache: Map<string, TypeInfo>
+): { typeInfo: TypeInfo; fullPath: string; originalType: string } | null {
+  let baseTypeInfo = cache.get(baseTypeName);
+
+  if (!baseTypeInfo) {
+    const filePath = findTypeDefinitionFile(baseTypeName, basePath);
+    if (!filePath) {
+      return null;
+    }
+
+    const extracted = extractTypeDefinitionWithTS(baseTypeName, filePath);
+    if (!extracted) {
+      return null;
+    }
+
+    baseTypeInfo = extracted.typeInfo;
+    cache.set(baseTypeName, baseTypeInfo);
+  }
+
+  if (propertyPath.length === 0) {
+    return {
+      typeInfo: baseTypeInfo,
+      fullPath: baseTypeName,
+      originalType: baseTypeName,
+    };
+  }
+
+  const result = navigateToSubtype(baseTypeInfo, propertyPath, basePath, cache);
+  if (!result) {
+    return null;
+  }
+
+  const targetTypeName = result.typeName;
+  let targetTypeInfo = cache.get(targetTypeName);
+
+  if (!targetTypeInfo) {
+    const filePath = findTypeDefinitionFile(targetTypeName, basePath);
+    if (filePath) {
+      const extracted = extractTypeDefinitionWithTS(targetTypeName, filePath);
+      if (extracted) {
+        targetTypeInfo = extracted.typeInfo;
+        cache.set(targetTypeName, targetTypeInfo);
+      }
+    }
+  }
+
+  if (!targetTypeInfo) {
+    const lastProp = propertyPath[propertyPath.length - 1];
+    if (!lastProp) {
+      return null;
+    }
+
+    const property = result.typeInfo.properties.find(p => p.name === lastProp);
+    if (property) {
+      targetTypeInfo = {
+        name: `${result.propertyPath}`,
+        properties: [{
+          name: lastProp,
+          type: property.type,
+          optional: property.optional,
+          description: property.description || undefined,
+        }],
+        description: `Property type: ${property.type}`,
+      };
+    } else {
+      return null;
+    }
+  }
+
+  return {
+    typeInfo: targetTypeInfo,
+    fullPath: result.propertyPath,
+    originalType: targetTypeName,
+  };
+}
+
+// ============================================================================
+// End Type Definition Helper Functions
+// ============================================================================
 
 // Cache for Kubernetes API methods
 let apiMethodsCache: KubernetesApiMethod[] | null = null;
@@ -754,192 +1189,330 @@ function generateUsageExample(apiClass: string, methodName: string, parameters: 
   return example;
 }
 
+// ============================================================================
+// Execute Functions for Each Mode
+// ============================================================================
+
+/**
+ * Execute type definition lookup mode
+ */
+async function executeTypeMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<TypeModeResult> {
+  const { types, depth = 1 } = input;
+
+  if (!types || types.length === 0) {
+    return {
+      mode: 'types',
+      summary: 'Error: types parameter is required when mode is "types"',
+      types: {},
+    };
+  }
+
+  const basePath = process.cwd();
+
+  const results: Record<string, {
+    name: string;
+    definition: string;
+    file: string;
+    nestedTypes: string[];
+  }> = {};
+
+  const typesToProcess = new Set(types);
+  const processedTypes = new Set<string>();
+  let currentDepth = 0;
+
+  while (typesToProcess.size > 0 && currentDepth < depth) {
+    const currentBatch = Array.from(typesToProcess);
+    typesToProcess.clear();
+
+    for (const typePath of currentBatch) {
+      if (processedTypes.has(typePath)) {
+        continue;
+      }
+
+      processedTypes.add(typePath);
+
+      const parsedPath = parseTypePath(typePath);
+      if (!parsedPath) {
+        results[typePath] = {
+          name: typePath,
+          definition: `// Invalid type path: ${typePath}`,
+          file: 'error',
+          nestedTypes: [],
+        };
+        continue;
+      }
+
+      const { baseType, path: propertyPath } = parsedPath;
+
+      if (propertyPath.length > 0) {
+        const cache = new Map<string, TypeInfo>();
+        const subtypeInfo = getSubtypeInfo(baseType, propertyPath, basePath, cache);
+
+        if (subtypeInfo) {
+          const definition = formatTypeInfo(subtypeInfo.typeInfo);
+          results[typePath] = {
+            name: subtypeInfo.typeInfo.name,
+            definition,
+            file: findTypeDefinitionFile(subtypeInfo.originalType, basePath)?.replace(basePath, '.') || 'resolved',
+            nestedTypes: [],
+          };
+        } else {
+          results[typePath] = {
+            name: typePath,
+            definition: `// Could not resolve property path: ${typePath}`,
+            file: 'not found',
+            nestedTypes: [],
+          };
+        }
+      } else {
+        const filePath = findTypeDefinitionFile(baseType, basePath);
+
+        if (filePath) {
+          try {
+            const extracted = extractTypeDefinitionWithTS(baseType, filePath);
+
+            if (extracted) {
+              const definition = formatTypeInfo(extracted.typeInfo);
+              results[typePath] = {
+                name: baseType,
+                definition,
+                file: filePath.replace(basePath, '.'),
+                nestedTypes: extracted.nestedTypes,
+              };
+
+              if (currentDepth < depth - 1) {
+                for (const nestedType of extracted.nestedTypes) {
+                  if (!processedTypes.has(nestedType)) {
+                    typesToProcess.add(nestedType);
+                  }
+                }
+              }
+            } else {
+              results[typePath] = {
+                name: baseType,
+                definition: `// Type ${baseType} not found in file ${filePath}`,
+                file: filePath.replace(basePath, '.'),
+                nestedTypes: [],
+              };
+            }
+          } catch (error) {
+            results[typePath] = {
+              name: baseType,
+              definition: `// Error extracting type ${baseType}: ${error instanceof Error ? error.message : String(error)}`,
+              file: filePath.replace(basePath, '.'),
+              nestedTypes: [],
+            };
+          }
+        } else {
+          results[typePath] = {
+            name: baseType,
+            definition: `// Type ${baseType} not found in @kubernetes/client-node type definitions`,
+            file: 'not found',
+            nestedTypes: [],
+          };
+        }
+      }
+    }
+
+    currentDepth++;
+  }
+
+  const foundCount = Object.values(results).filter(r => r.file !== 'not found').length;
+  const totalTypes = Object.keys(results).length;
+
+  let summary = `Fetched ${foundCount} type definition(s)`;
+  if (totalTypes > types.length) {
+    summary += ` (${types.length} requested, ${totalTypes - types.length} nested)\n\n`;
+  } else {
+    summary += `\n\n`;
+  }
+
+  for (const typeName of types) {
+    const typeInfo = results[typeName];
+    if (typeInfo && typeInfo.file !== 'not found') {
+      summary += `${typeName}: ${typeInfo.nestedTypes.length} nested type(s)\n`;
+    }
+  }
+
+  return {
+    mode: 'types',
+    summary,
+    types: results,
+  };
+}
+
+/**
+ * Execute method search mode
+ */
+async function executeMethodMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<MethodModeResult> {
+  const { resourceType, action, scope = 'all', exclude, limit = 10, offset = 0 } = input;
+
+  if (!resourceType) {
+    return {
+      mode: 'methods',
+      summary: 'Error: resourceType parameter is required when mode is "methods"',
+      tools: [],
+      totalMatches: 0,
+      usage: '',
+      paths: { scriptsDirectory: '' },
+      cachedScripts: [],
+      pagination: { offset: 0, limit: 10, hasMore: false },
+    };
+  }
+
+  const { results: oramaResults, totalFilteredCount, facets, searchTime } = await searchWithOrama(
+    resourceType,
+    action,
+    scope,
+    exclude,
+    limit,
+    offset
+  );
+
+  const allMethods = extractKubernetesApiMethods();
+  const methodMap = new Map(allMethods.map(m => [`${m.apiClass}.${m.methodName}`, m]));
+
+  const results: KubernetesApiMethod[] = oramaResults
+    .map(doc => methodMap.get(doc.id))
+    .filter((m): m is KubernetesApiMethod => m !== undefined);
+
+  const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+  initializeScriptsDirectory(scriptsDirectory);
+
+  let cachedScripts: string[] = [];
+  try {
+    if (existsSync(scriptsDirectory)) {
+      cachedScripts = readdirSync(scriptsDirectory)
+        .filter(f => f.endsWith('.ts'))
+        .sort();
+    }
+  } catch {
+    // Ignore errors
+  }
+
+  const hasMore = offset + results.length < totalFilteredCount;
+
+  let summary = `Found ${results.length} method(s) for resource "${resourceType}"`;
+  if (action) summary += `, action "${action}"`;
+  if (scope !== 'all') summary += `, scope "${scope}"`;
+  if (exclude) {
+    if (exclude.actions && exclude.actions.length > 0) {
+      summary += `, excluding actions: [${exclude.actions.join(', ')}]`;
+    }
+    if (exclude.apiClasses && exclude.apiClasses.length > 0) {
+      summary += `, excluding API classes: [${exclude.apiClasses.join(', ')}]`;
+    }
+  }
+  summary += ` (search: ${searchTime.toFixed(2)}ms)`;
+
+  if (offset > 0 || hasMore) {
+    summary += ` | Page: ${Math.floor(offset / limit) + 1}, showing ${offset + 1}-${offset + results.length} of ${totalFilteredCount}`;
+  }
+  summary += `\n\n`;
+
+  if (Object.keys(facets.apiClass).length > 0) {
+    summary += `FACETS (refine your search):\n`;
+    summary += `   API Classes: ${Object.entries(facets.apiClass).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+    summary += `   Actions: ${Object.entries(facets.action).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+    summary += `   Scopes: ${Object.entries(facets.scope).map(([k, v]) => `${k}(${v})`).join(', ')}\n\n`;
+  }
+
+  if (cachedScripts.length > 0) {
+    summary += `EXISTING CACHED SCRIPTS (${cachedScripts.length}):\n`;
+    cachedScripts.forEach(script => {
+      summary += `   - ${script}\n`;
+    });
+    summary += `   (Location: ${scriptsDirectory})\n\n`;
+  }
+
+  summary += `Write scripts to: ${scriptsDirectory}/<name>.ts\n`;
+  summary += `Run with: npx tsx ${scriptsDirectory}/<name>.ts\n`;
+  summary += `For type definitions: use mode: "types" with types: ["V1Pod"]\n\n`;
+
+  results.forEach((method, i) => {
+    summary += `${i + 1}. ${method.apiClass}.${method.methodName}\n`;
+
+    if (method.inputSchema.required.length > 0) {
+      const params = method.inputSchema.required.map(r =>
+        `${r}: "${method.inputSchema.properties[r]?.type || 'string'}"`
+      ).join(', ');
+      summary += `   method_args: { ${params} }\n`;
+    } else {
+      summary += `   method_args: {} (empty object - required)\n`;
+    }
+
+    const isList = method.methodName.startsWith('list');
+    if (isList) {
+      summary += `   return_values: response.items (array of ${method.resourceType})\n`;
+    } else {
+      summary += `   return_values: response (${method.resourceType} object)\n`;
+    }
+
+    summary += `\n`;
+  });
+
+  if (results.length === 0) {
+    summary += `No methods found. Try:\n`;
+    summary += `- Different resourceType (e.g., "Pod", "Deployment", "Service")\n`;
+    summary += `- Omit action to see all available methods\n`;
+    summary += `- Use scope: "all" to see both namespaced and cluster methods\n`;
+  }
+
+  const usage =
+    'USAGE:\n' +
+    '- All methods require object parameter: await api.method({ param: value })\n' +
+    '- List operations return: response.items (array)\n' +
+    '- Single resource operations return: response (object)\n' +
+    `- Write scripts to: ${scriptsDirectory}/<yourscript>.ts\n` +
+    `- Import: import * as k8s from '@kubernetes/client-node';\n` +
+    `- Run: npx tsx ${scriptsDirectory}/<yourscript>.ts`;
+
+  return {
+    mode: 'methods',
+    summary,
+    tools: results,
+    totalMatches: totalFilteredCount,
+    usage,
+    paths: {
+      scriptsDirectory,
+    },
+    cachedScripts,
+    facets,
+    searchTime,
+    pagination: {
+      offset,
+      limit,
+      hasMore,
+    },
+  };
+}
+
+// ============================================================================
+// Main Tool Export
+// ============================================================================
+
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
   name: 'kubernetes.searchTools',
-  description: 
-    'Find Kubernetes API methods by resource type and action. ' +
-    'Returns API methods from @kubernetes/client-node that you can use directly in your scripts. ' +
-    'Parameters: resourceType (e.g., "Pod", "Deployment"), action (optional: list, read, create, delete, patch, replace), scope (namespaced/cluster/all), exclude (optional: filter out by actions and/or apiClasses), limit (default: 10, max: 50), offset (default: 0, for pagination). ' +
-    'Available actions: list (list resources), read (get single resource), create (create resource), delete (delete resource), patch (update resource), replace (replace resource), connect (exec/logs/proxy), get, watch. ' +
-    'COMMON SEARCH PATTERNS: (1) Pod logs: use resourceType "Log" or "PodLog" (NOT "Pod" with action "connect"). Example: { resourceType: "Log" } returns CoreV1Api.readNamespacedPodLog. ' +
-    '(2) Pod exec/attach: use { resourceType: "Pod", action: "connect" } returns connectGetNamespacedPodExec, connectPostNamespacedPodAttach. ' +
-    '(3) Pod eviction (drain nodes): use { resourceType: "Eviction" } or { resourceType: "PodEviction" } returns CoreV1Api.createNamespacedPodEviction. ' +
-    '(4) Binding pods to nodes: use { resourceType: "Binding" } or { resourceType: "PodBinding" } returns CoreV1Api.createNamespacedPodBinding. ' +
-    '(5) Service account tokens: use { resourceType: "ServiceAccountToken" } returns CoreV1Api.createNamespacedServiceAccountToken. ' +
-    '(6) Cluster health: use { resourceType: "ComponentStatus" } returns CoreV1Api.listComponentStatus. ' +
-    '(7) Status subresources: use full resource name like { resourceType: "DeploymentStatus" }. ' +
-    '(8) Scale subresources: use full resource name like { resourceType: "DeploymentScale" }. ' +
-    'TIP: Use the exclude parameter to get more precise results by filtering out unwanted methods. ' +
-    'Exclude examples: (1) Only action: { actions: ["delete"] } excludes all delete methods. ' +
-    '(2) Multiple actions: { actions: ["delete", "create"] } excludes both delete and create methods. ' +
-    '(3) By API class: { apiClasses: ["CoreV1Api"] } excludes all CoreV1Api methods. ' +
-    '(4) Both action and apiClass (AND logic): { actions: ["delete"], apiClasses: ["CoreV1Api"] } excludes only delete methods from CoreV1Api, keeping other CoreV1Api methods and delete methods from other API classes. ' +
-    'Exclude is especially useful when searching broad resource types (e.g., "Pod" returns methods from CoreV1Api, AutoscalingV1Api, PolicyV1Api). ' +
-    'CUSTOM SCRIPTS: Before writing new scripts, check scripts/cache/ directory for existing implementations. ' +
-    'When creating custom scripts in scripts/cache/, follow Kubernetes library naming pattern to make them easily discoverable: ' +
-    'use action-scope-resource format (e.g., "list-namespaced-pod", "read-namespaced-pod-log", "create-namespaced-deployment"). ' +
-    'Example: For listing etcd pods in kube-system, name it "list-namespaced-etcd-pods.ts" NOT "get-etcd-pods.ts". ' +
-    'This naming convention makes scripts searchable and helps avoid duplicates.',
+  description:
+    'Find Kubernetes API methods or get type definitions. ' +
+    'MODES: ' +
+    '• methods (default): Search for API methods by resource type. ' +
+    'Params: resourceType (required), action, scope, exclude, limit, offset. ' +
+    'Example: { resourceType: "Pod", action: "list" } ' +
+    '• types: Get TypeScript type definitions with path navigation. ' +
+    'Params: types (required), depth. ' +
+    'Example: { mode: "types", types: ["V1Pod", "V1Deployment.spec.template.spec"] } ' +
+    'Actions: list, read, create, delete, patch, replace, connect, get, watch. ' +
+    'Scopes: namespaced, cluster, all.',
   schema: SearchToolsInputSchema,
   async execute(input) {
-    const { resourceType, action, scope = 'all', exclude, limit = 10, offset = 0 } = input;
+    const { mode = 'methods' } = input;
 
-    // Use Orama for intelligent full-text search with typo tolerance and relevance scoring
-    const { results: oramaResults, totalFilteredCount, facets, searchTime } = await searchWithOrama(
-      resourceType,
-      action,
-      scope,
-      exclude,
-      limit,
-      offset
-    );
-
-    // Get full method details for the matched results
-    const allMethods = extractKubernetesApiMethods();
-    const methodMap = new Map(allMethods.map(m => [`${m.apiClass}.${m.methodName}`, m]));
-
-    const results: KubernetesApiMethod[] = oramaResults
-      .map(doc => methodMap.get(doc.id))
-      .filter((m): m is KubernetesApiMethod => m !== undefined);
-
-    // Define paths early so they can be used in summary
-    const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
-
-    // Initialize scripts directory with node_modules symlink
-    initializeScriptsDirectory(scriptsDirectory);
-
-    // List existing cached scripts
-    let cachedScripts: string[] = [];
-    try {
-      if (existsSync(scriptsDirectory)) {
-        cachedScripts = readdirSync(scriptsDirectory)
-          .filter(f => f.endsWith('.ts'))
-          .sort();
-      }
-    } catch {
-      // Ignore errors if directory doesn't exist or can't be read
+    if (mode === 'types') {
+      return executeTypeMode(input);
+    } else {
+      return executeMethodMode(input);
     }
-
-    // Calculate pagination metadata
-    const hasMore = offset + results.length < totalFilteredCount;
-
-    // Structured output - clear and unambiguous
-    let summary = `Found ${results.length} method(s) for resource "${resourceType}"`;
-    if (action) summary += `, action "${action}"`;
-    if (scope !== 'all') summary += `, scope "${scope}"`;
-    if (exclude) {
-      if (exclude.actions && exclude.actions.length > 0) {
-        summary += `, excluding actions: [${exclude.actions.join(', ')}]`;
-      }
-      if (exclude.apiClasses && exclude.apiClasses.length > 0) {
-        summary += `, excluding API classes: [${exclude.apiClasses.join(', ')}]`;
-      }
-    }
-    summary += ` (search: ${searchTime.toFixed(2)}ms)`;
-
-    // Add pagination info to summary
-    if (offset > 0 || hasMore) {
-      summary += ` | Page: ${Math.floor(offset / limit) + 1}, showing ${offset + 1}-${offset + results.length} of ${totalFilteredCount}`;
-    }
-    summary += `\n\n`;
-
-    // Show facets for discovery (what else is available)
-    if (Object.keys(facets.apiClass).length > 0) {
-      summary += `📊 FACETS (refine your search):\n`;
-      summary += `   API Classes: ${Object.entries(facets.apiClass).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
-      summary += `   Actions: ${Object.entries(facets.action).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
-      summary += `   Scopes: ${Object.entries(facets.scope).map(([k, v]) => `${k}(${v})`).join(', ')}\n\n`;
-    }
-
-    // Show existing cached scripts if any
-    if (cachedScripts.length > 0) {
-      summary += `📝 EXISTING CACHED SCRIPTS (${cachedScripts.length}):\n`;
-      cachedScripts.forEach(script => {
-        summary += `   - ${script}\n`;
-      });
-      summary += `   (Location: ${scriptsDirectory})\n\n`;
-    }
-
-    summary += `Write scripts to: ${scriptsDirectory}/<name>.ts and run with: npx tsx ${scriptsDirectory}/<name>.ts\n`;
-    summary += `IMPORTANT: Check existing cached scripts above before creating new ones to avoid duplicates\n`;
-    summary += `Custom script naming convention: Use k8s library pattern (e.g., list-namespaced-pod, read-namespaced-pod-log)\n`;
-    summary += `For detailed type definitions: use kubernetes.getTypeDefinition tool\n\n`;
-
-    results.forEach((method, i) => {
-      summary += `${i + 1}. ${method.apiClass}.${method.methodName}\n`;
-
-      // Method arguments
-      if (method.inputSchema.required.length > 0) {
-        const params = method.inputSchema.required.map(r =>
-          `${r}: "${method.inputSchema.properties[r]?.type || 'string'}"`
-        ).join(', ');
-        summary += `   method_args: { ${params} }\n`;
-      } else {
-        summary += `   method_args: {} (empty object - required)\n`;
-      }
-
-      // Return values
-      const isList = method.methodName.startsWith('list');
-      if (isList) {
-        summary += `   return_values: response.items (array of ${method.resourceType})\n`;
-      } else {
-        summary += `   return_values: response (${method.resourceType} object)\n`;
-      }
-
-      // Include inline type definitions if available (brief overview)
-      if (method.typeDefinitions && method.typeDefinitions.output) {
-        const lines = method.typeDefinitions.output.split('\n');
-        const typeName = lines[0]?.trim() || 'unknown';
-
-        // Extract key properties (just first 2-3)
-        const propertyLines = lines.slice(1, 4).filter(l => l.trim() && !l.includes('}'));
-
-        summary += `   return_types: ${typeName}\n`;
-        if (propertyLines.length > 0) {
-          summary += `     key properties: ${propertyLines.map(l => l.trim()).join(', ')}\n`;
-        }
-        summary += `     (use kubernetes.getTypeDefinition for complete type details)\n`;
-      }
-
-      summary += `\n`;
-    });
-
-    if (results.length === 0) {
-      summary += `No methods found. Try:\n`;
-      summary += `- Different resourceType (e.g., "Pod", "Deployment", "Service")\n`;
-      summary += `- Check for typos - Orama has typo tolerance but needs a close match\n`;
-      summary += `- Omit action to see all available methods\n`;
-      summary += `- Use scope: "all" to see both namespaced and cluster methods\n`;
-    }
-
-    const usage =
-      'USAGE:\n' +
-      '- All methods require object parameter: await api.method({ param: value })\n' +
-      '- No required params: await api.method({})\n' +
-      '- List operations return: response.items (array)\n' +
-      '- Single resource operations return: response (object)\n' +
-      `- Write scripts to: ${scriptsDirectory}/<yourscript>.ts\n` +
-      `- IMPORTANT: Import using package name: import * as k8s from '@kubernetes/client-node';\n` +
-      `- Run with: npx tsx ${scriptsDirectory}/<yourscript>.ts\n` +
-      `- The @kubernetes/client-node package is available (installed with this MCP server)`;
-
-    return {
-      summary,
-      tools: results,
-      totalMatches: totalFilteredCount,
-      usage,
-      paths: {
-        scriptsDirectory,
-      },
-      cachedScripts,
-      facets,
-      searchTime,
-      pagination: {
-        offset,
-        limit,
-        hasMore,
-      },
-    };
   },
 };
 
