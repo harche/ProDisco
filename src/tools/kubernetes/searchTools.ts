@@ -1488,6 +1488,18 @@ async function executeMethodMode(input: z.infer<typeof SearchToolsInputSchema>):
 }
 
 // ============================================================================
+// Warmup Export
+// ============================================================================
+
+/**
+ * Pre-warm the Orama search index during server startup.
+ * This avoids the indexing delay on the first search request.
+ */
+export async function warmupSearchIndex(): Promise<void> {
+  await initializeOramaDb();
+}
+
+// ============================================================================
 // Main Tool Export
 // ============================================================================
 

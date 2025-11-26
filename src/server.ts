@@ -10,7 +10,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version?: string };
-import { searchToolsTool } from './tools/kubernetes/searchTools.js';
+import { searchToolsTool, warmupSearchIndex } from './tools/kubernetes/searchTools.js';
 import {
   PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH,
   listGeneratedFiles,
@@ -29,12 +29,9 @@ const server = new McpServer(
   {
     instructions:
       'Kubernetes operations via Progressive Disclosure. Use the kubernetes.searchTools tool to discover available operations. ' +
-      'The tool returns available Kubernetes API methods and includes a "paths" object with: ' +
-      '(1) scriptsDirectory: where to write helper scripts (e.g., ~/.prodisco/scripts/cache/), ' +
-      '(2) packageDirectory: where dependencies are installed (use for imports). ' +
-      'Write scripts to the scriptsDirectory path and import dependencies from packageDirectory/node_modules/@kubernetes/client-node. ' +
-      'Example: import * as k8s from \'/path/from/packageDirectory/node_modules/@kubernetes/client-node\'. ' +
-      'Always use absolute paths from the paths object to ensure scripts work from any directory.',
+      'The tool returns available Kubernetes API methods and a "paths.scriptsDirectory" for writing scripts. ' +
+      'Write scripts to scriptsDirectory and use bare imports: import * as k8s from \'@kubernetes/client-node\'. ' +
+      'The scriptsDirectory has a node_modules symlink that handles package resolution automatically.',
   },
 );
 
@@ -147,7 +144,10 @@ async function main() {
   const scriptsDir = path.join(os.homedir(), '.prodisco', 'scripts', 'cache');
   fs.mkdirSync(scriptsDir, { recursive: true });
   console.error(`📝 Scripts directory: ${scriptsDir}`);
-  
+
+  // Pre-warm the Orama search index to avoid delay on first search
+  await warmupSearchIndex();
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('Kubernetes MCP server ready on stdio');
