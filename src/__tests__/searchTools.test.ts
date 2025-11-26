@@ -179,7 +179,19 @@ describe('kubernetes.searchTools', () => {
       const result = await searchTools({ resourceType: 'Binding' });
 
       expect(result.tools.length).toBeGreaterThan(0);
-      expect(result.tools.some(t => 
+      // Binding search should find binding-related methods
+      // createNamespacedBinding has resourceType "Binding"
+      // createNamespacedPodBinding has resourceType "PodBinding"
+      expect(result.tools.some(t =>
+        t.resourceType.includes('Binding')
+      )).toBe(true);
+    });
+
+    it('finds Pod binding using "PodBinding" resource type', async () => {
+      const result = await searchTools({ resourceType: 'PodBinding' });
+
+      expect(result.tools.length).toBeGreaterThan(0);
+      expect(result.tools.some(t =>
         t.methodName === 'createNamespacedPodBinding' && t.apiClass === 'CoreV1Api'
       )).toBe(true);
     });

@@ -6,6 +6,8 @@ import { join } from 'path';
 import * as os from 'os';
 import type { ToolDefinition } from '../types.js';
 import { PACKAGE_ROOT } from '../../util/paths.js';
+import { create, insert, search } from '@orama/orama';
+import type { Orama, Results, SearchParams } from '@orama/orama';
 
 const SearchToolsInputSchema = z.object({
   resourceType: z
@@ -85,10 +87,310 @@ type SearchToolsResult = {
     scriptsDirectory: string;
   };
   cachedScripts: string[];
+  // New: Orama-powered facets for discovery
+  facets?: {
+    apiClass: Record<string, number>;
+    action: Record<string, number>;
+    scope: Record<string, number>;
+  };
+  searchTime?: number;
 };
 
 // Cache for Kubernetes API methods
 let apiMethodsCache: KubernetesApiMethod[] | null = null;
+
+// ============================================================================
+// Orama Search Engine Configuration
+// ============================================================================
+
+/**
+ * Orama schema for Kubernetes API methods
+ *
+ * Design decisions based on Orama best practices:
+ * - `string` types for full-text searchable fields (resourceType, methodName, description)
+ * - `enum` types for exact-match filterable fields (action, scope, apiClass)
+ * - stemmerSkipProperties for code identifiers that shouldn't be stemmed
+ * - Boosting configured at search time for relevance tuning
+ */
+const oramaSchema = {
+  // Full-text searchable fields
+  resourceType: 'string',        // "Pod", "Deployment" - boosted 3x
+  methodName: 'string',          // "listNamespacedPod" - boosted 2x
+  description: 'string',         // Full description text - boosted 1x
+
+  // Enhanced search field: CamelCase split for better matching
+  // e.g., "PodExec" becomes "Pod Exec", "ServiceAccountToken" becomes "Service Account Token"
+  searchTokens: 'string',
+
+  // Filterable enum fields (exact match, used in where clause)
+  action: 'enum',                // "list", "create", "read", "delete", "patch", "replace", "connect", "watch"
+  scope: 'enum',                 // "namespaced", "cluster", "forAllNamespaces"
+  apiClass: 'enum',              // "CoreV1Api", "AppsV1Api", etc.
+
+  // Stored metadata (for display, not heavily searched)
+  id: 'string',                  // Unique identifier: apiClass.methodName
+} as const;
+
+type OramaK8sDocument = {
+  id: string;
+  resourceType: string;
+  methodName: string;
+  description: string;
+  searchTokens: string;
+  action: string;
+  scope: string;
+  apiClass: string;
+};
+
+/**
+ * Split CamelCase into searchable tokens
+ * e.g., "PodExec" -> "Pod Exec", "ServiceAccountToken" -> "Service Account Token"
+ */
+function splitCamelCase(str: string): string {
+  return str.replace(/([a-z])([A-Z])/g, '$1 $2');
+}
+
+// Orama database instance cache
+let oramaDb: Orama<typeof oramaSchema> | null = null;
+
+/**
+ * Extract the action from a method name
+ */
+function extractAction(methodName: string): string {
+  const lowerMethod = methodName.toLowerCase();
+  const actions = ['list', 'read', 'create', 'delete', 'patch', 'replace', 'connect', 'watch', 'get'];
+  for (const action of actions) {
+    if (lowerMethod.startsWith(action)) {
+      return action;
+    }
+  }
+  return 'unknown';
+}
+
+/**
+ * Extract the scope from a method name
+ */
+function extractScope(methodName: string): string {
+  const lowerMethod = methodName.toLowerCase();
+  if (lowerMethod.includes('forallnamespaces')) {
+    return 'forAllNamespaces';
+  }
+  if (lowerMethod.includes('namespaced')) {
+    return 'namespaced';
+  }
+  return 'cluster';
+}
+
+/**
+ * Initialize and populate the Orama search database
+ */
+async function initializeOramaDb(): Promise<Orama<typeof oramaSchema>> {
+  if (oramaDb) {
+    return oramaDb;
+  }
+
+  // Create Orama instance with optimized configuration
+  const db = await create({
+    schema: oramaSchema,
+    components: {
+      tokenizer: {
+        stemming: true,
+        // Skip stemming for code identifiers - they should match exactly
+        stemmerSkipProperties: ['methodName', 'resourceType', 'apiClass', 'id'],
+      },
+    },
+  });
+
+  // Get all API methods and index them
+  const methods = extractKubernetesApiMethods();
+
+  for (const method of methods) {
+    // Skip WithHttpInfo variants
+    if (method.methodName.toLowerCase().includes('withhttpinfo')) {
+      continue;
+    }
+
+    // Build searchTokens: CamelCase split of resourceType and methodName for better matching
+    // This helps match "Pod" when searching for "PodExec", "PodBinding", etc.
+    const searchTokens = [
+      splitCamelCase(method.resourceType),
+      splitCamelCase(method.methodName),
+      method.apiClass,
+    ].join(' ');
+
+    const doc: OramaK8sDocument = {
+      id: `${method.apiClass}.${method.methodName}`,
+      resourceType: method.resourceType,
+      methodName: method.methodName,
+      description: method.description,
+      searchTokens,
+      action: extractAction(method.methodName),
+      scope: extractScope(method.methodName),
+      apiClass: method.apiClass,
+    };
+
+    await insert(db, doc);
+  }
+
+  oramaDb = db;
+  console.error(`Orama: Indexed ${methods.length} Kubernetes API methods with full-text search`);
+  return db;
+}
+
+/**
+ * Search using Orama with advanced features:
+ * - Full-text search with typo tolerance
+ * - Field boosting (resourceType 3x, methodName 2x)
+ * - Post-search filtering for action/scope (Orama enum filters are limited)
+ * - Faceted results for discovery
+ */
+async function searchWithOrama(
+  resourceType: string,
+  action: string | undefined,
+  scope: string,
+  exclude: { actions?: string[]; apiClasses?: string[] } | undefined,
+  limit: number
+): Promise<{
+  results: OramaK8sDocument[];
+  facets: {
+    apiClass: Record<string, number>;
+    action: Record<string, number>;
+    scope: Record<string, number>;
+  };
+  searchTime: number;
+}> {
+  const db = await initializeOramaDb();
+
+  // Build search params with Orama best practices
+  // Note: We do filtering post-search because Orama's where clause has limitations
+  // with enum types and multiple conditions
+  const searchParams: SearchParams<Orama<typeof oramaSchema>, OramaK8sDocument> = {
+    term: resourceType,
+
+    // Search in these properties (searchTokens helps match CamelCase splits)
+    properties: ['resourceType', 'methodName', 'description', 'searchTokens'],
+
+    // Boost field importance: resourceType matches are 3x more important
+    // searchTokens gets high boost because it contains the split CamelCase terms
+    boost: {
+      resourceType: 3,
+      searchTokens: 2.5,
+      methodName: 2,
+      description: 1,
+    },
+
+    // Typo tolerance: allow 1 typo per word for better UX
+    tolerance: 1,
+
+    // Get more results initially to allow for post-search filtering
+    limit: Math.max(limit * 5, 50),
+
+    // Generate facets for discovery
+    facets: {
+      apiClass: {},
+      action: {},
+      scope: {},
+    },
+  };
+
+  const startTime = performance.now();
+  const searchResult: Results<OramaK8sDocument> = await search(db, searchParams);
+  const searchTime = performance.now() - startTime;
+
+  // Apply post-search filtering for action, scope, and exclusions
+  let filteredHits = searchResult.hits;
+
+  // Filter by action if provided
+  if (action) {
+    const lowerAction = action.toLowerCase();
+    filteredHits = filteredHits.filter(hit =>
+      hit.document.action === lowerAction
+    );
+  }
+
+  // Filter by scope
+  if (scope === 'namespaced') {
+    filteredHits = filteredHits.filter(hit =>
+      hit.document.scope === 'namespaced'
+    );
+  } else if (scope === 'cluster') {
+    // Cluster scope includes both 'cluster' and 'forAllNamespaces'
+    filteredHits = filteredHits.filter(hit =>
+      hit.document.scope === 'cluster' || hit.document.scope === 'forAllNamespaces'
+    );
+  }
+  // scope === 'all' means no filtering
+
+  // Apply exclusions
+  if (exclude) {
+    filteredHits = filteredHits.filter(hit => {
+      const doc = hit.document;
+      const hasActions = exclude.actions && exclude.actions.length > 0;
+      const hasApiClasses = exclude.apiClasses && exclude.apiClasses.length > 0;
+
+      if (hasActions && hasApiClasses) {
+        // AND logic: both must match to exclude
+        const matchesAction = exclude.actions!.some(a =>
+          doc.action === a.toLowerCase() || doc.methodName.toLowerCase().includes(a.toLowerCase())
+        );
+        const matchesApiClass = exclude.apiClasses!.includes(doc.apiClass);
+        return !(matchesAction && matchesApiClass);
+      } else if (hasActions) {
+        const matchesAction = exclude.actions!.some(a =>
+          doc.action === a.toLowerCase() || doc.methodName.toLowerCase().includes(a.toLowerCase())
+        );
+        return !matchesAction;
+      } else if (hasApiClasses) {
+        return !exclude.apiClasses!.includes(doc.apiClass);
+      }
+      return true;
+    });
+  }
+
+  // Extract facets (from the full result set, not filtered)
+  const facets = {
+    apiClass: {} as Record<string, number>,
+    action: {} as Record<string, number>,
+    scope: {} as Record<string, number>,
+  };
+
+  if (searchResult.facets) {
+    if (searchResult.facets.apiClass?.values) {
+      for (const [key, value] of Object.entries(searchResult.facets.apiClass.values)) {
+        facets.apiClass[key] = value as number;
+      }
+    }
+    if (searchResult.facets.action?.values) {
+      for (const [key, value] of Object.entries(searchResult.facets.action.values)) {
+        facets.action[key] = value as number;
+      }
+    }
+    if (searchResult.facets.scope?.values) {
+      for (const [key, value] of Object.entries(searchResult.facets.scope.values)) {
+        facets.scope[key] = value as number;
+      }
+    }
+  }
+
+  // Sort results to prioritize exact resourceType matches
+  // This ensures that searching for "Namespace" returns Namespace resources first
+  const sortedHits = filteredHits.sort((a, b) => {
+    const aExact = a.document.resourceType.toLowerCase() === resourceType.toLowerCase();
+    const bExact = b.document.resourceType.toLowerCase() === resourceType.toLowerCase();
+
+    if (aExact && !bExact) return -1;
+    if (!aExact && bExact) return 1;
+
+    // If both are exact or both are partial, maintain Orama's relevance score order
+    return (b.score || 0) - (a.score || 0);
+  });
+
+  return {
+    results: sortedHits.slice(0, limit).map(hit => hit.document),
+    facets,
+    searchTime,
+  };
+}
 
 /**
  * Initialize scripts directory with node_modules symlink for package resolution
@@ -571,12 +873,26 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
   async execute(input) {
     const { resourceType, action, scope = 'all', exclude, limit = 10 } = input;
 
-    const methods = extractKubernetesApiMethods();
-    const results = matchMethods(resourceType, action, scope, exclude, methods, limit);
+    // Use Orama for intelligent full-text search with typo tolerance and relevance scoring
+    const { results: oramaResults, facets, searchTime } = await searchWithOrama(
+      resourceType,
+      action,
+      scope,
+      exclude,
+      limit
+    );
+
+    // Get full method details for the matched results
+    const allMethods = extractKubernetesApiMethods();
+    const methodMap = new Map(allMethods.map(m => [`${m.apiClass}.${m.methodName}`, m]));
+
+    const results: KubernetesApiMethod[] = oramaResults
+      .map(doc => methodMap.get(doc.id))
+      .filter((m): m is KubernetesApiMethod => m !== undefined);
 
     // Define paths early so they can be used in summary
     const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
-    
+
     // Initialize scripts directory with node_modules symlink
     initializeScriptsDirectory(scriptsDirectory);
 
@@ -604,8 +920,16 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
         summary += `, excluding API classes: [${exclude.apiClasses.join(', ')}]`;
       }
     }
-    summary += '\n\n';
-    
+    summary += ` (search: ${searchTime.toFixed(2)}ms)\n\n`;
+
+    // Show facets for discovery (what else is available)
+    if (Object.keys(facets.apiClass).length > 0) {
+      summary += `📊 FACETS (refine your search):\n`;
+      summary += `   API Classes: ${Object.entries(facets.apiClass).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+      summary += `   Actions: ${Object.entries(facets.action).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+      summary += `   Scopes: ${Object.entries(facets.scope).map(([k, v]) => `${k}(${v})`).join(', ')}\n\n`;
+    }
+
     // Show existing cached scripts if any
     if (cachedScripts.length > 0) {
       summary += `📝 EXISTING CACHED SCRIPTS (${cachedScripts.length}):\n`;
@@ -614,25 +938,25 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       });
       summary += `   (Location: ${scriptsDirectory})\n\n`;
     }
-    
+
     summary += `Write scripts to: ${scriptsDirectory}/<name>.ts and run with: npx tsx ${scriptsDirectory}/<name>.ts\n`;
     summary += `IMPORTANT: Check existing cached scripts above before creating new ones to avoid duplicates\n`;
     summary += `Custom script naming convention: Use k8s library pattern (e.g., list-namespaced-pod, read-namespaced-pod-log)\n`;
     summary += `For detailed type definitions: use kubernetes.getTypeDefinition tool\n\n`;
-    
+
     results.forEach((method, i) => {
       summary += `${i + 1}. ${method.apiClass}.${method.methodName}\n`;
-      
+
       // Method arguments
       if (method.inputSchema.required.length > 0) {
-        const params = method.inputSchema.required.map(r => 
+        const params = method.inputSchema.required.map(r =>
           `${r}: "${method.inputSchema.properties[r]?.type || 'string'}"`
         ).join(', ');
         summary += `   method_args: { ${params} }\n`;
       } else {
         summary += `   method_args: {} (empty object - required)\n`;
       }
-      
+
       // Return values
       const isList = method.methodName.startsWith('list');
       if (isList) {
@@ -640,33 +964,34 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       } else {
         summary += `   return_values: response (${method.resourceType} object)\n`;
       }
-      
+
       // Include inline type definitions if available (brief overview)
       if (method.typeDefinitions && method.typeDefinitions.output) {
         const lines = method.typeDefinitions.output.split('\n');
         const typeName = lines[0]?.trim() || 'unknown';
-        
+
         // Extract key properties (just first 2-3)
         const propertyLines = lines.slice(1, 4).filter(l => l.trim() && !l.includes('}'));
-        
+
         summary += `   return_types: ${typeName}\n`;
         if (propertyLines.length > 0) {
           summary += `     key properties: ${propertyLines.map(l => l.trim()).join(', ')}\n`;
         }
         summary += `     (use kubernetes.getTypeDefinition for complete type details)\n`;
       }
-      
+
       summary += `\n`;
     });
 
     if (results.length === 0) {
       summary += `No methods found. Try:\n`;
       summary += `- Different resourceType (e.g., "Pod", "Deployment", "Service")\n`;
+      summary += `- Check for typos - Orama has typo tolerance but needs a close match\n`;
       summary += `- Omit action to see all available methods\n`;
       summary += `- Use scope: "all" to see both namespaced and cluster methods\n`;
     }
 
-    const usage = 
+    const usage =
       'USAGE:\n' +
       '- All methods require object parameter: await api.method({ param: value })\n' +
       '- No required params: await api.method({})\n' +
@@ -686,6 +1011,8 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
         scriptsDirectory,
       },
       cachedScripts,
+      facets,
+      searchTime,
     };
   },
 };
