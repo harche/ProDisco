@@ -17,6 +17,7 @@ import {
   listGeneratedFiles,
   readGeneratedFile,
 } from './resources/filesystem.js';
+import { probeClusterConnectivity } from './kube/client.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -155,6 +156,18 @@ server.registerTool(
 );
 
 async function main() {
+  // Probe cluster connectivity before starting the server
+  // This ensures we fail fast if the cluster is not reachable
+  logger.info('Probing Kubernetes cluster connectivity...');
+  try {
+    await probeClusterConnectivity();
+    logger.info('Kubernetes cluster is reachable');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(`Failed to connect to Kubernetes cluster: ${message}`);
+    throw new Error(`Kubernetes cluster is not accessible: ${message}`);
+  }
+
   // Ensure ~/.prodisco/scripts/cache/ directory exists (using async API for consistency)
   const scriptsDir = path.join(os.homedir(), '.prodisco', 'scripts', 'cache');
   await fs.promises.mkdir(scriptsDir, { recursive: true });

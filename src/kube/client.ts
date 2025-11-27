@@ -71,6 +71,19 @@ export function resetKubeClients(): void {
   cachedClients = null;
 }
 
+/**
+ * Probes the Kubernetes cluster to verify connectivity.
+ * Makes a lightweight API call to check if the cluster is reachable.
+ * @throws Error if the cluster is not accessible
+ */
+export async function probeClusterConnectivity(): Promise<void> {
+  const { core } = getKubeClients();
+
+  // Use a lightweight API call - getting API versions or listing namespaces with limit=1
+  // This verifies both network connectivity and authentication
+  await core.listNamespace({ limit: 1 });
+}
+
 export function splitApiVersion(apiVersion: string): { group?: string; version: string } {
   if (!apiVersion.includes('/')) {
     return { version: apiVersion };
