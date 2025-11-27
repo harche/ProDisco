@@ -1,9 +1,41 @@
-import { describe, expect, it, beforeAll, afterAll } from 'vitest';
+import { describe, expect, it, afterAll } from 'vitest';
 import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import * as os from 'os';
 
 import { searchToolsTool } from '../tools/kubernetes/searchTools.js';
+
+// =============================================================================
+// Test Script Setup - MUST happen before any tests run to ensure the script
+// is indexed when Orama DB is initialized during the first test
+// =============================================================================
+const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+const testScriptName = 'test-search-pods.ts';
+const testScriptPath = join(scriptsDirectory, testScriptName);
+const testScriptContent = `/**
+ * Test script for searching pods in a namespace.
+ * Uses CoreV1Api to list pods.
+ */
+import * as k8s from '@kubernetes/client-node';
+
+const kc = new k8s.KubeConfig();
+kc.loadFromDefault();
+const api = kc.makeApiClient(k8s.CoreV1Api);
+
+async function main() {
+  const response = await api.listNamespacedPod({ namespace: 'default' });
+  console.log(response.items);
+}
+
+main();
+`;
+
+// Create the test script immediately at module load time
+// This ensures it exists before the Orama DB is initialized
+if (!existsSync(scriptsDirectory)) {
+  mkdirSync(scriptsDirectory, { recursive: true });
+}
+writeFileSync(testScriptPath, testScriptContent);
 
 // Helper to work around TypeScript/Zod type inference limitation with .optional().default()
 // The 'scope' parameter has a default value but TypeScript doesn't infer it as optional in the input type
@@ -978,53 +1010,10 @@ describe('kubernetes.searchTools', () => {
 });
 
 describe('kubernetes.searchTools - Scripts Mode', () => {
-  const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
-  const testScriptName = 'test-search-pods.ts';
-  const testScriptPath = join(scriptsDirectory, testScriptName);
-  const testScriptContent = `/**
- * Test script for searching pods in a namespace.
- * Uses CoreV1Api to list pods.
- */
-import * as k8s from '@kubernetes/client-node';
+  // Test script is created at module load time (see top of file)
+  // This ensures it exists before Orama DB is initialized
 
-const kc = new k8s.KubeConfig();
-kc.loadFromDefault();
-const api = kc.makeApiClient(k8s.CoreV1Api);
-
-async function main() {
-  const response = await api.listNamespacedPod({ namespace: 'default' });
-  console.log(response.items);
-}
-
-main();
-`;
-
-  // Create a test script before tests run
-  beforeAll(async () => {
-    // Ensure directory exists
-    if (!existsSync(scriptsDirectory)) {
-      mkdirSync(scriptsDirectory, { recursive: true });
-    }
-    // Create test script
-    writeFileSync(testScriptPath, testScriptContent);
-    // Wait for the watcher to pick up the file and index it
-    // Poll until the script appears in search results (max 5 seconds)
-    const maxWaitMs = 5000;
-    const pollIntervalMs = 100;
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < maxWaitMs) {
-      const result = await searchScripts({ mode: 'scripts', limit: 100 });
-      if (result.scripts.some(s => s.filename === testScriptName)) {
-        return; // Script is indexed, we can proceed
-      }
-      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
-    }
-    // If we get here, the script wasn't indexed in time, but tests will still run
-    // and fail with a clear error message
-  });
-
-  // Clean up test script after tests
+  // Clean up test script after all tests complete
   afterAll(() => {
     if (existsSync(testScriptPath)) {
       unlinkSync(testScriptPath);
