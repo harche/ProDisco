@@ -9,6 +9,28 @@ import { PACKAGE_ROOT } from '../../util/paths.js';
 import { create, insert, search, remove } from '@orama/orama';
 import type { Orama, Results, SearchParams } from '@orama/orama';
 import chokidar from 'chokidar';
+import { logger } from '../../util/logger.js';
+
+// ============================================================================
+// Search Configuration Constants
+// ============================================================================
+
+/** Maximum number of resource types to extract from script content to prevent noise */
+const MAX_RESOURCE_TYPES_FROM_CONTENT = 10;
+
+/** Multiplier for initial search results to allow for post-filtering and pagination */
+const SEARCH_RESULTS_MULTIPLIER = 3;
+
+/** Minimum number of search results to fetch before post-filtering */
+const MIN_SEARCH_RESULTS = 100;
+
+/** Maximum number of relevant scripts to show in method search results */
+const MAX_RELEVANT_SCRIPTS = 5;
+
+/** Default maximum number of properties to show when formatting type definitions */
+const DEFAULT_MAX_TYPE_PROPERTIES = 20;
+
+// ============================================================================
 
 const SearchToolsInputSchema = z.object({
   // Mode selection - determines which operation to perform
@@ -211,7 +233,7 @@ interface TypeInfo {
 /**
  * Extract JSDoc comment from a node
  */
-function getJSDocDescription(node: ts.Node, _sourceFile: ts.SourceFile): string | undefined {
+function getJSDocDescription(node: ts.Node): string | undefined {
   const jsDocComments = ts.getJSDocCommentsAndTags(node);
   for (const comment of jsDocComments) {
     if (ts.isJSDoc(comment) && comment.comment) {
@@ -259,7 +281,7 @@ function extractTypeDefinitionWithTS(typeName: string, filePath: string): { type
   function visit(node: ts.Node) {
     if ((ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) && node.name && node.name.text === typeName) {
       const properties: PropertyInfo[] = [];
-      const description = getJSDocDescription(node, sourceFile);
+      const description = getJSDocDescription(node);
 
       node.members?.forEach((member) => {
         if (ts.isPropertySignature(member) || ts.isPropertyDeclaration(member)) {
@@ -267,7 +289,7 @@ function extractTypeDefinitionWithTS(typeName: string, filePath: string): { type
             const propName = member.name.getText(sourceFile);
             const propType = member.type?.getText(sourceFile) || 'any';
             const isOptional = !!member.questionToken;
-            const propDescription = getJSDocDescription(member, sourceFile);
+            const propDescription = getJSDocDescription(member);
 
             properties.push({
               name: propName.replace(/['"]/g, ''),
@@ -350,7 +372,7 @@ function extractTypeIdentifier(typeNode: ts.TypeNode): string | null {
 /**
  * Format type info as a readable string
  */
-function formatTypeInfo(typeInfo: TypeInfo, maxProperties: number = 20): string {
+function formatTypeInfo(typeInfo: TypeInfo, maxProperties: number = DEFAULT_MAX_TYPE_PROPERTIES): string {
   let result = `${typeInfo.name} {\n`;
 
   const propsToShow = typeInfo.properties.slice(0, maxProperties);
@@ -586,8 +608,462 @@ function getSubtypeInfo(
 // End Type Definition Helper Functions
 // ============================================================================
 
-// Cache for Kubernetes API methods
-let apiMethodsCache: KubernetesApiMethod[] | null = null;
+// ============================================================================
+// SearchToolsService Class - Encapsulates All Module State
+// ============================================================================
+
+/**
+ * Service class that encapsulates the search tools state and operations.
+ * This provides:
+ * - Proper lifecycle management (initialize/shutdown)
+ * - Testability through class instantiation
+ * - Clean separation of state from functions
+ */
+class SearchToolsService {
+  /** Cache for Kubernetes API methods */
+  private apiMethodsCache: KubernetesApiMethod[] | null = null;
+
+  /** Orama database instance cache */
+  private oramaDb: Orama<typeof oramaSchema> | null = null;
+
+  /** Track indexed scripts to support incremental re-indexing */
+  private indexedScriptPaths = new Set<string>();
+
+  /** Filesystem watcher instance */
+  private scriptWatcher: ReturnType<typeof chokidar.watch> | null = null;
+
+  /** Whether the service has been initialized */
+  private initialized = false;
+
+  /**
+   * Initialize the search index and start the script watcher.
+   * This is called automatically on first use, but can be called explicitly
+   * for pre-warming during server startup.
+   */
+  async initialize(): Promise<void> {
+    if (this.initialized) {
+      return;
+    }
+    await this.initializeOramaDb();
+    this.initialized = true;
+  }
+
+  /**
+   * Shutdown the service, stopping the script watcher.
+   * Call this during graceful shutdown.
+   */
+  async shutdown(): Promise<void> {
+    if (this.scriptWatcher) {
+      await this.scriptWatcher.close();
+      this.scriptWatcher = null;
+      logger.info('Orama: Stopped script watcher');
+    }
+    this.oramaDb = null;
+    this.apiMethodsCache = null;
+    this.indexedScriptPaths.clear();
+    this.initialized = false;
+  }
+
+  /**
+   * Get the Orama database instance, initializing it if needed
+   */
+  async getOramaDb(): Promise<Orama<typeof oramaSchema>> {
+    if (!this.oramaDb) {
+      await this.initializeOramaDb();
+    }
+    return this.oramaDb!;
+  }
+
+  /**
+   * Get the cached API methods, extracting them if needed
+   */
+  getApiMethods(): KubernetesApiMethod[] {
+    if (!this.apiMethodsCache) {
+      this.apiMethodsCache = this.extractKubernetesApiMethods();
+    }
+    return this.apiMethodsCache;
+  }
+
+  /**
+   * Initialize and populate the Orama search database
+   */
+  private async initializeOramaDb(): Promise<Orama<typeof oramaSchema>> {
+    if (this.oramaDb) {
+      return this.oramaDb;
+    }
+
+    // Create Orama instance with optimized configuration
+    const db = await create({
+      schema: oramaSchema,
+      components: {
+        tokenizer: {
+          stemming: true,
+          // Skip stemming for code identifiers - they should match exactly
+          stemmerSkipProperties: ['methodName', 'resourceType', 'apiClass', 'id'],
+        },
+      },
+    });
+
+    // Get all API methods and index them
+    const methods = this.getApiMethods();
+
+    for (const method of methods) {
+      // Skip WithHttpInfo variants
+      if (method.methodName.toLowerCase().includes('withhttpinfo')) {
+        continue;
+      }
+
+      // Build searchTokens: CamelCase split of resourceType and methodName for better matching
+      const searchTokens = [
+        splitCamelCase(method.resourceType),
+        splitCamelCase(method.methodName),
+        method.apiClass,
+      ].join(' ');
+
+      const doc: OramaDocument = {
+        id: `${method.apiClass}.${method.methodName}`,
+        documentType: 'method',
+        resourceType: method.resourceType,
+        methodName: method.methodName,
+        description: method.description,
+        searchTokens,
+        action: extractAction(method.methodName),
+        scope: extractScope(method.methodName),
+        apiClass: method.apiClass,
+        filePath: '',
+      };
+
+      await insert(db, doc);
+    }
+
+    // Index cached scripts
+    const scriptCount = await this.indexCachedScripts(db);
+
+    // Start filesystem watcher for script changes
+    this.startScriptWatcher(db);
+
+    this.oramaDb = db;
+    logger.info(`Orama: Indexed ${methods.length} API methods and ${scriptCount} cached scripts`);
+    return db;
+  }
+
+  /**
+   * Index cached scripts into the Orama database.
+   */
+  private async indexCachedScripts(db: Orama<typeof oramaSchema>): Promise<number> {
+    const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+    let indexedCount = 0;
+
+    try {
+      if (!existsSync(scriptsDirectory)) {
+        return 0;
+      }
+
+      const files = readdirSync(scriptsDirectory)
+        .filter(f => f.endsWith('.ts'))
+        .map(f => join(scriptsDirectory, f));
+
+      for (const filePath of files) {
+        // Skip if already indexed
+        if (this.indexedScriptPaths.has(filePath)) {
+          continue;
+        }
+
+        const script = parseScriptFile(filePath);
+        if (!script) {
+          continue;
+        }
+
+        const doc = buildScriptDocument(script);
+        await insert(db, doc);
+        this.indexedScriptPaths.add(filePath);
+        indexedCount++;
+      }
+    } catch (error) {
+      logger.error('Error indexing cached scripts', error);
+    }
+
+    return indexedCount;
+  }
+
+  /**
+   * Start filesystem watcher for cached scripts directory.
+   */
+  private startScriptWatcher(db: Orama<typeof oramaSchema>): void {
+    const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+
+    // Ensure directory exists before watching
+    if (!existsSync(scriptsDirectory)) {
+      try {
+        mkdirSync(scriptsDirectory, { recursive: true });
+      } catch {
+        return;
+      }
+    }
+
+    this.scriptWatcher = chokidar.watch(join(scriptsDirectory, '*.ts'), {
+      persistent: true,
+      ignoreInitial: true,
+    });
+
+    this.scriptWatcher.on('add', async (filePath: string) => {
+      const script = parseScriptFile(filePath);
+      if (script) {
+        const doc = buildScriptDocument(script);
+        await insert(db, doc);
+        this.indexedScriptPaths.add(filePath);
+        logger.debug(`Orama: Indexed new script ${basename(filePath)}`);
+      }
+    });
+
+    this.scriptWatcher.on('unlink', async (filePath: string) => {
+      const docId = `script:${basename(filePath)}`;
+      try {
+        await remove(db, docId);
+        this.indexedScriptPaths.delete(filePath);
+        logger.debug(`Orama: Removed script ${basename(filePath)} from index`);
+      } catch (error) {
+        logger.debug(`Could not remove script ${basename(filePath)} from index: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+
+    this.scriptWatcher.on('change', async (filePath: string) => {
+      const docId = `script:${basename(filePath)}`;
+      try {
+        await remove(db, docId);
+      } catch (error) {
+        logger.debug(`Script ${basename(filePath)} was not in index, will add: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const script = parseScriptFile(filePath);
+      if (script) {
+        const doc = buildScriptDocument(script);
+        await insert(db, doc);
+        logger.debug(`Orama: Re-indexed modified script ${basename(filePath)}`);
+      }
+    });
+
+    logger.info(`Orama: Watching for script changes in ${scriptsDirectory}`);
+  }
+
+  /**
+   * Search using Orama with advanced features
+   */
+  async searchWithOrama(
+    resourceType: string,
+    action: string | undefined,
+    scope: string,
+    exclude: { actions?: string[]; apiClasses?: string[] } | undefined,
+    limit: number,
+    offset: number = 0
+  ): Promise<{
+    methodResults: OramaDocument[];
+    scriptResults: OramaDocument[];
+    totalMethodCount: number;
+    totalScriptCount: number;
+    facets: {
+      apiClass: Record<string, number>;
+      action: Record<string, number>;
+      scope: Record<string, number>;
+    };
+    searchTime: number;
+  }> {
+    const db = await this.getOramaDb();
+
+    const searchParams: SearchParams<Orama<typeof oramaSchema>, OramaDocument> = {
+      term: resourceType,
+      properties: ['resourceType', 'methodName', 'description', 'searchTokens'],
+      boost: {
+        resourceType: 3,
+        searchTokens: 2.5,
+        methodName: 2,
+        description: 1,
+      },
+      tolerance: 1,
+      limit: Math.max((offset + limit) * SEARCH_RESULTS_MULTIPLIER, MIN_SEARCH_RESULTS),
+      facets: {
+        apiClass: {},
+        action: {},
+        scope: {},
+      },
+    };
+
+    const startTime = performance.now();
+    const searchResult: Results<OramaDocument> = await search(db, searchParams);
+    const searchTime = performance.now() - startTime;
+
+    // Separate results by documentType FIRST
+    const allScriptHits = searchResult.hits.filter(hit => hit.document.documentType === 'script');
+    let methodHits = searchResult.hits.filter(hit => hit.document.documentType === 'method');
+
+    // Apply method-specific filters to methods only
+    if (action) {
+      const lowerAction = action.toLowerCase();
+      methodHits = methodHits.filter(hit => hit.document.action === lowerAction);
+    }
+
+    if (scope === 'namespaced') {
+      methodHits = methodHits.filter(hit => hit.document.scope === 'namespaced');
+    } else if (scope === 'cluster') {
+      methodHits = methodHits.filter(hit =>
+        hit.document.scope === 'cluster' || hit.document.scope === 'forAllNamespaces'
+      );
+    }
+
+    // Apply exclusions to methods only
+    if (exclude) {
+      methodHits = methodHits.filter(hit => {
+        const doc = hit.document;
+        const hasActions = exclude.actions && exclude.actions.length > 0;
+        const hasApiClasses = exclude.apiClasses && exclude.apiClasses.length > 0;
+
+        if (hasActions && hasApiClasses) {
+          const matchesAction = exclude.actions!.some(a =>
+            doc.action === a.toLowerCase() || doc.methodName.toLowerCase().includes(a.toLowerCase())
+          );
+          const matchesApiClass = exclude.apiClasses!.includes(doc.apiClass);
+          return !(matchesAction && matchesApiClass);
+        } else if (hasActions) {
+          const matchesAction = exclude.actions!.some(a =>
+            doc.action === a.toLowerCase() || doc.methodName.toLowerCase().includes(a.toLowerCase())
+          );
+          return !matchesAction;
+        } else if (hasApiClasses) {
+          return !exclude.apiClasses!.includes(doc.apiClass);
+        }
+        return true;
+      });
+    }
+
+    // Extract facets (filter out script-related values)
+    const facets = {
+      apiClass: {} as Record<string, number>,
+      action: {} as Record<string, number>,
+      scope: {} as Record<string, number>,
+    };
+
+    if (searchResult.facets) {
+      if (searchResult.facets.apiClass?.values) {
+        for (const [key, value] of Object.entries(searchResult.facets.apiClass.values)) {
+          if (key !== 'CachedScript') {
+            facets.apiClass[key] = value as number;
+          }
+        }
+      }
+      if (searchResult.facets.action?.values) {
+        for (const [key, value] of Object.entries(searchResult.facets.action.values)) {
+          if (key !== 'script') {
+            facets.action[key] = value as number;
+          }
+        }
+      }
+      if (searchResult.facets.scope?.values) {
+        for (const [key, value] of Object.entries(searchResult.facets.scope.values)) {
+          if (key !== 'script') {
+            facets.scope[key] = value as number;
+          }
+        }
+      }
+    }
+
+    // Sort methods to prioritize exact resourceType matches
+    const sortedMethodHits = methodHits.sort((a, b) => {
+      const aExact = a.document.resourceType.toLowerCase() === resourceType.toLowerCase();
+      const bExact = b.document.resourceType.toLowerCase() === resourceType.toLowerCase();
+
+      if (aExact && !bExact) return -1;
+      if (!aExact && bExact) return 1;
+
+      return (b.score || 0) - (a.score || 0);
+    });
+
+    // Sort scripts by relevance score
+    const sortedScriptHits = allScriptHits.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+    const totalMethodCount = sortedMethodHits.length;
+    const totalScriptCount = sortedScriptHits.length;
+
+    return {
+      methodResults: sortedMethodHits.slice(offset, offset + limit).map(hit => hit.document),
+      scriptResults: sortedScriptHits.slice(0, MAX_RELEVANT_SCRIPTS).map(hit => hit.document),
+      totalMethodCount,
+      totalScriptCount,
+      facets,
+      searchTime,
+    };
+  }
+
+  /**
+   * Extract all API methods from @kubernetes/client-node
+   */
+  private extractKubernetesApiMethods(): KubernetesApiMethod[] {
+    if (this.apiMethodsCache) {
+      return this.apiMethodsCache;
+    }
+
+    const methods: KubernetesApiMethod[] = [];
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const apiClasses: Array<{ class: string; constructor: any; description: string }> = [
+      { class: 'CoreV1Api', constructor: k8s.CoreV1Api, description: 'Core Kubernetes resources (Pods, Services, ConfigMaps, Secrets, Namespaces, Nodes, etc.)' },
+      { class: 'AppsV1Api', constructor: k8s.AppsV1Api, description: 'Applications API (Deployments, StatefulSets, DaemonSets, ReplicaSets)' },
+      { class: 'BatchV1Api', constructor: k8s.BatchV1Api, description: 'Batch operations (Jobs, CronJobs)' },
+      { class: 'NetworkingV1Api', constructor: k8s.NetworkingV1Api, description: 'Networking resources (Ingresses, NetworkPolicies, IngressClasses)' },
+      { class: 'RbacAuthorizationV1Api', constructor: k8s.RbacAuthorizationV1Api, description: 'RBAC (Roles, RoleBindings, ClusterRoles, ClusterRoleBindings, ServiceAccounts)' },
+      { class: 'StorageV1Api', constructor: k8s.StorageV1Api, description: 'Storage resources (StorageClasses, PersistentVolumes, VolumeAttachments)' },
+      { class: 'CustomObjectsApi', constructor: k8s.CustomObjectsApi, description: 'Custom Resource Definitions (CRDs) and custom resources' },
+      { class: 'ApiextensionsV1Api', constructor: k8s.ApiextensionsV1Api, description: 'API extensions (CustomResourceDefinitions for discovering and managing CRDs)' },
+      { class: 'AutoscalingV1Api', constructor: k8s.AutoscalingV1Api, description: 'Autoscaling resources (HorizontalPodAutoscalers)' },
+      { class: 'PolicyV1Api', constructor: k8s.PolicyV1Api, description: 'Policy resources (PodDisruptionBudgets)' },
+    ];
+
+    for (const { class: className, constructor: ApiClass, description: classDesc } of apiClasses) {
+      if (!ApiClass) continue;
+
+      const proto = ApiClass.prototype;
+      const methodNames = Object.getOwnPropertyNames(proto);
+
+      for (const methodName of methodNames) {
+        if (methodName === 'constructor' || methodName.startsWith('_') ||
+            methodName === 'setDefaultAuthentication' || typeof proto[methodName] !== 'function') {
+          continue;
+        }
+
+        const resourceType = extractResourceType(methodName);
+        const description = generateDescriptionFromMethodName(methodName, classDesc);
+        const parameters = inferParameters(methodName, className);
+        const example = generateUsageExample(className, methodName, parameters);
+        const inputSchema = generateInputSchema(parameters);
+        const outputSchema = generateOutputSchema(methodName, resourceType);
+        const typeDefinitionFile = `node_modules/@kubernetes/client-node/dist/gen/apis/${className}.d.ts`;
+        const typeDefinitions = extractMethodTypeDefinitions(className, methodName, resourceType);
+
+        methods.push({
+          apiClass: className,
+          methodName,
+          resourceType,
+          description,
+          parameters,
+          returnType: 'Promise<any>',
+          example,
+          typeDefinitionFile,
+          inputSchema,
+          outputSchema,
+          typeDefinitions: Object.keys(typeDefinitions).length > 0 ? typeDefinitions : undefined,
+        });
+      }
+    }
+
+    this.apiMethodsCache = methods;
+    logger.info(`Indexed ${methods.length} Kubernetes API methods`);
+    return methods;
+  }
+}
+
+// Export singleton for production use
+export const searchToolsService = new SearchToolsService();
+
+// Export class for testing
+export { SearchToolsService };
 
 // ============================================================================
 // Orama Search Engine Configuration
@@ -646,9 +1122,6 @@ function splitCamelCase(str: string): string {
   return str.replace(/([a-z])([A-Z])/g, '$1 $2');
 }
 
-// Orama database instance cache
-let oramaDb: Orama<typeof oramaSchema> | null = null;
-
 /**
  * Extract the action from a method name
  */
@@ -680,12 +1153,6 @@ function extractScope(methodName: string): string {
 // ============================================================================
 // Script Parsing Functions
 // ============================================================================
-
-// Track indexed scripts to support incremental re-indexing
-const indexedScriptPaths = new Set<string>();
-
-// Filesystem watcher instance
-let scriptWatcher: ReturnType<typeof chokidar.watch> | null = null;
 
 /**
  * Extract the first comment block from a TypeScript file.
@@ -726,7 +1193,8 @@ function extractFirstCommentBlock(filePath: string): string {
     }
 
     return '';
-  } catch {
+  } catch (error) {
+    logger.debug(`Failed to extract comment from ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
     return '';
   }
 }
@@ -778,10 +1246,11 @@ function extractApiSignals(filePath: string): { apiClasses: string[]; resourceTy
     // Filter to common resource types and dedupe
     const resourceTypes = [...new Set(matches)]
       .filter(t => !t.includes('Api') && !t.includes('List') && t.length < 30)
-      .slice(0, 10); // Limit to prevent noise
+      .slice(0, MAX_RESOURCE_TYPES_FROM_CONTENT);
 
     return { apiClasses, resourceTypes };
-  } catch {
+  } catch (error) {
+    logger.debug(`Failed to extract API signals from ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
     return { apiClasses: [], resourceTypes: [] };
   }
 }
@@ -814,7 +1283,8 @@ function parseScriptFile(filePath: string): CachedScript | null {
       apiClasses,
       keywords,
     };
-  } catch {
+  } catch (error) {
+    logger.debug(`Failed to parse script ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
 }
@@ -846,342 +1316,9 @@ function buildScriptDocument(script: CachedScript): OramaDocument {
   };
 }
 
-/**
- * Index cached scripts into the Orama database.
- * Can be called during warmup to index initial scripts.
- */
-async function indexCachedScripts(db: Orama<typeof oramaSchema>): Promise<number> {
-  const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
-  let indexedCount = 0;
-
-  try {
-    if (!existsSync(scriptsDirectory)) {
-      return 0;
-    }
-
-    const files = readdirSync(scriptsDirectory)
-      .filter(f => f.endsWith('.ts'))
-      .map(f => join(scriptsDirectory, f));
-
-    for (const filePath of files) {
-      // Skip if already indexed
-      if (indexedScriptPaths.has(filePath)) {
-        continue;
-      }
-
-      const script = parseScriptFile(filePath);
-      if (!script) {
-        continue;
-      }
-
-      const doc = buildScriptDocument(script);
-      await insert(db, doc);
-      indexedScriptPaths.add(filePath);
-      indexedCount++;
-    }
-  } catch (error) {
-    console.error('Error indexing cached scripts:', error);
-  }
-
-  return indexedCount;
-}
-
-/**
- * Start filesystem watcher for cached scripts directory.
- * Watches for script additions, deletions, and modifications.
- */
-function startScriptWatcher(db: Orama<typeof oramaSchema>): void {
-  const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
-
-  // Ensure directory exists before watching
-  if (!existsSync(scriptsDirectory)) {
-    try {
-      mkdirSync(scriptsDirectory, { recursive: true });
-    } catch {
-      return;
-    }
-  }
-
-  scriptWatcher = chokidar.watch(join(scriptsDirectory, '*.ts'), {
-    persistent: true,
-    ignoreInitial: true, // Don't trigger for existing files (already indexed)
-  });
-
-  scriptWatcher.on('add', async (filePath: string) => {
-    // Index new script
-    const script = parseScriptFile(filePath);
-    if (script) {
-      const doc = buildScriptDocument(script);
-      await insert(db, doc);
-      indexedScriptPaths.add(filePath);
-      console.error(`Orama: Indexed new script ${basename(filePath)}`);
-    }
-  });
-
-  scriptWatcher.on('unlink', async (filePath: string) => {
-    // Remove deleted script from index
-    const docId = `script:${basename(filePath)}`;
-    try {
-      await remove(db, docId);
-      indexedScriptPaths.delete(filePath);
-      console.error(`Orama: Removed script ${basename(filePath)} from index`);
-    } catch {
-      // Ignore errors if document doesn't exist
-    }
-  });
-
-  scriptWatcher.on('change', async (filePath: string) => {
-    // Re-index modified script
-    const docId = `script:${basename(filePath)}`;
-    try {
-      await remove(db, docId);
-    } catch {
-      // Ignore if doesn't exist
-    }
-    const script = parseScriptFile(filePath);
-    if (script) {
-      const doc = buildScriptDocument(script);
-      await insert(db, doc);
-      console.error(`Orama: Re-indexed modified script ${basename(filePath)}`);
-    }
-  });
-
-  console.error(`Orama: Watching for script changes in ${scriptsDirectory}`);
-}
-
 // ============================================================================
 // End Script Parsing Functions
 // ============================================================================
-
-/**
- * Initialize and populate the Orama search database
- */
-async function initializeOramaDb(): Promise<Orama<typeof oramaSchema>> {
-  if (oramaDb) {
-    return oramaDb;
-  }
-
-  // Create Orama instance with optimized configuration
-  const db = await create({
-    schema: oramaSchema,
-    components: {
-      tokenizer: {
-        stemming: true,
-        // Skip stemming for code identifiers - they should match exactly
-        stemmerSkipProperties: ['methodName', 'resourceType', 'apiClass', 'id'],
-      },
-    },
-  });
-
-  // Get all API methods and index them
-  const methods = extractKubernetesApiMethods();
-
-  for (const method of methods) {
-    // Skip WithHttpInfo variants
-    if (method.methodName.toLowerCase().includes('withhttpinfo')) {
-      continue;
-    }
-
-    // Build searchTokens: CamelCase split of resourceType and methodName for better matching
-    // This helps match "Pod" when searching for "PodExec", "PodBinding", etc.
-    const searchTokens = [
-      splitCamelCase(method.resourceType),
-      splitCamelCase(method.methodName),
-      method.apiClass,
-    ].join(' ');
-
-    const doc: OramaDocument = {
-      id: `${method.apiClass}.${method.methodName}`,
-      documentType: 'method',
-      resourceType: method.resourceType,
-      methodName: method.methodName,
-      description: method.description,
-      searchTokens,
-      action: extractAction(method.methodName),
-      scope: extractScope(method.methodName),
-      apiClass: method.apiClass,
-      filePath: '',
-    };
-
-    await insert(db, doc);
-  }
-
-  // Index cached scripts
-  const scriptCount = await indexCachedScripts(db);
-
-  // Start filesystem watcher for script changes
-  startScriptWatcher(db);
-
-  oramaDb = db;
-  console.error(`Orama: Indexed ${methods.length} API methods and ${scriptCount} cached scripts`);
-  return db;
-}
-
-/**
- * Search using Orama with advanced features:
- * - Full-text search with typo tolerance
- * - Field boosting (resourceType 3x, methodName 2x)
- * - Post-search filtering for action/scope (Orama enum filters are limited)
- * - Faceted results for discovery
- * - Separates results by documentType (method vs script)
- */
-async function searchWithOrama(
-  resourceType: string,
-  action: string | undefined,
-  scope: string,
-  exclude: { actions?: string[]; apiClasses?: string[] } | undefined,
-  limit: number,
-  offset: number = 0
-): Promise<{
-  methodResults: OramaDocument[];
-  scriptResults: OramaDocument[];
-  totalMethodCount: number;
-  totalScriptCount: number;
-  facets: {
-    apiClass: Record<string, number>;
-    action: Record<string, number>;
-    scope: Record<string, number>;
-  };
-  searchTime: number;
-}> {
-  const db = await initializeOramaDb();
-
-  // Build search params with Orama best practices
-  // Note: We do filtering post-search because Orama's where clause has limitations
-  // with enum types and multiple conditions
-  const searchParams: SearchParams<Orama<typeof oramaSchema>, OramaDocument> = {
-    term: resourceType,
-
-    // Search in these properties (searchTokens helps match CamelCase splits)
-    properties: ['resourceType', 'methodName', 'description', 'searchTokens'],
-
-    // Boost field importance: resourceType matches are 3x more important
-    // searchTokens gets high boost because it contains the split CamelCase terms
-    boost: {
-      resourceType: 3,
-      searchTokens: 2.5,
-      methodName: 2,
-      description: 1,
-    },
-
-    // Typo tolerance: allow 1 typo per word for better UX
-    tolerance: 1,
-
-    // Get more results initially to allow for post-search filtering and offset
-    limit: Math.max((offset + limit) * 3, 100),
-
-    // Generate facets for discovery
-    facets: {
-      apiClass: {},
-      action: {},
-      scope: {},
-    },
-  };
-
-  const startTime = performance.now();
-  const searchResult: Results<OramaDocument> = await search(db, searchParams);
-  const searchTime = performance.now() - startTime;
-
-  // Separate results by documentType FIRST
-  const allScriptHits = searchResult.hits.filter(hit => hit.document.documentType === 'script');
-  let methodHits = searchResult.hits.filter(hit => hit.document.documentType === 'method');
-
-  // Apply method-specific filters to methods only
-  if (action) {
-    const lowerAction = action.toLowerCase();
-    methodHits = methodHits.filter(hit => hit.document.action === lowerAction);
-  }
-
-  if (scope === 'namespaced') {
-    methodHits = methodHits.filter(hit => hit.document.scope === 'namespaced');
-  } else if (scope === 'cluster') {
-    methodHits = methodHits.filter(hit =>
-      hit.document.scope === 'cluster' || hit.document.scope === 'forAllNamespaces'
-    );
-  }
-
-  // Apply exclusions to methods only
-  if (exclude) {
-    methodHits = methodHits.filter(hit => {
-      const doc = hit.document;
-      const hasActions = exclude.actions && exclude.actions.length > 0;
-      const hasApiClasses = exclude.apiClasses && exclude.apiClasses.length > 0;
-
-      if (hasActions && hasApiClasses) {
-        const matchesAction = exclude.actions!.some(a =>
-          doc.action === a.toLowerCase() || doc.methodName.toLowerCase().includes(a.toLowerCase())
-        );
-        const matchesApiClass = exclude.apiClasses!.includes(doc.apiClass);
-        return !(matchesAction && matchesApiClass);
-      } else if (hasActions) {
-        const matchesAction = exclude.actions!.some(a =>
-          doc.action === a.toLowerCase() || doc.methodName.toLowerCase().includes(a.toLowerCase())
-        );
-        return !matchesAction;
-      } else if (hasApiClasses) {
-        return !exclude.apiClasses!.includes(doc.apiClass);
-      }
-      return true;
-    });
-  }
-
-  // Extract facets (filter out script-related values)
-  const facets = {
-    apiClass: {} as Record<string, number>,
-    action: {} as Record<string, number>,
-    scope: {} as Record<string, number>,
-  };
-
-  if (searchResult.facets) {
-    if (searchResult.facets.apiClass?.values) {
-      for (const [key, value] of Object.entries(searchResult.facets.apiClass.values)) {
-        if (key !== 'CachedScript') {
-          facets.apiClass[key] = value as number;
-        }
-      }
-    }
-    if (searchResult.facets.action?.values) {
-      for (const [key, value] of Object.entries(searchResult.facets.action.values)) {
-        if (key !== 'script') {
-          facets.action[key] = value as number;
-        }
-      }
-    }
-    if (searchResult.facets.scope?.values) {
-      for (const [key, value] of Object.entries(searchResult.facets.scope.values)) {
-        if (key !== 'script') {
-          facets.scope[key] = value as number;
-        }
-      }
-    }
-  }
-
-  // Sort methods to prioritize exact resourceType matches
-  const sortedMethodHits = methodHits.sort((a, b) => {
-    const aExact = a.document.resourceType.toLowerCase() === resourceType.toLowerCase();
-    const bExact = b.document.resourceType.toLowerCase() === resourceType.toLowerCase();
-
-    if (aExact && !bExact) return -1;
-    if (!aExact && bExact) return 1;
-
-    return (b.score || 0) - (a.score || 0);
-  });
-
-  // Sort scripts by relevance score
-  const sortedScriptHits = allScriptHits.sort((a, b) => (b.score || 0) - (a.score || 0));
-
-  const totalMethodCount = sortedMethodHits.length;
-  const totalScriptCount = sortedScriptHits.length;
-
-  return {
-    methodResults: sortedMethodHits.slice(offset, offset + limit).map(hit => hit.document),
-    scriptResults: sortedScriptHits.slice(0, 5).map(hit => hit.document), // Top 5 scripts
-    totalMethodCount,
-    totalScriptCount,
-    facets,
-    searchTime,
-  };
-}
 
 /**
  * Initialize scripts directory with node_modules symlink for package resolution
@@ -1205,12 +1342,12 @@ function initializeScriptsDirectory(scriptsDir: string): void {
         symlinkSync(nodeModulesTarget, nodeModulesLink, 'dir');
       } catch (err) {
         // Symlink creation might fail on some systems, that's okay
-        console.error('Could not create symlink to node_modules:', err);
+        logger.warn(`Could not create symlink to node_modules: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   } catch (err) {
     // If initialization fails, scripts can still work with NODE_PATH
-    console.error('Could not initialize scripts directory:', err);
+    logger.warn(`Could not initialize scripts directory: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -1291,72 +1428,6 @@ function extractMethodTypeDefinitions(apiClass: string, methodName: string, reso
   return result;
 }
 
-/**
- * Extract all API methods from @kubernetes/client-node
- */
-function extractKubernetesApiMethods(): KubernetesApiMethod[] {
-  if (apiMethodsCache) {
-    return apiMethodsCache;
-  }
-
-  const methods: KubernetesApiMethod[] = [];
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const apiClasses: Array<{ class: string; constructor: any; description: string }> = [
-    { class: 'CoreV1Api', constructor: k8s.CoreV1Api, description: 'Core Kubernetes resources (Pods, Services, ConfigMaps, Secrets, Namespaces, Nodes, etc.)' },
-    { class: 'AppsV1Api', constructor: k8s.AppsV1Api, description: 'Applications API (Deployments, StatefulSets, DaemonSets, ReplicaSets)' },
-    { class: 'BatchV1Api', constructor: k8s.BatchV1Api, description: 'Batch operations (Jobs, CronJobs)' },
-    { class: 'NetworkingV1Api', constructor: k8s.NetworkingV1Api, description: 'Networking resources (Ingresses, NetworkPolicies, IngressClasses)' },
-    { class: 'RbacAuthorizationV1Api', constructor: k8s.RbacAuthorizationV1Api, description: 'RBAC (Roles, RoleBindings, ClusterRoles, ClusterRoleBindings, ServiceAccounts)' },
-    { class: 'StorageV1Api', constructor: k8s.StorageV1Api, description: 'Storage resources (StorageClasses, PersistentVolumes, VolumeAttachments)' },
-    { class: 'CustomObjectsApi', constructor: k8s.CustomObjectsApi, description: 'Custom Resource Definitions (CRDs) and custom resources' },
-    { class: 'ApiextensionsV1Api', constructor: k8s.ApiextensionsV1Api, description: 'API extensions (CustomResourceDefinitions for discovering and managing CRDs)' },
-    { class: 'AutoscalingV1Api', constructor: k8s.AutoscalingV1Api, description: 'Autoscaling resources (HorizontalPodAutoscalers)' },
-    { class: 'PolicyV1Api', constructor: k8s.PolicyV1Api, description: 'Policy resources (PodDisruptionBudgets)' },
-  ];
-
-  for (const { class: className, constructor: ApiClass, description: classDesc } of apiClasses) {
-    if (!ApiClass) continue;
-
-    const proto = ApiClass.prototype;
-    const methodNames = Object.getOwnPropertyNames(proto);
-
-    for (const methodName of methodNames) {
-      if (methodName === 'constructor' || methodName.startsWith('_') || 
-          methodName === 'setDefaultAuthentication' || typeof proto[methodName] !== 'function') {
-        continue;
-      }
-
-      const resourceType = extractResourceType(methodName);
-      const description = generateDescriptionFromMethodName(methodName, className, classDesc);
-      const parameters = inferParameters(methodName, className);
-      const example = generateUsageExample(className, methodName, parameters);
-      const inputSchema = generateInputSchema(methodName, parameters);
-      const outputSchema = generateOutputSchema(methodName, resourceType);
-      const typeDefinitionFile = `node_modules/@kubernetes/client-node/dist/gen/apis/${className}.d.ts`;
-      const typeDefinitions = extractMethodTypeDefinitions(className, methodName, resourceType);
-
-      methods.push({
-        apiClass: className,
-        methodName,
-        resourceType,
-        description,
-        parameters,
-        returnType: 'Promise<any>',
-        example,
-        typeDefinitionFile,
-        inputSchema,
-        outputSchema,
-        typeDefinitions: Object.keys(typeDefinitions).length > 0 ? typeDefinitions : undefined,
-      });
-    }
-  }
-
-  apiMethodsCache = methods;
-  console.error(`Indexed ${methods.length} Kubernetes API methods`);
-  return methods;
-}
-
 function extractResourceType(methodName: string): string {
   let resource = methodName
     .replace(/^(list|read|create|delete|patch|replace|connect|get|watch)/, '')
@@ -1372,7 +1443,7 @@ function extractResourceType(methodName: string): string {
   return resource || 'Resource';
 }
 
-function generateDescriptionFromMethodName(methodName: string, apiClass: string, classDesc: string): string {
+function generateDescriptionFromMethodName(methodName: string, classDesc: string): string {
   const words = methodName.replace(/([A-Z])/g, ' $1').toLowerCase().trim();
   const resourceMatch = methodName.match(/(?:list|read|create|delete|patch|replace)(?:Namespaced)?(.+?)(?:ForAllNamespaces)?$/);
   const resource = resourceMatch ? resourceMatch[1] : '';
@@ -1432,7 +1503,7 @@ function inferParameters(methodName: string, apiClass: string): Array<{ name: st
   return parameters;
 }
 
-function generateInputSchema(methodName: string, parameters: Array<{ name: string; type: string; optional: boolean; description?: string }>) {
+function generateInputSchema(parameters: Array<{ name: string; type: string; optional: boolean; description?: string }>) {
   const properties: Record<string, { type: string; description?: string; required?: boolean }> = {};
   const required: string[] = [];
   
@@ -1704,7 +1775,7 @@ async function executeMethodMode(input: z.infer<typeof SearchToolsInputSchema>):
     totalMethodCount,
     facets,
     searchTime
-  } = await searchWithOrama(
+  } = await searchToolsService.searchWithOrama(
     resourceType,
     action,
     scope,
@@ -1713,7 +1784,7 @@ async function executeMethodMode(input: z.infer<typeof SearchToolsInputSchema>):
     offset
   );
 
-  const allMethods = extractKubernetesApiMethods();
+  const allMethods = searchToolsService.getApiMethods();
   const methodMap = new Map(allMethods.map(m => [`${m.apiClass}.${m.methodName}`, m]));
 
   const results: KubernetesApiMethod[] = oramaResults
@@ -1856,7 +1927,7 @@ async function executeMethodMode(input: z.infer<typeof SearchToolsInputSchema>):
 async function executeScriptMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<ScriptModeResult> {
   const { searchTerm, limit = 10, offset = 0 } = input;
 
-  const db = await initializeOramaDb();
+  const db = await searchToolsService.getOramaDb();
 
   const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
   initializeScriptsDirectory(scriptsDirectory);
@@ -1981,7 +2052,14 @@ async function executeScriptMode(input: z.infer<typeof SearchToolsInputSchema>):
  * This avoids the indexing delay on the first search request.
  */
 export async function warmupSearchIndex(): Promise<void> {
-  await initializeOramaDb();
+  await searchToolsService.initialize();
+}
+
+/**
+ * Shutdown the search tools service. Call this during graceful shutdown.
+ */
+export async function shutdownSearchIndex(): Promise<void> {
+  await searchToolsService.shutdown();
 }
 
 // ============================================================================

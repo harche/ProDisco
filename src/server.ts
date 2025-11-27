@@ -6,11 +6,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { logger } from './util/logger.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version?: string };
-import { searchToolsTool, warmupSearchIndex } from './tools/kubernetes/searchTools.js';
+import { searchToolsTool, warmupSearchIndex, shutdownSearchIndex } from './tools/kubernetes/searchTools.js';
 import {
   PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH,
   listGeneratedFiles,
@@ -90,7 +91,7 @@ server.registerResource(
   },
 );
 
-console.error(`📁 Exposed ${GENERATED_DIR} as MCP resources`);
+logger.info(`Exposed ${GENERATED_DIR} as MCP resources`);
 
 // Register kubernetes.searchTools helper as an exposed tool.
 // This tool now supports both modes: 'methods' (API discovery) and 'types' (type definitions)
@@ -154,21 +155,41 @@ server.registerTool(
 );
 
 async function main() {
-  // Ensure ~/.prodisco/scripts/cache/ directory exists
+  // Ensure ~/.prodisco/scripts/cache/ directory exists (using async API for consistency)
   const scriptsDir = path.join(os.homedir(), '.prodisco', 'scripts', 'cache');
-  fs.mkdirSync(scriptsDir, { recursive: true });
-  console.error(`📝 Scripts directory: ${scriptsDir}`);
+  await fs.promises.mkdir(scriptsDir, { recursive: true });
+  logger.info(`Scripts directory: ${scriptsDir}`);
 
   // Pre-warm the Orama search index to avoid delay on first search
   await warmupSearchIndex();
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Kubernetes MCP server ready on stdio');
+  logger.info('Kubernetes MCP server ready on stdio');
 }
 
+/**
+ * Graceful shutdown handler.
+ * Stops the script watcher and cleans up resources.
+ */
+async function shutdown(signal: string): Promise<void> {
+  logger.info(`Received ${signal}, shutting down gracefully...`);
+  try {
+    await shutdownSearchIndex();
+    logger.info('Shutdown complete');
+    process.exit(0);
+  } catch (error) {
+    logger.error('Error during shutdown', error);
+    process.exit(1);
+  }
+}
+
+// Register shutdown handlers
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 main().catch((error) => {
-  console.error('Fatal error starting MCP server', error);
+  logger.error('Fatal error starting MCP server', error);
   process.exit(1);
 });
 
