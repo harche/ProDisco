@@ -1000,15 +1000,28 @@ main();
 `;
 
   // Create a test script before tests run
-  beforeAll(() => {
+  beforeAll(async () => {
     // Ensure directory exists
     if (!existsSync(scriptsDirectory)) {
       mkdirSync(scriptsDirectory, { recursive: true });
     }
     // Create test script
     writeFileSync(testScriptPath, testScriptContent);
-    // Give the watcher time to pick up the file
-    return new Promise(resolve => setTimeout(resolve, 100));
+    // Wait for the watcher to pick up the file and index it
+    // Poll until the script appears in search results (max 5 seconds)
+    const maxWaitMs = 5000;
+    const pollIntervalMs = 100;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < maxWaitMs) {
+      const result = await searchScripts({ mode: 'scripts', limit: 100 });
+      if (result.scripts.some(s => s.filename === testScriptName)) {
+        return; // Script is indexed, we can proceed
+      }
+      await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    }
+    // If we get here, the script wasn't indexed in time, but tests will still run
+    // and fail with a clear error message
   });
 
   // Clean up test script after tests
