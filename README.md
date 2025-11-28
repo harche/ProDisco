@@ -1,12 +1,19 @@
 # ProDisco (Progressive Disclosure Kubernetes MCP Server)
 
-ProDisco gives AI agents Kubernetes access that closely follows Anthropic’s [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes search tools which in turn surface TypeScript modules, agents discover them to write code, and only the final console output returns to the agent.
+ProDisco gives AI agents **Kubernetes access + Prometheus metrics analysis** through a single unified search tool. It follows Anthropic's [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes search tools which surface TypeScript modules, agents discover them to write code, and only the final console output returns to the agent.
+
+**One tool, two domains:**
+- **Kubernetes Operations** - Discover API methods from `@kubernetes/client-node` to manage pods, deployments, services, and more
+- **Prometheus Metrics** - Discover methods from `prometheus-query` for PromQL queries and metrics analysis
 
 ## Why Progressive Disclosure Matters
 
-Anthropic’s latest guidance explains why MCP servers should progressively reveal capabilities instead of dumping every tool definition into the model context. When agents explore a filesystem of TypeScript modules, they only load what they need and process data inside the execution environment, then return a concise result to the chat. This keeps token usage low, improves latency, and avoids copying large intermediate payloads through the model ([source](https://www.anthropic.com/engineering/code-execution-with-mcp)).
+Anthropic's latest guidance explains why MCP servers should progressively reveal capabilities instead of dumping every tool definition into the model context. When agents explore a filesystem of TypeScript modules, they only load what they need and process data inside the execution environment, then return a concise result to the chat. This keeps token usage low, improves latency, and avoids copying large intermediate payloads through the model ([source](https://www.anthropic.com/engineering/code-execution-with-mcp)).
 
-ProDisco goes a step further: instead of exposing custom TypeScript modules, it provides a structured parameter search tool that returns the most suitable methods from the official Kubernetes client library, including the type definitions for their input and return values. This lets agents dynamically interact with the upstream Kubernetes library while avoiding any ongoing maintenance burden in this repository to mirror or wrap those APIs.
+ProDisco goes a step further: instead of exposing custom TypeScript modules, it provides a structured parameter search tool that dynamically extracts methods from upstream libraries using TypeScript AST parsing. This means:
+- **Zero maintenance** - Methods are extracted directly from library `.d.ts` files
+- **Always current** - Upgrading a dependency automatically exposes new methods
+- **Type-safe** - Full parameter types and return types included
 
 
 ---
@@ -26,14 +33,32 @@ Add ProDisco to Claude Code with a single command:
 ```bash
 claude mcp add ProDisco --env KUBECONFIG="${HOME}/.kube/config" -- npx -y @prodisco/k8s-mcp
 ```
+
+**With Prometheus (optional):**
+```bash
+claude mcp add ProDisco \
+  --env KUBECONFIG="${HOME}/.kube/config" \
+  --env PROMETHEUS_URL="http://localhost:9090" \
+  -- npx -y @prodisco/k8s-mcp
+```
+
 Remove if needed:
 ```bash
 claude mcp remove ProDisco
 ```
 
-**Optional environment variables:**
-- `KUBECONFIG`: Path to your kubeconfig file (defaults to `~/.kube/config`)
-- `K8S_CONTEXT`: Kubernetes context to use (defaults to current context)
+**Environment variables:**
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `KUBECONFIG` | No | Path to kubeconfig (defaults to `~/.kube/config`) |
+| `K8S_CONTEXT` | No | Kubernetes context (defaults to current context) |
+| `PROMETHEUS_URL` | No | Prometheus server URL for metrics queries |
+
+> **Tip:** If you're using a kind cluster for local testing, you can port-forward to Prometheus:
+> ```bash
+> kubectl port-forward -n monitoring svc/prometheus-server 9090:80
+> ```
+> Then set `PROMETHEUS_URL="http://localhost:9090"`
 
 ### Development Setup
 
@@ -58,39 +83,47 @@ ProDisco automatically creates a `~/.prodisco/scripts/cache/` directory in your 
 
 ## Available Tools
 
-ProDisco exposes a single tool with three modes for agents to discover and interact with the Kubernetes API.
+ProDisco exposes a single unified tool with four modes:
+
+| Mode | Purpose | Example |
+|------|---------|---------|
+| `methods` | Find Kubernetes API methods | `{ resourceType: "Pod", action: "list" }` |
+| `types` | Get TypeScript type definitions | `{ mode: "types", types: ["V1Pod.spec"] }` |
+| `scripts` | Search cached scripts | `{ mode: "scripts", searchTerm: "logs" }` |
+| `prometheus` | Find Prometheus API methods | `{ mode: "prometheus", category: "query" }` |
 
 For comprehensive documentation including architecture details and example workflows, see [docs/search-tools.md](docs/search-tools.md).
 
 ### kubernetes.searchTools
 
-Find Kubernetes API methods, get type definitions, or search cached scripts.
+A unified search interface for Kubernetes operations and metrics analysis.
 
 **Input:**
 ```typescript
 {
   // Mode selection
-  mode?: 'methods' | 'types' | 'scripts';  // default: 'methods'
+  mode?: 'methods' | 'types' | 'scripts' | 'prometheus';  // default: 'methods'
 
-  // Methods mode parameters
+  // Methods mode - Kubernetes API discovery
   resourceType?: string;  // e.g., "Pod", "Deployment", "Service"
-  action?: string;        // e.g., "list", "read", "create", "delete", "patch", "replace", "connect"
-  scope?: 'namespaced' | 'cluster' | 'all';  // default: 'all'
-  exclude?: {             // Optional: filter out methods
-    actions?: string[];      // e.g., ["delete", "create"]
-    apiClasses?: string[];   // e.g., ["CoreV1Api"]
-  };
+  action?: string;        // e.g., "list", "read", "create", "delete", "patch"
+  scope?: 'namespaced' | 'cluster' | 'all';
+  exclude?: { actions?: string[]; apiClasses?: string[] };
 
-  // Types mode parameters
-  types?: string[];       // Type names or property paths
-  depth?: number;         // Nested type depth (default: 1, max: 2)
+  // Types mode - TypeScript definitions
+  types?: string[];       // e.g., ["V1Pod", "V1Deployment.spec"]
+  depth?: number;         // Nested type depth (1-2)
 
-  // Scripts mode parameters
-  searchTerm?: string;    // Search term (omit to list all scripts)
+  // Scripts mode - Cached script discovery
+  searchTerm?: string;    // Search term (omit to list all)
 
-  // Shared parameters (all modes)
-  limit?: number;         // Max results (default: 10, max: 50)
-  offset?: number;        // Skip N results for pagination (default: 0)
+  // Prometheus mode - Prometheus API discovery
+  category?: 'query' | 'metadata' | 'alerts' | 'all';
+  methodPattern?: string; // e.g., "query", "labels"
+
+  // Shared parameters
+  limit?: number;         // Max results (default: 10)
+  offset?: number;        // Pagination offset
 }
 ```
 
@@ -136,13 +169,30 @@ Find Kubernetes API methods, get type definitions, or search cached scripts.
 
 // Search for pod-related scripts
 { mode: "scripts", searchTerm: "pod" }
-
-// Search for logging scripts
-{ mode: "scripts", searchTerm: "logs" }
-
-// Paginate through scripts
-{ mode: "scripts", limit: 5, offset: 5 }
 ```
+
+**Prometheus Mode Examples:**
+```typescript
+// List all available methods
+{ mode: "prometheus" }
+
+// Find PromQL query methods
+{ mode: "prometheus", category: "query" }
+
+// Find metadata methods (labels, series, targets)
+{ mode: "prometheus", category: "metadata" }
+
+// Search for specific methods
+{ mode: "prometheus", methodPattern: "query" }
+```
+
+**Available Categories (Prometheus Mode):**
+
+| Category | Methods | Use Case |
+|----------|---------|----------|
+| `query` | `instantQuery`, `rangeQuery` | Execute PromQL queries |
+| `metadata` | `series`, `labelNames`, `labelValues`, `targets` | Explore metrics metadata |
+| `alerts` | `rules`, `alerts`, `alertmanagers` | Access alerting information |
 
 ---
 
