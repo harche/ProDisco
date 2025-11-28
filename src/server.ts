@@ -136,6 +136,23 @@ server.registerTool(
         ],
         structuredContent: result,
       };
+    } else if (result.mode === 'prometheus') {
+      // Build summary - handle both success and error cases
+      const summary = 'summary' in result ? result.summary :
+        `${result.error}: ${result.message}\nExample: ${result.example}`;
+      return {
+        content: [
+          {
+            type: 'text',
+            text: summary,
+          },
+          {
+            type: 'text',
+            text: JSON.stringify(result.methods, null, 2),
+          },
+        ],
+        structuredContent: result,
+      };
     } else {
       // mode === 'methods'
       return {

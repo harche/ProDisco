@@ -1495,3 +1495,193 @@ console.log('modified');
     });
   });
 });
+
+// Helper for prometheus mode - cast through unknown to work around TypeScript inference
+const searchPrometheus = searchToolsTool.execute.bind(searchToolsTool) as unknown as (input: {
+  mode: 'prometheus';
+  category?: 'query' | 'metadata' | 'alerts' | 'all';
+  methodPattern?: string;
+  limit?: number;
+  offset?: number;
+}) => Promise<{
+  mode: 'prometheus';
+  methods: Array<{
+    library: string;
+    className?: string;
+    methodName: string;
+    category: string;
+    description: string;
+    parameters: Array<{ name: string; type: string; optional: boolean }>;
+    returnType: string;
+    example: string;
+  }>;
+  totalMatches: number;
+  libraries: {
+    'prometheus-query': { installed: boolean; version: string };
+  };
+  paths: { scriptsDirectory: string };
+  facets: {
+    library: Record<string, number>;
+    category: Record<string, number>;
+  };
+  pagination: { offset: number; limit: number; hasMore: boolean };
+}>;
+
+describe('kubernetes.searchTools - Prometheus Mode', () => {
+  describe('Basic Prometheus Mode Functionality', () => {
+    it('returns prometheus mode result with correct structure', async () => {
+      const result = await searchPrometheus({ mode: 'prometheus' });
+
+      expect(result.mode).toBe('prometheus');
+      expect(result).toHaveProperty('methods');
+      expect(result).toHaveProperty('totalMatches');
+      expect(result).toHaveProperty('libraries');
+      expect(result).toHaveProperty('paths');
+      expect(result).toHaveProperty('facets');
+      expect(result).toHaveProperty('pagination');
+      expect(Array.isArray(result.methods)).toBe(true);
+    });
+
+    it('lists all prometheus methods when no filters provided', async () => {
+      const result = await searchPrometheus({ mode: 'prometheus', limit: 50 });
+
+      expect(result.totalMatches).toBeGreaterThan(0);
+      expect(result.methods.length).toBeGreaterThan(0);
+    });
+
+    it('includes paths.scriptsDirectory in result', async () => {
+      const result = await searchPrometheus({ mode: 'prometheus' });
+
+      expect(result.paths.scriptsDirectory).toContain('.prodisco');
+      expect(result.paths.scriptsDirectory).toContain('scripts');
+      expect(result.paths.scriptsDirectory).toContain('cache');
+    });
+
+    it('returns facets for category', async () => {
+      const result = await searchPrometheus({ mode: 'prometheus', limit: 50 });
+
+      expect(result.facets).toHaveProperty('category');
+      expect(Object.keys(result.facets.category).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Prometheus Mode Filtering', () => {
+    it('filters by query category', async () => {
+      const result = await searchPrometheus({
+        mode: 'prometheus',
+        category: 'query',
+      });
+
+      expect(result.methods.length).toBeGreaterThan(0);
+      expect(result.methods.every(m => m.category === 'query')).toBe(true);
+    });
+
+    it('filters by metadata category', async () => {
+      const result = await searchPrometheus({
+        mode: 'prometheus',
+        category: 'metadata',
+      });
+
+      expect(result.methods.length).toBeGreaterThan(0);
+      expect(result.methods.every(m => m.category === 'metadata')).toBe(true);
+    });
+
+    it('filters by methodPattern', async () => {
+      const result = await searchPrometheus({
+        mode: 'prometheus',
+        methodPattern: 'query',
+      });
+
+      expect(result.methods.length).toBeGreaterThan(0);
+      // Should find query in method name or description
+      expect(result.methods.some(m =>
+        m.methodName.toLowerCase().includes('query') ||
+        m.description.toLowerCase().includes('query')
+      )).toBe(true);
+    });
+  });
+
+  describe('Prometheus Mode Method Details', () => {
+    it('methods have correct structure', async () => {
+      const result = await searchPrometheus({ mode: 'prometheus', limit: 1 });
+
+      expect(result.methods.length).toBeGreaterThan(0);
+      const method = result.methods[0];
+
+      expect(method).toHaveProperty('library');
+      expect(method).toHaveProperty('methodName');
+      expect(method).toHaveProperty('category');
+      expect(method).toHaveProperty('description');
+      expect(method).toHaveProperty('parameters');
+      expect(method).toHaveProperty('returnType');
+      expect(method).toHaveProperty('example');
+      expect(Array.isArray(method.parameters)).toBe(true);
+    });
+
+    it('finds instantQuery and rangeQuery methods', async () => {
+      const result = await searchPrometheus({
+        mode: 'prometheus',
+        category: 'query',
+      });
+
+      const methodNames = result.methods.map(m => m.methodName);
+      expect(methodNames).toContain('instantQuery');
+      expect(methodNames).toContain('rangeQuery');
+    });
+
+    it('all methods are from prometheus-query library', async () => {
+      const result = await searchPrometheus({
+        mode: 'prometheus',
+        limit: 50,
+      });
+
+      expect(result.methods.length).toBeGreaterThan(0);
+      expect(result.methods.every(m => m.library === 'prometheus-query')).toBe(true);
+    });
+
+  });
+
+  describe('Prometheus Mode Pagination', () => {
+    it('respects limit parameter', async () => {
+      const result = await searchPrometheus({
+        mode: 'prometheus',
+        limit: 5,
+      });
+
+      expect(result.methods.length).toBeLessThanOrEqual(5);
+    });
+
+    it('respects offset parameter', async () => {
+      const firstPage = await searchPrometheus({
+        mode: 'prometheus',
+        limit: 5,
+        offset: 0,
+      });
+      const secondPage = await searchPrometheus({
+        mode: 'prometheus',
+        limit: 5,
+        offset: 5,
+      });
+
+      expect(firstPage.pagination.offset).toBe(0);
+      expect(secondPage.pagination.offset).toBe(5);
+
+      // Results should be different between pages
+      if (firstPage.methods.length > 0 && secondPage.methods.length > 0) {
+        const firstPageNames = firstPage.methods.map(m => m.methodName);
+        const secondPageNames = secondPage.methods.map(m => m.methodName);
+        const overlap = firstPageNames.filter(n => secondPageNames.includes(n));
+        expect(overlap.length).toBe(0);
+      }
+    });
+
+    it('sets hasMore correctly', async () => {
+      const allMethods = await searchPrometheus({ mode: 'prometheus', limit: 100 });
+
+      if (allMethods.totalMatches > 5) {
+        const limitedResult = await searchPrometheus({ mode: 'prometheus', limit: 5 });
+        expect(limitedResult.pagination.hasMore).toBe(true);
+      }
+    });
+  });
+});

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import * as k8s from '@kubernetes/client-node';
 import * as ts from 'typescript';
-import { readFileSync, existsSync, readdirSync, mkdirSync, symlinkSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, mkdirSync, symlinkSync, realpathSync, unlinkSync } from 'fs';
 import { join, basename } from 'path';
 import * as os from 'os';
 import type { ToolDefinition } from '../types.js';
@@ -35,10 +35,10 @@ const DEFAULT_MAX_TYPE_PROPERTIES = 20;
 const SearchToolsInputSchema = z.object({
   // Mode selection - determines which operation to perform
   mode: z
-    .enum(['methods', 'types', 'scripts'])
+    .enum(['methods', 'types', 'scripts', 'prometheus'])
     .default('methods')
     .optional()
-    .describe('Search mode: "methods" to find API methods (default), "types" to get type definitions, "scripts" to search cached scripts'),
+    .describe('Search mode: "methods" for K8s API, "types" for type defs, "scripts" for cached scripts, "prometheus" for metrics/analytics libraries'),
 
   // === Method mode parameters (mode: 'methods') ===
   resourceType: z
@@ -87,6 +87,17 @@ const SearchToolsInputSchema = z.object({
     .string()
     .optional()
     .describe('(scripts mode) Search term to find cached scripts (e.g., "pod", "logs"). If omitted, shows all scripts.'),
+
+  // === Prometheus mode parameters (mode: 'prometheus') ===
+  category: z
+    .enum(['query', 'metadata', 'alerts', 'all'])
+    .optional()
+    .default('all')
+    .describe('(prometheus mode) Filter by category: "query" (PromQL), "metadata" (labels/series), or "alerts"'),
+  methodPattern: z
+    .string()
+    .optional()
+    .describe('(prometheus mode) Search pattern for method names (e.g., "mean", "query", "percentile")'),
 
   // === Shared parameters ===
   limit: z
@@ -210,8 +221,76 @@ type ScriptModeResult = {
   };
 };
 
+// Prometheus mode types
+type PrometheusCategory = 'query' | 'metadata' | 'alerts';
+
+type PrometheusMethod = {
+  library: 'prometheus-query';
+  className?: string;           // e.g., "PrometheusDriver"
+  methodName: string;           // e.g., "instantQuery", "rangeQuery"
+  category: PrometheusCategory;
+  description: string;
+  parameters: Array<{
+    name: string;
+    type: string;
+    optional: boolean;
+    description?: string;
+  }>;
+  returnType: string;
+  example: string;
+};
+
+// Result type for prometheus mode
+type PrometheusModeResult = {
+  mode: 'prometheus';
+  summary: string;
+  methods: PrometheusMethod[];
+  totalMatches: number;
+  libraries: {
+    'prometheus-query': { installed: boolean; version: string };
+  };
+  usage: string;
+  paths: {
+    scriptsDirectory: string;
+  };
+  facets: {
+    library: Record<string, number>;
+    category: Record<string, number>;
+  };
+  pagination: {
+    offset: number;
+    limit: number;
+    hasMore: boolean;
+  };
+};
+
+// Prometheus error result when PROMETHEUS_URL is not configured
+type PrometheusErrorResult = {
+  mode: 'prometheus';
+  error: string;
+  message: string;
+  example: string;
+  methods: PrometheusMethod[];
+  totalMatches: number;
+  libraries: {
+    'prometheus-query': { installed: boolean; version: string };
+  };
+  paths: {
+    scriptsDirectory: string;
+  };
+  facets: {
+    library: Record<string, number>;
+    category: Record<string, number>;
+  };
+  pagination: {
+    offset: number;
+    limit: number;
+    hasMore: boolean;
+  };
+};
+
 // Union type for all modes
-type SearchToolsResult = MethodModeResult | TypeModeResult | ScriptModeResult;
+type SearchToolsResult = MethodModeResult | TypeModeResult | ScriptModeResult | PrometheusModeResult | PrometheusErrorResult;
 
 // ============================================================================
 // Type Definition Helper Types and Functions (from typeDefinitions.ts)
@@ -246,20 +325,28 @@ function getJSDocDescription(node: ts.Node): string | undefined {
 }
 
 /**
- * Extract nested type references from a type string
+ * Extract nested type references from a TypeNode using TypeScript AST
  */
-function extractNestedTypeRefs(typeStr: string): string[] {
-  const refs: string[] = [];
-  const typeRefRegex = /\b([VK]\d+[A-Z][a-zA-Z0-9]*|Core[A-Z][a-zA-Z0-9]*)\b/g;
-  let match;
-
-  while ((match = typeRefRegex.exec(typeStr)) !== null) {
-    const ref = match[1];
-    if (ref && !refs.includes(ref)) {
-      refs.push(ref);
-    }
+function extractNestedTypeRefsFromNode(typeNode: ts.TypeNode | undefined): string[] {
+  if (!typeNode) {
+    return [];
   }
 
+  const refs: string[] = [];
+
+  function visit(node: ts.Node) {
+    if (ts.isTypeReferenceNode(node)) {
+      const typeName = node.typeName.getText();
+      // Only include K8s types (V1*, K8*, Core*)
+      if ((typeName.startsWith('V') || typeName.startsWith('K') || typeName.startsWith('Core')) &&
+          !refs.includes(typeName)) {
+        refs.push(typeName);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(typeNode);
   return refs;
 }
 
@@ -298,12 +385,12 @@ function extractTypeDefinitionWithTS(typeName: string, filePath: string): { type
               description: propDescription,
             });
 
-            const typeRefs = extractNestedTypeRefs(propType);
-            typeRefs.forEach(ref => {
+            const typeRefs = extractNestedTypeRefsFromNode(member.type);
+            for (const ref of typeRefs) {
               if (ref !== typeName) {
                 nestedTypes.add(ref);
               }
-            });
+            }
           }
         }
       });
@@ -662,6 +749,8 @@ class SearchToolsService {
     this.apiMethodsCache = null;
     this.indexedScriptPaths.clear();
     this.initialized = false;
+    // Clear module-level caches
+    clearPrometheusMethodsCache();
   }
 
   /**
@@ -713,10 +802,10 @@ class SearchToolsService {
         continue;
       }
 
-      // Build searchTokens: CamelCase split of resourceType and methodName for better matching
+      // Build searchTokens from identifiers for better matching
       const searchTokens = [
-        splitCamelCase(method.resourceType),
-        splitCamelCase(method.methodName),
+        method.resourceType,
+        method.methodName,
         method.apiClass,
       ].join(' ');
 
@@ -739,11 +828,14 @@ class SearchToolsService {
     // Index cached scripts
     const scriptCount = await this.indexCachedScripts(db);
 
+    // Index prometheus library methods
+    const prometheusCount = await this.indexPrometheusMethods(db);
+
     // Start filesystem watcher for script changes
     this.startScriptWatcher(db);
 
     this.oramaDb = db;
-    logger.info(`Orama: Indexed ${methods.length} API methods and ${scriptCount} cached scripts`);
+    logger.info(`Orama: Indexed ${methods.length} API methods, ${scriptCount} cached scripts, and ${prometheusCount} prometheus methods`);
     return db;
   }
 
@@ -781,6 +873,45 @@ class SearchToolsService {
       }
     } catch (error) {
       logger.error('Error indexing cached scripts', error);
+    }
+
+    return indexedCount;
+  }
+
+  /**
+   * Index prometheus library methods into the Orama database.
+   */
+  private async indexPrometheusMethods(db: Orama<typeof oramaSchema>): Promise<number> {
+    const methods = getPrometheusMethods();
+    let indexedCount = 0;
+
+    for (const method of methods) {
+      // Build searchTokens from identifiers for better matching
+      const searchTokens = [
+        method.methodName,
+        method.className || '',
+        method.library,
+        method.category,
+        method.description,
+      ].join(' ');
+
+      const doc: OramaDocument = {
+        id: `prometheus:${method.library}:${method.className || 'fn'}:${method.methodName}`,
+        documentType: 'prometheus',
+        resourceType: method.category, // Use category as resourceType for search
+        methodName: method.methodName,
+        description: method.description,
+        searchTokens,
+        action: 'prometheus',
+        scope: 'prometheus',
+        apiClass: method.library,
+        filePath: '',
+        library: method.library,
+        category: method.category,
+      };
+
+      await insert(db, doc);
+      indexedCount++;
     }
 
     return indexedCount;
@@ -1070,7 +1201,7 @@ export { SearchToolsService };
 // ============================================================================
 
 /**
- * Orama schema for Kubernetes API methods
+ * Orama schema for Kubernetes API methods and Prometheus library methods
  *
  * Design decisions based on Orama best practices:
  * - `string` types for full-text searchable fields (resourceType, methodName, description)
@@ -1080,7 +1211,7 @@ export { SearchToolsService };
  */
 const oramaSchema = {
   // Document type discriminator
-  documentType: 'enum',          // "method" | "script"
+  documentType: 'enum',          // "method" | "script" | "prometheus"
 
   // Full-text searchable fields
   resourceType: 'string',        // "Pod", "Deployment" - boosted 3x
@@ -1092,18 +1223,22 @@ const oramaSchema = {
   searchTokens: 'string',
 
   // Filterable enum fields (exact match, used in where clause)
-  action: 'enum',                // "list", "create", "read", "delete", "patch", "replace", "connect", "watch", "script"
-  scope: 'enum',                 // "namespaced", "cluster", "forAllNamespaces", "script"
-  apiClass: 'enum',              // "CoreV1Api", "AppsV1Api", "CachedScript", etc.
+  action: 'enum',                // "list", "create", "read", "delete", "patch", "replace", "connect", "watch", "script", "prometheus"
+  scope: 'enum',                 // "namespaced", "cluster", "forAllNamespaces", "script", "prometheus"
+  apiClass: 'enum',              // "CoreV1Api", "AppsV1Api", "CachedScript", "prometheus-query"
 
   // Stored metadata
   id: 'string',                  // Unique identifier: apiClass.methodName or script:filename
   filePath: 'string',            // Full path for scripts (empty for methods)
+
+  // Prometheus-specific fields
+  library: 'enum',               // "prometheus-query" (empty for non-prometheus)
+  category: 'enum',              // "query" | "metadata" | "alerts" (empty for non-prometheus)
 } as const;
 
 type OramaDocument = {
   id: string;
-  documentType: 'method' | 'script';
+  documentType: 'method' | 'script' | 'prometheus';
   resourceType: string;
   methodName: string;
   description: string;
@@ -1112,15 +1247,9 @@ type OramaDocument = {
   scope: string;
   apiClass: string;
   filePath: string;
+  library?: string;
+  category?: string;
 };
-
-/**
- * Split CamelCase into searchable tokens
- * e.g., "PodExec" -> "Pod Exec", "ServiceAccountToken" -> "Service Account Token"
- */
-function splitCamelCase(str: string): string {
-  return str.replace(/([a-z])([A-Z])/g, '$1 $2');
-}
 
 /**
  * Extract the action from a method name
@@ -1151,48 +1280,252 @@ function extractScope(methodName: string): string {
 }
 
 // ============================================================================
+// Prometheus Library Methods (Dynamic Extraction from .d.ts files)
+// ============================================================================
+
+/**
+ * Extract JSDoc comment text from a node using TypeScript AST
+ */
+function extractJSDocComment(node: ts.Node, _sourceFile: ts.SourceFile): string {
+  const jsDocComments = ts.getJSDocCommentsAndTags(node);
+  for (const comment of jsDocComments) {
+    if (ts.isJSDoc(comment) && comment.comment) {
+      if (typeof comment.comment === 'string') {
+        return comment.comment;
+      }
+      // Handle JSDocComment array (multiple parts)
+      if (Array.isArray(comment.comment)) {
+        return comment.comment
+          .map(part => typeof part === 'string' ? part : part.text)
+          .join('')
+          .trim();
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * Extract parameter info from TypeScript function parameters
+ */
+function extractParameterInfo(
+  params: ts.NodeArray<ts.ParameterDeclaration>,
+  sourceFile: ts.SourceFile
+): Array<{ name: string; type: string; optional: boolean; description?: string }> {
+  return params.map(param => {
+    const name = param.name.getText(sourceFile);
+    const type = param.type?.getText(sourceFile) || 'any';
+    const optional = !!param.questionToken || !!param.initializer;
+    return { name, type, optional };
+  });
+}
+
+/**
+ * Determine category for a prometheus-query method based on its name
+ */
+function categorizePrometheusQueryMethod(methodName: string, _description: string): PrometheusCategory {
+  const lowerName = methodName.toLowerCase();
+
+  if (lowerName.includes('query') || lowerName === 'instantquery' || lowerName === 'rangequery') {
+    return 'query';
+  }
+  if (lowerName.includes('alert') || lowerName.includes('rule')) {
+    return 'alerts';
+  }
+  return 'metadata';
+}
+
+/**
+ * Generate example code for a prometheus-query method
+ */
+function generatePrometheusQueryExample(methodName: string, params: Array<{ name: string; type: string; optional: boolean }>): string {
+  const requiredParams = params.filter(p => !p.optional);
+
+  const paramExamples: string[] = [];
+  for (const p of requiredParams) {
+    switch (p.name) {
+      case 'query':
+        paramExamples.push("'up{job=\"prometheus\"}'");
+        break;
+      case 'time':
+      case 'start':
+        paramExamples.push('new Date(Date.now() - 3600000)');
+        break;
+      case 'end':
+        paramExamples.push('new Date()');
+        break;
+      case 'step':
+        paramExamples.push("'1m'");
+        break;
+      case 'matchs':
+      case 'match':
+        paramExamples.push("['{job=\"prometheus\"}']");
+        break;
+      case 'labelName':
+        paramExamples.push("'job'");
+        break;
+      default:
+        paramExamples.push(`/* ${p.name} */`);
+    }
+  }
+
+  return `import { PrometheusDriver } from 'prometheus-query';
+
+const prom = new PrometheusDriver({ endpoint: process.env.PROMETHEUS_URL || 'http://prometheus:9090' });
+const result = await prom.${methodName}(${paramExamples.join(', ')});
+console.log(result);`;
+}
+
+/**
+ * Dynamically extract methods from prometheus-query library .d.ts files
+ */
+function extractPrometheusQueryMethods(): PrometheusMethod[] {
+  const methods: PrometheusMethod[] = [];
+
+  try {
+    const driverPath = join(process.cwd(), 'node_modules', 'prometheus-query', 'dist', 'driver.d.ts');
+    if (!existsSync(driverPath)) {
+      logger.debug('prometheus-query driver.d.ts not found');
+      return methods;
+    }
+
+    const sourceCode = readFileSync(driverPath, 'utf-8');
+    const sourceFile = ts.createSourceFile(
+      driverPath,
+      sourceCode,
+      ts.ScriptTarget.Latest,
+      true
+    );
+
+    function visit(node: ts.Node) {
+      if (ts.isClassDeclaration(node) && node.name?.text === 'PrometheusDriver') {
+        for (const member of node.members) {
+          if (ts.isMethodDeclaration(member) && member.name) {
+            const methodName = member.name.getText(sourceFile);
+
+            if (methodName.startsWith('_') || methodName === 'constructor' ||
+                member.modifiers?.some(m => m.kind === ts.SyntaxKind.PrivateKeyword)) {
+              continue;
+            }
+
+            const description = extractJSDocComment(member, sourceFile) ||
+              `${methodName.charAt(0).toUpperCase() + methodName.slice(1).replace(/([A-Z])/g, ' $1').trim()} from Prometheus API`;
+
+            const params = extractParameterInfo(member.parameters, sourceFile);
+            const returnType = member.type?.getText(sourceFile) || 'Promise<any>';
+            const category = categorizePrometheusQueryMethod(methodName, description);
+            const example = generatePrometheusQueryExample(methodName, params);
+
+            methods.push({
+              library: 'prometheus-query',
+              className: 'PrometheusDriver',
+              methodName,
+              category,
+              description,
+              parameters: params,
+              returnType,
+              example,
+            });
+          }
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    }
+
+    visit(sourceFile);
+    logger.debug(`Extracted ${methods.length} methods from prometheus-query`);
+  } catch (error) {
+    logger.debug(`Failed to extract prometheus-query methods: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return methods;
+}
+
+/**
+ * Get all Prometheus library methods (dynamically extracted from .d.ts files)
+ */
+function getAllPrometheusMethods(): PrometheusMethod[] {
+  const startTime = Date.now();
+
+  const methods = extractPrometheusQueryMethods();
+
+  const elapsed = Date.now() - startTime;
+  logger.info(`Dynamically extracted ${methods.length} prometheus-query methods in ${elapsed}ms`);
+
+  return methods;
+}
+
+/**
+ * Prometheus methods cache (populated at service initialization)
+ */
+let prometheusMethodsCache: PrometheusMethod[] | null = null;
+
+/**
+ * Get cached Prometheus methods
+ */
+function getPrometheusMethods(): PrometheusMethod[] {
+  if (!prometheusMethodsCache) {
+    prometheusMethodsCache = getAllPrometheusMethods();
+  }
+  return prometheusMethodsCache;
+}
+
+/**
+ * Clear the prometheus methods cache (used during shutdown/reset)
+ */
+function clearPrometheusMethodsCache(): void {
+  prometheusMethodsCache = null;
+}
+
+// ============================================================================
 // Script Parsing Functions
 // ============================================================================
 
 /**
- * Extract the first comment block from a TypeScript file.
+ * Extract the first comment block from a TypeScript file using TypeScript AST.
  * Supports block comments and consecutive single-line comments.
  */
 function extractFirstCommentBlock(filePath: string): string {
   try {
     const content = readFileSync(filePath, 'utf-8');
 
-    // Try to match block comment at start of file (with optional leading whitespace)
-    const blockCommentMatch = content.match(/^\s*\/\*\*?([\s\S]*?)\*\//);
-    if (blockCommentMatch && blockCommentMatch[1]) {
-      // Clean up the comment: remove leading asterisks, trim whitespace
-      return blockCommentMatch[1]
-        .split('\n')
-        .map(line => line.replace(/^\s*\*\s?/, '').trim())
-        .filter(line => line.length > 0)
-        .join(' ')
-        .trim();
+    // Get leading comments from the start of the file using TypeScript's comment parser
+    const leadingComments = ts.getLeadingCommentRanges(content, 0);
+
+    if (!leadingComments || leadingComments.length === 0) {
+      return '';
     }
 
-    // Try to match consecutive single-line comments at start
-    const lines = content.split('\n');
-    const commentLines: string[] = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('//')) {
-        commentLines.push(trimmed.replace(/^\/\/\s?/, '').trim());
-      } else if (trimmed === '') {
-        continue; // Skip empty lines at start
-      } else {
-        break; // Stop at first non-comment, non-empty line
+    // Collect all consecutive comments at the start
+    const commentTexts: string[] = [];
+    for (const comment of leadingComments) {
+      const commentText = content.slice(comment.pos, comment.end);
+
+      if (comment.kind === ts.SyntaxKind.MultiLineCommentTrivia) {
+        // Block comment - extract content between /* and */
+        const inner = commentText.slice(2, -2); // Remove /* and */
+        const lines = inner.split('\n');
+        for (const line of lines) {
+          // Remove leading asterisks and whitespace
+          let cleaned = line.trim();
+          if (cleaned.startsWith('*')) {
+            cleaned = cleaned.slice(1).trim();
+          }
+          if (cleaned.length > 0) {
+            commentTexts.push(cleaned);
+          }
+        }
+      } else if (comment.kind === ts.SyntaxKind.SingleLineCommentTrivia) {
+        // Single-line comment - remove leading //
+        const cleaned = commentText.slice(2).trim();
+        if (cleaned.length > 0) {
+          commentTexts.push(cleaned);
+        }
       }
     }
 
-    if (commentLines.length > 0) {
-      return commentLines.join(' ').trim();
-    }
-
-    return '';
+    return commentTexts.join(' ').trim();
   } catch (error) {
     logger.debug(`Failed to extract comment from ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
     return '';
@@ -1229,26 +1562,65 @@ function extractResourceTypesFromFilename(filename: string): string[] {
 }
 
 /**
- * Extract K8s API signals from script content (NOT full content indexing).
+ * Extract K8s API signals from script content using TypeScript AST.
  * Extracts API class references and resource type references.
  */
 function extractApiSignals(filePath: string): { apiClasses: string[]; resourceTypes: string[] } {
   try {
     const content = readFileSync(filePath, 'utf-8');
+    const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true);
 
-    // Extract API class references: CoreV1Api, AppsV1Api, etc.
-    const apiClassPattern = /\b(Core|Apps|Batch|Networking|Rbac(?:Authorization)?|Storage|Custom(?:Objects)?|Apiextensions|Autoscaling|Policy)V\d+Api\b/g;
-    const apiClasses = [...new Set(content.match(apiClassPattern) || [])];
+    const apiClasses = new Set<string>();
+    const resourceTypes = new Set<string>();
 
-    // Extract resource type references: V1Pod, V1Deployment, etc.
-    const resourceTypePattern = /\bV\d+[A-Z][a-zA-Z0-9]*\b/g;
-    const matches = content.match(resourceTypePattern) || [];
-    // Filter to common resource types and dedupe
-    const resourceTypes = [...new Set(matches)]
-      .filter(t => !t.includes('Api') && !t.includes('List') && t.length < 30)
-      .slice(0, MAX_RESOURCE_TYPES_FROM_CONTENT);
+    // Known K8s API class names
+    const knownApiClasses = new Set([
+      'CoreV1Api', 'AppsV1Api', 'BatchV1Api', 'NetworkingV1Api',
+      'RbacAuthorizationV1Api', 'StorageV1Api', 'CustomObjectsApi',
+      'ApiextensionsV1Api', 'AutoscalingV1Api', 'PolicyV1Api',
+    ]);
 
-    return { apiClasses, resourceTypes };
+    function visit(node: ts.Node) {
+      // Find type references (V1Pod, V1Deployment, etc.)
+      if (ts.isTypeReferenceNode(node)) {
+        const typeName = node.typeName.getText(sourceFile);
+        // K8s types start with V followed by version number
+        if (typeName.startsWith('V') && typeName.length > 2) {
+          const secondChar = typeName.charAt(1);
+          if (secondChar >= '0' && secondChar <= '9') {
+            // Filter out Api and List types
+            if (!typeName.includes('Api') && !typeName.includes('List') && typeName.length < 30) {
+              resourceTypes.add(typeName);
+            }
+          }
+        }
+      }
+
+      // Find identifier references to API classes
+      if (ts.isIdentifier(node)) {
+        const name = node.text;
+        if (knownApiClasses.has(name)) {
+          apiClasses.add(name);
+        }
+      }
+
+      // Find property access like k8s.CoreV1Api
+      if (ts.isPropertyAccessExpression(node)) {
+        const propName = node.name.text;
+        if (knownApiClasses.has(propName)) {
+          apiClasses.add(propName);
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    }
+
+    visit(sourceFile);
+
+    return {
+      apiClasses: [...apiClasses],
+      resourceTypes: [...resourceTypes].slice(0, MAX_RESOURCE_TYPES_FROM_CONTENT),
+    };
   } catch (error) {
     logger.debug(`Failed to extract API signals from ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
     return { apiClasses: [], resourceTypes: [] };
@@ -1329,24 +1701,40 @@ function initializeScriptsDirectory(scriptsDir: string): void {
     if (!existsSync(scriptsDir)) {
       mkdirSync(scriptsDir, { recursive: true });
     }
-    
-    // Create symlink to node_modules if it doesn't exist
-    // When installed via npx, dependencies are hoisted to the cache root
-    // PACKAGE_ROOT is like: /path/to/npx/cache/node_modules/@prodisco/k8s-mcp
-    // Dependencies are in: /path/to/npx/cache/node_modules
+
+    // Create symlink to node_modules
+    // When installed via npx: PACKAGE_ROOT = /path/npx/node_modules/@prodisco/k8s-mcp
+    //   -> dependencies are in: /path/npx/node_modules (go up 2 levels)
+    // When running in dev: PACKAGE_ROOT = /path/to/project
+    //   -> dependencies are in: /path/to/project/node_modules
     const nodeModulesLink = join(scriptsDir, 'node_modules');
-    const nodeModulesTarget = join(PACKAGE_ROOT, '../..');
-    
-    if (!existsSync(nodeModulesLink) && existsSync(nodeModulesTarget)) {
-      try {
-        symlinkSync(nodeModulesTarget, nodeModulesLink, 'dir');
-      } catch (err) {
-        // Symlink creation might fail on some systems, that's okay
-        logger.warn(`Could not create symlink to node_modules: ${err instanceof Error ? err.message : String(err)}`);
-      }
+
+    // Detect if running from npx cache (path contains node_modules/@prodisco)
+    const isNpxInstall = PACKAGE_ROOT.includes('node_modules/@prodisco') ||
+                         PACKAGE_ROOT.includes('node_modules\\@prodisco');
+
+    const nodeModulesTarget = isNpxInstall
+      ? realpathSync(join(PACKAGE_ROOT, '../..'))  // npx: go up from node_modules/@prodisco/k8s-mcp
+      : realpathSync(join(PACKAGE_ROOT, 'node_modules'));  // dev: use project's node_modules
+
+    if (!existsSync(nodeModulesTarget)) {
+      logger.warn(`node_modules target does not exist: ${nodeModulesTarget}`);
+      return;
+    }
+
+    // Always remove existing symlink and recreate to ensure it points to current location
+    try {
+      unlinkSync(nodeModulesLink);
+    } catch {
+      // Ignore - doesn't exist
+    }
+
+    try {
+      symlinkSync(nodeModulesTarget, nodeModulesLink, 'dir');
+    } catch (err) {
+      logger.warn(`Could not create symlink to node_modules: ${err instanceof Error ? err.message : String(err)}`);
     }
   } catch (err) {
-    // If initialization fails, scripts can still work with NODE_PATH
     logger.warn(`Could not initialize scripts directory: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
@@ -1435,11 +1823,11 @@ function extractResourceType(methodName: string): string {
     .replace(/^Cluster/, '')
     .replace(/ForAllNamespaces$/, '')
     .replace(/WithHttpInfo$/, '');
-  
+
   if (resource.startsWith('Collection')) {
     resource = resource.replace(/^Collection/, '');
   }
-  
+
   return resource || 'Resource';
 }
 
@@ -1447,11 +1835,11 @@ function generateDescriptionFromMethodName(methodName: string, classDesc: string
   const words = methodName.replace(/([A-Z])/g, ' $1').toLowerCase().trim();
   const resourceMatch = methodName.match(/(?:list|read|create|delete|patch|replace)(?:Namespaced)?(.+?)(?:ForAllNamespaces)?$/);
   const resource = resourceMatch ? resourceMatch[1] : '';
-  
+
   let desc = words.charAt(0).toUpperCase() + words.slice(1);
   if (resource) desc += ` (${resource})`;
   desc += ` - ${classDesc}`;
-  
+
   return desc;
 }
 
@@ -1959,7 +2347,24 @@ async function executeScriptMode(input: z.infer<typeof SearchToolsInputSchema>):
 
     totalMatches = scriptHits.length;
 
-    scripts = scriptHits
+    // Filter out scripts that no longer exist on disk, and clean up stale index entries
+    const validScriptHits: typeof scriptHits = [];
+    for (const hit of scriptHits) {
+      if (existsSync(hit.document.filePath)) {
+        validScriptHits.push(hit);
+      } else {
+        // Clean up stale index entry
+        try {
+          await remove(db, hit.document.id);
+          logger.debug(`Orama: Removed stale script ${hit.document.methodName} from index`);
+        } catch {
+          // Ignore removal errors
+        }
+      }
+    }
+    totalMatches = validScriptHits.length;
+
+    scripts = validScriptHits
       .slice(offset, offset + limit)
       .map(hit => ({
         filename: hit.document.methodName + '.ts',
@@ -2043,6 +2448,141 @@ async function executeScriptMode(input: z.infer<typeof SearchToolsInputSchema>):
   };
 }
 
+/**
+ * Execute prometheus mode - search for prometheus-query library methods
+ */
+async function executePrometheusMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<PrometheusModeResult | PrometheusErrorResult> {
+  const { category = 'all', methodPattern, limit = 10, offset = 0 } = input;
+
+  const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+  initializeScriptsDirectory(scriptsDirectory);
+
+  // Get all prometheus methods
+  let methods = getPrometheusMethods();
+
+  // Filter by category
+  if (category !== 'all') {
+    methods = methods.filter(m => m.category === category);
+  }
+
+  // Filter by method pattern
+  if (methodPattern) {
+    const pattern = methodPattern.toLowerCase();
+    methods = methods.filter(m =>
+      m.methodName.toLowerCase().includes(pattern) ||
+      m.description.toLowerCase().includes(pattern)
+    );
+  }
+
+  const totalMatches = methods.length;
+
+  // Apply pagination
+  const paginatedMethods = methods.slice(offset, offset + limit);
+  const hasMore = offset + paginatedMethods.length < totalMatches;
+
+  // Build facets
+  const facets = {
+    library: {} as Record<string, number>,
+    category: {} as Record<string, number>,
+  };
+
+  for (const m of methods) {
+    facets.library[m.library] = (facets.library[m.library] || 0) + 1;
+    facets.category[m.category] = (facets.category[m.category] || 0) + 1;
+  }
+
+  // Library info
+  const libraries = {
+    'prometheus-query': { installed: true, version: '^3.3.2' },
+  };
+
+  // Check if PROMETHEUS_URL is configured
+  const prometheusUrl = process.env.PROMETHEUS_URL;
+
+  // Build summary
+  let summary = `PROMETHEUS METHODS`;
+  if (category !== 'all') summary += ` (category: ${category})`;
+  if (methodPattern) summary += ` (pattern: "${methodPattern}")`;
+  summary += `\n\nFound ${totalMatches} method(s)`;
+  if (offset > 0 || hasMore) {
+    summary += ` | Page ${Math.floor(offset / limit) + 1}, showing ${offset + 1}-${offset + paginatedMethods.length} of ${totalMatches}`;
+  }
+  summary += `\n\n`;
+
+  // Show PROMETHEUS_URL status
+  if (!prometheusUrl) {
+    summary += `⚠️  PROMETHEUS_URL not configured - prometheus-query methods require this environment variable\n`;
+    summary += `   Set via: PROMETHEUS_URL="http://prometheus:9090"\n\n`;
+  } else {
+    summary += `✓ PROMETHEUS_URL: ${prometheusUrl}\n\n`;
+  }
+
+  // Show facets
+  if (Object.keys(facets.category).length > 0) {
+    summary += `FACETS:\n`;
+    summary += `   Categories: ${Object.entries(facets.category).map(([k, v]) => `${k}(${v})`).join(', ')}\n\n`;
+  }
+
+  // Show methods
+  summary += `METHODS:\n\n`;
+  paginatedMethods.forEach((method, i) => {
+    const className = method.className ? `${method.className}.` : '';
+    summary += `${i + 1}. ${method.library}: ${className}${method.methodName}\n`;
+    summary += `   Category: ${method.category}\n`;
+    summary += `   ${method.description}\n`;
+    if (method.parameters.length > 0) {
+      const params = method.parameters.map(p =>
+        `${p.name}${p.optional ? '?' : ''}: ${p.type}`
+      ).join(', ');
+      summary += `   Params: (${params})\n`;
+    }
+    summary += `   Returns: ${method.returnType}\n\n`;
+  });
+
+  if (paginatedMethods.length === 0) {
+    summary += `No methods found. Try:\n`;
+    summary += `- Different category filter\n`;
+    summary += `- Different methodPattern\n`;
+  }
+
+  summary += `\nWrite scripts to: ${scriptsDirectory}/<name>.ts\n`;
+  summary += `Run with: npx tsx ${scriptsDirectory}/<name>.ts\n`;
+
+  const usage =
+    'USAGE:\n' +
+    '- import { PrometheusDriver } from \'prometheus-query\';\n' +
+    `- Write scripts to: ${scriptsDirectory}/<yourscript>.ts\n` +
+    `- Run: npx tsx ${scriptsDirectory}/<yourscript>.ts`;
+
+  // If PROMETHEUS_URL is not set, return error result
+  if (!prometheusUrl) {
+    return {
+      mode: 'prometheus',
+      error: 'PROMETHEUS_URL_NOT_CONFIGURED',
+      message: 'The PROMETHEUS_URL environment variable is not set. prometheus-query methods require this to connect to a Prometheus server.',
+      example: 'PROMETHEUS_URL="http://prometheus:9090" npx tsx script.ts',
+      methods: paginatedMethods,
+      totalMatches,
+      libraries,
+      paths: { scriptsDirectory },
+      facets,
+      pagination: { offset, limit, hasMore },
+    };
+  }
+
+  return {
+    mode: 'prometheus',
+    summary,
+    methods: paginatedMethods,
+    totalMatches,
+    libraries,
+    usage,
+    paths: { scriptsDirectory },
+    facets,
+    pagination: { offset, limit, hasMore },
+  };
+}
+
 // ============================================================================
 // Warmup Export
 // ============================================================================
@@ -2080,6 +2620,9 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     '• scripts: Search or list cached scripts. ' +
     'Params: searchTerm (optional), limit, offset. ' +
     'Example: { mode: "scripts", searchTerm: "pod" } ' +
+    '• prometheus: Search Prometheus API methods (prometheus-query). ' +
+    'Params: category (optional), methodPattern (optional), limit, offset. ' +
+    'Example: { mode: "prometheus", category: "query" } ' +
     'Actions: list, read, create, delete, patch, replace, connect, get, watch. ' +
     'Scopes: namespaced, cluster, all. ' +
     'Docs: https://github.com/harche/ProDisco/blob/main/docs/search-tools.md',
@@ -2091,6 +2634,8 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       return executeTypeMode(input);
     } else if (mode === 'scripts') {
       return executeScriptMode(input);
+    } else if (mode === 'prometheus') {
+      return executePrometheusMode(input);
     } else {
       return executeMethodMode(input);
     }

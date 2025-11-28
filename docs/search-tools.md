@@ -1,6 +1,6 @@
 # searchTools Reference
 
-The `kubernetes.searchTools` tool is a unified interface for discovering Kubernetes API methods, type definitions, and cached scripts. It supports three modes designed for progressive disclosure: start with method discovery, drill into types as needed, and reuse existing scripts.
+The `kubernetes.searchTools` tool is a unified interface for discovering Kubernetes API methods, type definitions, cached scripts, and Prometheus/statistics library methods. It supports four modes designed for progressive disclosure: start with method discovery, drill into types as needed, reuse existing scripts, and analyze metrics with Prometheus.
 
 ## Quick Reference
 
@@ -9,6 +9,7 @@ The `kubernetes.searchTools` tool is a unified interface for discovering Kuberne
 | `methods` | Find API methods | `resourceType` | `{ resourceType: "Pod" }` |
 | `types` | Get type definitions | `types` | `{ mode: "types", types: ["V1Pod"] }` |
 | `scripts` | Search cached scripts | (none) | `{ mode: "scripts", searchTerm: "logs" }` |
+| `prometheus` | Search Prometheus/stats methods | (none) | `{ mode: "prometheus", methodPattern: "mean" }` |
 
 ---
 
@@ -186,6 +187,92 @@ Search and discover cached scripts in `~/.prodisco/scripts/cache/`.
 
 ---
 
+### Prometheus Mode
+
+Search for Prometheus API methods. This mode exposes methods from the `prometheus-query` library for querying Prometheus.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `category` | enum | No | Filter by category: `query`, `metadata`, `alerts`, or `all` (default) |
+| `methodPattern` | string | No | Search pattern for method names (e.g., "query", "labels") |
+| `limit` | number | No | Max results (default: 10, max: 50) |
+| `offset` | number | No | Skip N results for pagination (default: 0) |
+
+**Categories:**
+
+| Category | Description |
+|----------|-------------|
+| `query` | PromQL instant/range queries |
+| `metadata` | Labels, series, targets, metrics metadata |
+| `alerts` | Alerting rules and active alerts |
+
+**Examples:**
+
+```typescript
+// List all prometheus methods
+{ mode: "prometheus" }
+
+// Find PromQL query methods
+{ mode: "prometheus", category: "query" }
+
+// Find metadata methods
+{ mode: "prometheus", category: "metadata" }
+
+// Search for specific methods
+{ mode: "prometheus", methodPattern: "query" }
+
+// Paginate through all methods
+{ mode: "prometheus", limit: 20, offset: 20 }
+```
+
+**Response Structure:**
+
+```typescript
+{
+  mode: "prometheus",
+  summary: string,          // Human-readable result summary
+  methods: [{               // Array of matching methods
+    library: "prometheus-query",
+    className?: string,     // e.g., "PrometheusDriver"
+    methodName: string,     // e.g., "instantQuery", "rangeQuery"
+    category: string,       // e.g., "query", "metadata", "alerts"
+    description: string,
+    parameters: [...],      // Method parameters with types
+    returnType: string,
+    example: string,        // Usage example
+  }],
+  totalMatches: number,
+  libraries: {
+    "prometheus-query": { installed: true, version: "^3.3.2" }
+  },
+  usage: string,            // Quick usage guide
+  facets: {
+    category: { "query": 2, "metadata": 10, "alerts": 5 }
+  },
+  pagination: { offset, limit, hasMore },
+  paths: { scriptsDirectory: string }
+}
+```
+
+**Environment Configuration:**
+
+- `PROMETHEUS_URL` is **required** for executing queries - set it when adding the MCP server:
+
+```bash
+claude mcp add ProDisco \
+  --env KUBECONFIG="${HOME}/.kube/config" \
+  --env PROMETHEUS_URL="http://prometheus:9090" \
+  -- npx -y @prodisco/k8s-mcp
+```
+
+If `PROMETHEUS_URL` is not set:
+- Prometheus methods are still discoverable
+- The response includes a warning that execution requires configuration
+
+---
+
 ### Example Agent Workflows
 
 #### Workflow 1: List Pods in a Namespace
@@ -232,6 +319,39 @@ Step 3: Run existing script or adapt for your needs
 > npx tsx ~/.prodisco/scripts/cache/get-pod-logs.ts
 ```
 
+#### Workflow 4: Query P99 Latency from Prometheus
+
+**Step 1:** Find query methods
+```json
+{ "mode": "prometheus", "category": "query" }
+```
+
+**Step 2:** Write the script using PromQL's built-in histogram_quantile:
+```typescript
+import { PrometheusDriver } from 'prometheus-query';
+
+const prom = new PrometheusDriver({
+  endpoint: process.env.PROMETHEUS_URL || 'http://prometheus:9090'
+});
+
+const end = new Date();
+const start = new Date(end.getTime() - 60 * 60 * 1000); // 1 hour ago
+
+// PromQL handles percentile calculation directly
+const result = await prom.rangeQuery(
+  'histogram_quantile(0.99, rate(apiserver_request_duration_seconds_bucket[5m]))',
+  start, end, '1m'
+);
+
+const latestValue = result.result[0]?.values.slice(-1)[0]?.value;
+console.log(`P99 latency: ${latestValue?.toFixed(3)}s`);
+```
+
+**Step 3:** Execute script
+```bash
+npx tsx ~/.prodisco/scripts/cache/api-latency-p99.ts
+```
+
 ---
 
 ## Part 2: Technical Architecture
@@ -250,16 +370,18 @@ searchTools uses [Orama](https://orama.com) for fast, typo-tolerant full-text se
 
 ```typescript
 const oramaSchema = {
-  documentType: 'enum',      // "method" | "script"
+  documentType: 'enum',      // "method" | "script" | "prometheus"
   resourceType: 'string',    // Searchable: "Pod", "Deployment"
-  methodName: 'string',      // Searchable: "listNamespacedPod"
+  methodName: 'string',      // Searchable: "listNamespacedPod", "mean", "rangeQuery"
   description: 'string',     // Searchable: full description text
   searchTokens: 'string',    // CamelCase-split tokens for better matching
-  action: 'enum',            // Filterable: "list", "create", etc.
-  scope: 'enum',             // Filterable: "namespaced", "cluster"
-  apiClass: 'enum',          // Filterable: "CoreV1Api", etc.
+  action: 'enum',            // Filterable: "list", "create", "prometheus", etc.
+  scope: 'enum',             // Filterable: "namespaced", "cluster", "prometheus"
+  apiClass: 'enum',          // Filterable: "CoreV1Api", "prometheus-query", etc.
   id: 'string',              // Unique identifier
   filePath: 'string',        // Script path (empty for methods)
+  library: 'enum',           // Prometheus: "prometheus-query"
+  category: 'enum',          // Prometheus: "query", "metadata", "alerts"
 };
 ```
 
