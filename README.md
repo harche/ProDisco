@@ -117,9 +117,9 @@ A unified search interface for Kubernetes operations and metrics analysis.
   // Scripts mode - Cached script discovery
   searchTerm?: string;    // Search term (omit to list all)
 
-  // Prometheus mode - Prometheus API discovery
-  category?: 'query' | 'metadata' | 'alerts' | 'all';
-  methodPattern?: string; // e.g., "query", "labels"
+  // Prometheus mode - Prometheus API discovery and metrics
+  category?: 'query' | 'metadata' | 'alerts' | 'metrics' | 'all';
+  methodPattern?: string; // e.g., "query", "labels", "pod", "gpu"
 
   // Shared parameters
   limit?: number;         // Max results (default: 10)
@@ -184,6 +184,12 @@ A unified search interface for Kubernetes operations and metrics analysis.
 
 // Search for specific methods
 { mode: "prometheus", methodPattern: "query" }
+
+// Discover actual metrics from your cluster
+{ mode: "prometheus", category: "metrics", methodPattern: "pod" }
+
+// Find GPU metrics
+{ mode: "prometheus", category: "metrics", methodPattern: "gpu" }
 ```
 
 **Available Categories (Prometheus Mode):**
@@ -193,6 +199,7 @@ A unified search interface for Kubernetes operations and metrics analysis.
 | `query` | `instantQuery`, `rangeQuery` | Execute PromQL queries |
 | `metadata` | `series`, `labelNames`, `labelValues`, `targets` | Explore metrics metadata |
 | `alerts` | `rules`, `alerts`, `alertmanagers` | Access alerting information |
+| `metrics` | (dynamic from cluster) | Discover actual metrics with descriptions |
 
 ---
 

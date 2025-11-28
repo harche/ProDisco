@@ -195,8 +195,8 @@ Search for Prometheus API methods. This mode exposes methods from the `prometheu
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `category` | enum | No | Filter by category: `query`, `metadata`, `alerts`, or `all` (default) |
-| `methodPattern` | string | No | Search pattern for method names (e.g., "query", "labels") |
+| `category` | enum | No | Filter by category: `query`, `metadata`, `alerts`, `metrics`, or `all` (default) |
+| `methodPattern` | string | No | Search pattern for method names or metric names (e.g., "query", "labels", "pod", "gpu") |
 | `limit` | number | No | Max results (default: 10, max: 50) |
 | `offset` | number | No | Skip N results for pagination (default: 0) |
 
@@ -207,6 +207,7 @@ Search for Prometheus API methods. This mode exposes methods from the `prometheu
 | `query` | PromQL instant/range queries |
 | `metadata` | Labels, series, targets, metrics metadata |
 | `alerts` | Alerting rules and active alerts |
+| `metrics` | Discover actual metrics from your Prometheus cluster with descriptions |
 
 **Examples:**
 
@@ -225,7 +226,30 @@ Search for Prometheus API methods. This mode exposes methods from the `prometheu
 
 // Paginate through all methods
 { mode: "prometheus", limit: 20, offset: 20 }
+
+// Discover actual metrics from cluster (requires PROMETHEUS_URL)
+{ mode: "prometheus", category: "metrics" }
+
+// Find pod-related metrics
+{ mode: "prometheus", category: "metrics", methodPattern: "pod" }
+
+// Find GPU metrics (DCGM, nvidia, etc.)
+{ mode: "prometheus", category: "metrics", methodPattern: "gpu" }
 ```
+
+**Metrics Category Response:**
+
+When using `category: "metrics"`, metrics are grouped by semantic category for easier discovery:
+- **STATUS & LIFECYCLE** - status, phase, ready, restart metrics
+- **CPU & COMPUTE** - cpu, throttle metrics
+- **MEMORY** - memory, mem metrics
+- **NETWORK** - network, receive, transmit, rx, tx metrics
+- **STORAGE** - storage, disk, volume, fs metrics
+- **OTHER** - everything else
+
+The response includes a "NEXT STEPS" section showing how to:
+1. Get labels for a metric using `labelNames()`
+2. Query a metric using `instantQuery()`
 
 **Response Structure:**
 
@@ -370,18 +394,19 @@ searchTools uses [Orama](https://orama.com) for fast, typo-tolerant full-text se
 
 ```typescript
 const oramaSchema = {
-  documentType: 'enum',      // "method" | "script" | "prometheus"
+  documentType: 'enum',      // "method" | "script" | "prometheus" | "prometheus-metric"
   resourceType: 'string',    // Searchable: "Pod", "Deployment"
-  methodName: 'string',      // Searchable: "listNamespacedPod", "mean", "rangeQuery"
+  methodName: 'string',      // Searchable: "listNamespacedPod", "mean", "rangeQuery", metric names
   description: 'string',     // Searchable: full description text
   searchTokens: 'string',    // CamelCase-split tokens for better matching
-  action: 'enum',            // Filterable: "list", "create", "prometheus", etc.
+  action: 'enum',            // Filterable: "list", "create", "prometheus", "metric", etc.
   scope: 'enum',             // Filterable: "namespaced", "cluster", "prometheus"
-  apiClass: 'enum',          // Filterable: "CoreV1Api", "prometheus-query", etc.
+  apiClass: 'enum',          // Filterable: "CoreV1Api", "prometheus-query", "prometheus-metric", etc.
   id: 'string',              // Unique identifier
   filePath: 'string',        // Script path (empty for methods)
   library: 'enum',           // Prometheus: "prometheus-query"
   category: 'enum',          // Prometheus: "query", "metadata", "alerts"
+  metricType: 'enum',        // Prometheus metrics: "gauge", "counter", "histogram", "summary"
 };
 ```
 
@@ -401,6 +426,8 @@ boost: {
 The index is pre-warmed at server startup via `warmupSearchIndex()` to avoid latency on the first search. This indexes:
 - All API methods from 10 API classes (~500+ methods)
 - All cached scripts in `~/.prodisco/scripts/cache/`
+- Prometheus library methods from `prometheus-query`
+- **Prometheus cluster metrics** (background, non-blocking) - if `PROMETHEUS_URL` is set, actual metrics are fetched from the cluster and indexed. This runs in the background and refreshes every 30 minutes.
 
 ---
 

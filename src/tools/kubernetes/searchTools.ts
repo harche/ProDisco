@@ -90,10 +90,10 @@ const SearchToolsInputSchema = z.object({
 
   // === Prometheus mode parameters (mode: 'prometheus') ===
   category: z
-    .enum(['query', 'metadata', 'alerts', 'all'])
+    .enum(['query', 'metadata', 'alerts', 'metrics', 'all'])
     .optional()
     .default('all')
-    .describe('(prometheus mode) Filter by category: "query" (PromQL), "metadata" (labels/series), or "alerts"'),
+    .describe('(prometheus mode) Filter by category: "query" (PromQL), "metadata" (labels/series), "alerts", or "metrics" (discover cluster metrics)'),
   methodPattern: z
     .string()
     .optional()
@@ -289,8 +289,30 @@ type PrometheusErrorResult = {
   };
 };
 
+// Result type for metrics category in prometheus mode
+type MetricsModeResult = {
+  mode: 'prometheus';
+  category: 'metrics';
+  summary: string;
+  metrics: Array<{
+    name: string;
+    type: string;
+    description: string;
+  }>;
+  totalMatches: number;
+  indexingStatus: 'ready' | 'in_progress' | 'unavailable';
+  paths: {
+    scriptsDirectory: string;
+  };
+  pagination: {
+    offset: number;
+    limit: number;
+    hasMore: boolean;
+  };
+};
+
 // Union type for all modes
-type SearchToolsResult = MethodModeResult | TypeModeResult | ScriptModeResult | PrometheusModeResult | PrometheusErrorResult;
+type SearchToolsResult = MethodModeResult | TypeModeResult | ScriptModeResult | PrometheusModeResult | PrometheusErrorResult | MetricsModeResult;
 
 // ============================================================================
 // Type Definition Helper Types and Functions (from typeDefinitions.ts)
@@ -722,6 +744,15 @@ class SearchToolsService {
   /** Whether the service has been initialized */
   private initialized = false;
 
+  /** Prometheus metrics indexing status */
+  private metricsIndexingStatus: 'ready' | 'in_progress' | 'unavailable' = 'unavailable';
+
+  /** Interval for refreshing Prometheus metrics */
+  private metricsRefreshInterval: NodeJS.Timeout | null = null;
+
+  /** Refresh interval in milliseconds (30 minutes) */
+  private static readonly METRICS_REFRESH_INTERVAL = 30 * 60 * 1000;
+
   /**
    * Initialize the search index and start the script watcher.
    * This is called automatically on first use, but can be called explicitly
@@ -733,6 +764,18 @@ class SearchToolsService {
     }
     await this.initializeOramaDb();
     this.initialized = true;
+
+    // Start background Prometheus metrics indexing (non-blocking)
+    if (process.env.PROMETHEUS_URL) {
+      this.startPrometheusMetricsIndexing();
+    }
+  }
+
+  /**
+   * Get the current Prometheus metrics indexing status
+   */
+  getMetricsIndexingStatus(): 'ready' | 'in_progress' | 'unavailable' {
+    return this.metricsIndexingStatus;
   }
 
   /**
@@ -745,9 +788,15 @@ class SearchToolsService {
       this.scriptWatcher = null;
       logger.info('Orama: Stopped script watcher');
     }
+    if (this.metricsRefreshInterval) {
+      clearInterval(this.metricsRefreshInterval);
+      this.metricsRefreshInterval = null;
+      logger.info('Orama: Stopped Prometheus metrics refresh');
+    }
     this.oramaDb = null;
     this.apiMethodsCache = null;
     this.indexedScriptPaths.clear();
+    this.metricsIndexingStatus = 'unavailable';
     this.initialized = false;
     // Clear module-level caches
     clearPrometheusMethodsCache();
@@ -915,6 +964,153 @@ class SearchToolsService {
     }
 
     return indexedCount;
+  }
+
+  /**
+   * Start background Prometheus metrics indexing (non-blocking).
+   * Fetches metric metadata from Prometheus and indexes into Orama.
+   */
+  private startPrometheusMetricsIndexing(): void {
+    this.metricsIndexingStatus = 'in_progress';
+
+    // Run indexing in background (don't await)
+    this.indexPrometheusMetrics()
+      .then(() => {
+        this.metricsIndexingStatus = 'ready';
+
+        // Schedule incremental refresh
+        this.metricsRefreshInterval = setInterval(() => {
+          this.refreshPrometheusMetrics();
+        }, SearchToolsService.METRICS_REFRESH_INTERVAL);
+      })
+      .catch((error) => {
+        logger.error('Failed to index Prometheus metrics', error);
+        this.metricsIndexingStatus = 'unavailable';
+      });
+  }
+
+  /**
+   * Index Prometheus metrics from the cluster into Orama.
+   */
+  private async indexPrometheusMetrics(): Promise<number> {
+    const prometheusUrl = process.env.PROMETHEUS_URL;
+    if (!prometheusUrl) {
+      return 0;
+    }
+
+    const { PrometheusDriver } = await import('prometheus-query');
+    const prom = new PrometheusDriver({ endpoint: prometheusUrl });
+
+    const metadata = await prom.metadata();
+    const db = await this.getOramaDb();
+    let count = 0;
+
+    for (const [name, info] of Object.entries(metadata)) {
+      const metricInfo = Array.isArray(info) ? info[0] : info;
+      const metricType = (metricInfo as { type?: string })?.type || 'unknown';
+      const description = (metricInfo as { help?: string })?.help || 'No description available';
+
+      const doc: OramaDocument = {
+        id: `metric:${name}`,
+        documentType: 'prometheus-metric',
+        resourceType: '',
+        methodName: name,
+        description,
+        searchTokens: `${name.replace(/_/g, ' ')} ${metricType} ${description}`,
+        action: 'metric',
+        scope: 'prometheus',
+        apiClass: 'prometheus-metric',
+        filePath: '',
+        metricType,
+      };
+
+      await insert(db, doc);
+      count++;
+    }
+
+    logger.info(`Orama: Indexed ${count} Prometheus metrics from cluster`);
+    return count;
+  }
+
+  /**
+   * Incrementally refresh Prometheus metrics.
+   * Adds new metrics, removes stale ones.
+   */
+  private async refreshPrometheusMetrics(): Promise<void> {
+    const prometheusUrl = process.env.PROMETHEUS_URL;
+    if (!prometheusUrl) {
+      return;
+    }
+
+    try {
+      const { PrometheusDriver } = await import('prometheus-query');
+      const prom = new PrometheusDriver({ endpoint: prometheusUrl });
+      const metadata = await prom.metadata();
+      const db = await this.getOramaDb();
+
+      const currentMetrics = new Set(Object.keys(metadata));
+
+      // Get existing indexed metrics
+      const existingResults = await search(db, {
+        term: '',
+        properties: ['methodName'],
+        limit: 10000,
+      });
+
+      const existingMetrics = new Map<string, string>();
+      for (const hit of existingResults.hits) {
+        if (hit.document.documentType === 'prometheus-metric') {
+          existingMetrics.set(hit.document.methodName, hit.document.id);
+        }
+      }
+
+      let added = 0;
+      let removed = 0;
+
+      // Add new metrics
+      for (const [name, info] of Object.entries(metadata)) {
+        if (!existingMetrics.has(name)) {
+          const metricInfo = Array.isArray(info) ? info[0] : info;
+          const metricType = (metricInfo as { type?: string })?.type || 'unknown';
+          const description = (metricInfo as { help?: string })?.help || 'No description available';
+
+          const doc: OramaDocument = {
+            id: `metric:${name}`,
+            documentType: 'prometheus-metric',
+            resourceType: '',
+            methodName: name,
+            description,
+            searchTokens: `${name.replace(/_/g, ' ')} ${metricType} ${description}`,
+            action: 'metric',
+            scope: 'prometheus',
+            apiClass: 'prometheus-metric',
+            filePath: '',
+            metricType,
+          };
+
+          await insert(db, doc);
+          added++;
+        }
+      }
+
+      // Remove stale metrics
+      for (const [name, id] of existingMetrics) {
+        if (!currentMetrics.has(name)) {
+          try {
+            await remove(db, id);
+            removed++;
+          } catch {
+            // Ignore removal errors
+          }
+        }
+      }
+
+      if (added > 0 || removed > 0) {
+        logger.info(`Orama: Prometheus metrics refresh - added ${added}, removed ${removed}`);
+      }
+    } catch (error) {
+      logger.error('Failed to refresh Prometheus metrics', error);
+    }
   }
 
   /**
@@ -1211,7 +1407,7 @@ export { SearchToolsService };
  */
 const oramaSchema = {
   // Document type discriminator
-  documentType: 'enum',          // "method" | "script" | "prometheus"
+  documentType: 'enum',          // "method" | "script" | "prometheus" | "prometheus-metric"
 
   // Full-text searchable fields
   resourceType: 'string',        // "Pod", "Deployment" - boosted 3x
@@ -1234,11 +1430,14 @@ const oramaSchema = {
   // Prometheus-specific fields
   library: 'enum',               // "prometheus-query" (empty for non-prometheus)
   category: 'enum',              // "query" | "metadata" | "alerts" (empty for non-prometheus)
+
+  // Prometheus metric fields (for prometheus-metric documentType)
+  metricType: 'enum',            // "gauge" | "counter" | "histogram" | "summary" | "unknown"
 } as const;
 
 type OramaDocument = {
   id: string;
-  documentType: 'method' | 'script' | 'prometheus';
+  documentType: 'method' | 'script' | 'prometheus' | 'prometheus-metric';
   resourceType: string;
   methodName: string;
   description: string;
@@ -1249,6 +1448,7 @@ type OramaDocument = {
   filePath: string;
   library?: string;
   category?: string;
+  metricType?: string;
 };
 
 /**
@@ -2449,10 +2649,152 @@ async function executeScriptMode(input: z.infer<typeof SearchToolsInputSchema>):
 }
 
 /**
+ * Group metrics by semantic category for better discoverability
+ */
+function groupMetricsByCategory(
+  metrics: Array<{ name: string; type: string; description: string }>
+): Record<string, Array<{ name: string; type: string; description: string }>> {
+  type MetricItem = { name: string; type: string; description: string };
+  const categories: Record<string, MetricItem[]> = {
+    'status & lifecycle': [],
+    'cpu & compute': [],
+    'memory': [],
+    'network': [],
+    'storage': [],
+    'other': [],
+  };
+
+  for (const m of metrics) {
+    const name = m.name.toLowerCase();
+
+    if (name.includes('status') || name.includes('phase') || name.includes('ready') || name.includes('restart')) {
+      categories['status & lifecycle']!.push(m);
+    } else if (name.includes('cpu') || name.includes('throttl')) {
+      categories['cpu & compute']!.push(m);
+    } else if (name.includes('memory') || name.includes('mem_') || name.includes('_mem')) {
+      categories['memory']!.push(m);
+    } else if (name.includes('network') || name.includes('receive') || name.includes('transmit') || name.includes('_rx_') || name.includes('_tx_')) {
+      categories['network']!.push(m);
+    } else if (name.includes('storage') || name.includes('disk') || name.includes('volume') || name.includes('fs_')) {
+      categories['storage']!.push(m);
+    } else {
+      categories['other']!.push(m);
+    }
+  }
+
+  // Remove empty categories
+  return Object.fromEntries(
+    Object.entries(categories).filter(([, v]) => v.length > 0)
+  );
+}
+
+/**
+ * Execute metrics mode - search for actual Prometheus metrics from the cluster
+ */
+async function executeMetricsMode(
+  searchPattern: string | undefined,
+  limit: number,
+  offset: number
+): Promise<MetricsModeResult> {
+  const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+  initializeScriptsDirectory(scriptsDirectory);
+
+  const indexingStatus = searchToolsService.getMetricsIndexingStatus();
+
+  if (indexingStatus === 'unavailable') {
+    return {
+      mode: 'prometheus',
+      category: 'metrics',
+      summary: 'Prometheus metrics indexing unavailable. Ensure PROMETHEUS_URL is configured.',
+      metrics: [],
+      totalMatches: 0,
+      indexingStatus,
+      paths: { scriptsDirectory },
+      pagination: { offset: 0, limit, hasMore: false },
+    };
+  }
+
+  const db = await searchToolsService.getOramaDb();
+
+  // Search Orama for prometheus-metric documents
+  const searchResults = await search(db, {
+    term: searchPattern || '',
+    properties: ['methodName', 'description', 'searchTokens'],
+    limit: 10000, // Get all matching, we'll paginate manually
+  });
+
+  // Filter to only prometheus-metric documents
+  const metricHits = searchResults.hits.filter(
+    hit => hit.document.documentType === 'prometheus-metric'
+  );
+
+  const totalMatches = metricHits.length;
+
+  // Apply pagination
+  const paginatedHits = metricHits.slice(offset, offset + limit);
+
+  // Map to output format
+  const metrics = paginatedHits.map(hit => ({
+    name: hit.document.methodName,
+    type: String(hit.document.metricType || 'unknown'),
+    description: hit.document.description,
+  }));
+
+  // Build summary with semantic grouping
+  let summary = `PROMETHEUS METRICS`;
+  if (searchPattern) summary += ` matching "${searchPattern}"`;
+  summary += `\n\nFound ${totalMatches} metric(s)`;
+  if (indexingStatus === 'in_progress') {
+    summary += ` (indexing in progress, results may be incomplete)`;
+  }
+  summary += `\n\n`;
+
+  // Group metrics by category
+  const grouped = groupMetricsByCategory(metrics);
+  for (const [category, categoryMetrics] of Object.entries(grouped)) {
+    summary += `${category.toUpperCase()}:\n`;
+    for (const m of categoryMetrics) {
+      summary += `  ${m.name} (${m.type})\n`;
+      summary += `    ${m.description}\n\n`;
+    }
+  }
+
+  // Add prominent usage hints
+  summary += `${'='.repeat(60)}\n`;
+  summary += `NEXT STEPS:\n\n`;
+  summary += `1. GET LABELS for a metric (to see what you can filter on):\n`;
+  summary += `   prom.labelNames(['{__name__="${metrics[0]?.name || 'metric_name'}"}'])\n`;
+  summary += `   → Returns: ["namespace", "pod", "phase", ...]\n\n`;
+  summary += `2. QUERY a metric:\n`;
+  summary += `   prom.instantQuery('${metrics[0]?.name || 'metric_name'}{namespace="default"}')\n`;
+  summary += `${'='.repeat(60)}\n`;
+
+  return {
+    mode: 'prometheus',
+    category: 'metrics',
+    summary,
+    metrics,
+    totalMatches,
+    indexingStatus,
+    paths: { scriptsDirectory },
+    pagination: {
+      offset,
+      limit,
+      hasMore: offset + metrics.length < totalMatches,
+    },
+  };
+}
+
+/**
  * Execute prometheus mode - search for prometheus-query library methods
  */
-async function executePrometheusMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<PrometheusModeResult | PrometheusErrorResult> {
+async function executePrometheusMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<PrometheusModeResult | PrometheusErrorResult | MetricsModeResult> {
   const { category = 'all', methodPattern, limit = 10, offset = 0 } = input;
+
+  // Handle metrics category - search indexed cluster metrics
+  if (category === 'metrics') {
+    return executeMetricsMode(methodPattern, limit, offset);
+  }
 
   const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
   initializeScriptsDirectory(scriptsDirectory);
@@ -2548,6 +2890,12 @@ async function executePrometheusMode(input: z.infer<typeof SearchToolsInputSchem
   summary += `\nWrite scripts to: ${scriptsDirectory}/<name>.ts\n`;
   summary += `Run with: npx tsx ${scriptsDirectory}/<name>.ts\n`;
 
+  // Add tip about metrics category
+  if (prometheusUrl) {
+    summary += `\n💡 TIP: Use category: "metrics" to discover actual metrics from your cluster.\n`;
+    summary += `   Example: { mode: "prometheus", category: "metrics", methodPattern: "pod" }\n`;
+  }
+
   const usage =
     'USAGE:\n' +
     '- import { PrometheusDriver } from \'prometheus-query\';\n' +
@@ -2620,9 +2968,10 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     '• scripts: Search or list cached scripts. ' +
     'Params: searchTerm (optional), limit, offset. ' +
     'Example: { mode: "scripts", searchTerm: "pod" } ' +
-    '• prometheus: Search Prometheus API methods (prometheus-query). ' +
-    'Params: category (optional), methodPattern (optional), limit, offset. ' +
+    '• prometheus: Search Prometheus API methods or discover cluster metrics. ' +
+    'Params: category (query/metadata/alerts/metrics), methodPattern (optional), limit, offset. ' +
     'Example: { mode: "prometheus", category: "query" } ' +
+    'Use category: "metrics" with methodPattern to discover metrics (e.g., { mode: "prometheus", category: "metrics", methodPattern: "gpu" }). ' +
     'Actions: list, read, create, delete, patch, replace, connect, get, watch. ' +
     'Scopes: namespaced, cluster, all. ' +
     'Docs: https://github.com/harche/ProDisco/blob/main/docs/search-tools.md',

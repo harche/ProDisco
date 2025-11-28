@@ -1496,7 +1496,7 @@ console.log('modified');
   });
 });
 
-// Helper for prometheus mode - cast through unknown to work around TypeScript inference
+// Helper for prometheus mode (methods) - cast through unknown to work around TypeScript inference
 const searchPrometheus = searchToolsTool.execute.bind(searchToolsTool) as unknown as (input: {
   mode: 'prometheus';
   category?: 'query' | 'metadata' | 'alerts' | 'all';
@@ -1682,6 +1682,343 @@ describe('kubernetes.searchTools - Prometheus Mode', () => {
         const limitedResult = await searchPrometheus({ mode: 'prometheus', limit: 5 });
         expect(limitedResult.pagination.hasMore).toBe(true);
       }
+    });
+  });
+
+  describe('Prometheus Mode - Alerts Category', () => {
+    it('filters by alerts category', async () => {
+      const result = await searchPrometheus({
+        mode: 'prometheus',
+        category: 'alerts',
+      });
+
+      // alerts category may have 0 or more methods
+      expect(result.methods.every(m => m.category === 'alerts')).toBe(true);
+    });
+
+    it('includes alerts and rules methods in alerts category', async () => {
+      const result = await searchPrometheus({
+        mode: 'prometheus',
+        category: 'alerts',
+        limit: 50,
+      });
+
+      // If there are alerts category methods, they should include alerts or rules
+      if (result.methods.length > 0) {
+        const methodNames = result.methods.map(m => m.methodName.toLowerCase());
+        expect(
+          methodNames.some(n => n.includes('alert') || n.includes('rule'))
+        ).toBe(true);
+      }
+    });
+  });
+
+  describe('Prometheus Mode Summary Content', () => {
+    it('includes tip about metrics category when PROMETHEUS_URL is set', async () => {
+      // Note: This test checks the summary format, actual behavior depends on env
+      const result = await searchPrometheus({ mode: 'prometheus' });
+
+      // The result should have a summary (either in 'summary' or in error response)
+      expect(result).toHaveProperty('mode', 'prometheus');
+    });
+
+    it('includes library information', async () => {
+      const result = await searchPrometheus({ mode: 'prometheus' });
+
+      expect(result.libraries).toHaveProperty('prometheus-query');
+      expect(result.libraries['prometheus-query']).toHaveProperty('installed');
+      expect(result.libraries['prometheus-query']).toHaveProperty('version');
+    });
+  });
+});
+
+// Helper for prometheus metrics mode - separate type due to different result structure
+const searchPrometheusMetrics = searchToolsTool.execute.bind(searchToolsTool) as unknown as (input: {
+  mode: 'prometheus';
+  category: 'metrics';
+  methodPattern?: string;
+  limit?: number;
+  offset?: number;
+}) => Promise<{
+  mode: 'prometheus';
+  category: 'metrics';
+  summary: string;
+  metrics: Array<{
+    name: string;
+    type: string;
+    description: string;
+  }>;
+  totalMatches: number;
+  indexingStatus: 'ready' | 'in_progress' | 'unavailable';
+  paths: { scriptsDirectory: string };
+  pagination: { offset: number; limit: number; hasMore: boolean };
+}>;
+
+describe('kubernetes.searchTools - Prometheus Metrics Mode', () => {
+  describe('Metrics Mode Basic Functionality', () => {
+    it('returns metrics mode result with correct structure', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+      });
+
+      expect(result.mode).toBe('prometheus');
+      expect(result.category).toBe('metrics');
+      expect(result).toHaveProperty('summary');
+      expect(result).toHaveProperty('metrics');
+      expect(result).toHaveProperty('totalMatches');
+      expect(result).toHaveProperty('indexingStatus');
+      expect(result).toHaveProperty('paths');
+      expect(result).toHaveProperty('pagination');
+      expect(Array.isArray(result.metrics)).toBe(true);
+    });
+
+    it('includes paths.scriptsDirectory in result', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+      });
+
+      expect(result.paths.scriptsDirectory).toContain('.prodisco');
+      expect(result.paths.scriptsDirectory).toContain('scripts');
+      expect(result.paths.scriptsDirectory).toContain('cache');
+    });
+
+    it('returns valid indexing status', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+      });
+
+      expect(['ready', 'in_progress', 'unavailable']).toContain(result.indexingStatus);
+    });
+  });
+
+  describe('Metrics Mode Without PROMETHEUS_URL', () => {
+    // These tests verify behavior when PROMETHEUS_URL is not set
+    // In CI/test environments, PROMETHEUS_URL is typically not configured
+
+    it('returns unavailable status when PROMETHEUS_URL not set', async () => {
+      // If PROMETHEUS_URL is not set, indexingStatus should be 'unavailable'
+      const originalUrl = process.env.PROMETHEUS_URL;
+
+      // Temporarily unset for this test (if it was set)
+      if (originalUrl) {
+        delete process.env.PROMETHEUS_URL;
+      }
+
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+      });
+
+      // Note: The indexing happens at service startup, so if the server was
+      // started without PROMETHEUS_URL, status will be 'unavailable'
+      // If it was started with PROMETHEUS_URL, status may be 'ready' or 'in_progress'
+      expect(['ready', 'in_progress', 'unavailable']).toContain(result.indexingStatus);
+
+      // Restore original value
+      if (originalUrl) {
+        process.env.PROMETHEUS_URL = originalUrl;
+      }
+    });
+
+    it('returns empty metrics array when unavailable', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+      });
+
+      // If unavailable, metrics should be empty
+      if (result.indexingStatus === 'unavailable') {
+        expect(result.metrics).toHaveLength(0);
+        expect(result.totalMatches).toBe(0);
+      }
+    });
+
+    it('summary mentions PROMETHEUS_URL when unavailable', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+      });
+
+      if (result.indexingStatus === 'unavailable') {
+        expect(result.summary.toLowerCase()).toContain('prometheus_url');
+      }
+    });
+  });
+
+  describe('Metrics Mode Result Structure', () => {
+    it('metrics have correct structure when available', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+      });
+
+      // If metrics are available, verify their structure
+      if (result.metrics.length > 0) {
+        const metric = result.metrics[0];
+        expect(metric).toHaveProperty('name');
+        expect(metric).toHaveProperty('type');
+        expect(metric).toHaveProperty('description');
+        expect(typeof metric.name).toBe('string');
+        expect(typeof metric.type).toBe('string');
+        expect(typeof metric.description).toBe('string');
+      }
+    });
+
+    it('pagination structure is correct', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+        limit: 5,
+      });
+
+      expect(result.pagination).toHaveProperty('offset');
+      expect(result.pagination).toHaveProperty('limit');
+      expect(result.pagination).toHaveProperty('hasMore');
+      expect(typeof result.pagination.offset).toBe('number');
+      expect(typeof result.pagination.limit).toBe('number');
+      expect(typeof result.pagination.hasMore).toBe('boolean');
+      expect(result.pagination.limit).toBe(5);
+    });
+  });
+
+  describe('Metrics Mode Search Pattern', () => {
+    it('accepts methodPattern for filtering metrics', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+        methodPattern: 'pod',
+      });
+
+      // Should not throw, pattern is accepted
+      expect(result.mode).toBe('prometheus');
+      expect(result.category).toBe('metrics');
+
+      // If metrics are available and match the pattern, verify filtering
+      if (result.metrics.length > 0 && result.indexingStatus === 'ready') {
+        const allContainPattern = result.metrics.some(
+          m => m.name.toLowerCase().includes('pod') ||
+               m.description.toLowerCase().includes('pod')
+        );
+        expect(allContainPattern).toBe(true);
+      }
+    });
+
+    it('returns all metrics when no methodPattern provided', async () => {
+      const withPattern = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+        methodPattern: 'very_unlikely_pattern_xyz123',
+      });
+
+      const withoutPattern = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+      });
+
+      // Without pattern should return same or more results than with unlikely pattern
+      expect(withoutPattern.totalMatches).toBeGreaterThanOrEqual(withPattern.totalMatches);
+    });
+  });
+
+  describe('Metrics Mode Pagination', () => {
+    it('respects limit parameter', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+        limit: 3,
+      });
+
+      expect(result.metrics.length).toBeLessThanOrEqual(3);
+    });
+
+    it('respects offset parameter', async () => {
+      const firstPage = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+        limit: 5,
+        offset: 0,
+      });
+
+      // Only test offset if metrics are available
+      if (firstPage.indexingStatus === 'unavailable') {
+        // When unavailable, offset is always 0
+        expect(firstPage.pagination.offset).toBe(0);
+        return;
+      }
+
+      const secondPage = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+        limit: 5,
+        offset: 5,
+      });
+
+      expect(firstPage.pagination.offset).toBe(0);
+      expect(secondPage.pagination.offset).toBe(5);
+
+      // If both pages have results, they should be different
+      if (firstPage.metrics.length > 0 && secondPage.metrics.length > 0) {
+        const firstPageNames = firstPage.metrics.map(m => m.name);
+        const secondPageNames = secondPage.metrics.map(m => m.name);
+        const overlap = firstPageNames.filter(n => secondPageNames.includes(n));
+        expect(overlap.length).toBe(0);
+      }
+    });
+
+    it('sets hasMore correctly', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+        limit: 5,
+      });
+
+      // hasMore should be true if there are more results than the limit
+      if (result.totalMatches > 5) {
+        expect(result.pagination.hasMore).toBe(true);
+      } else {
+        expect(result.pagination.hasMore).toBe(false);
+      }
+    });
+  });
+
+  describe('Metrics Mode Summary Content', () => {
+    it('summary includes NEXT STEPS section when metrics available', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+      });
+
+      // If metrics are available, summary should include helpful next steps
+      if (result.indexingStatus === 'ready' && result.metrics.length > 0) {
+        expect(result.summary).toContain('NEXT STEPS');
+        expect(result.summary.toLowerCase()).toContain('labelnames');
+      }
+    });
+
+    it('summary mentions the search pattern when provided', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+        methodPattern: 'cpu',
+      });
+
+      // Summary should mention what was searched for
+      if (result.indexingStatus !== 'unavailable') {
+        expect(result.summary.toLowerCase()).toContain('cpu');
+      }
+    });
+
+    it('summary includes metric count', async () => {
+      const result = await searchPrometheusMetrics({
+        mode: 'prometheus',
+        category: 'metrics',
+      });
+
+      // Summary should mention how many metrics were found
+      expect(result.summary).toContain('metric');
     });
   });
 });

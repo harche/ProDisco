@@ -137,9 +137,26 @@ server.registerTool(
         structuredContent: result,
       };
     } else if (result.mode === 'prometheus') {
-      // Build summary - handle both success and error cases
+      // Handle metrics category (has 'metrics' array) vs methods (has 'methods' array)
+      if ('category' in result && result.category === 'metrics') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result.summary,
+            },
+            {
+              type: 'text',
+              text: JSON.stringify(result.metrics, null, 2),
+            },
+          ],
+          structuredContent: result,
+        };
+      }
+      // Build summary - handle both success and error cases for PrometheusModeResult | PrometheusErrorResult
+      const methodsResult = result as { summary?: string; error?: string; message?: string; example?: string; methods: unknown };
       const summary = 'summary' in result ? result.summary :
-        `${result.error}: ${result.message}\nExample: ${result.example}`;
+        `${methodsResult.error}: ${methodsResult.message}\nExample: ${methodsResult.example}`;
       return {
         content: [
           {
@@ -148,7 +165,7 @@ server.registerTool(
           },
           {
             type: 'text',
-            text: JSON.stringify(result.methods, null, 2),
+            text: JSON.stringify(methodsResult.methods, null, 2),
           },
         ],
         structuredContent: result,
