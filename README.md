@@ -58,6 +58,8 @@ claude mcp remove ProDisco
 | `K8S_CONTEXT` | No | Kubernetes context (defaults to current context) |
 | `PROMETHEUS_URL` | No | Prometheus server URL for metrics queries |
 
+> **Important:** These environment variables must be set where the AI agent runs, not just where the MCP server runs. This is because ProDisco follows the progressive disclosure pattern, the agent discovers API methods, writes TypeScript code, and executes it locally to probe your cluster. The agent's execution environment needs access to your kubeconfig and/or Prometheus endpoint.
+
 > **Tip:** If you're using a kind cluster for local testing, you can port-forward to Prometheus:
 > ```bash
 > kubectl port-forward -n monitoring svc/prometheus-server 9090:80
