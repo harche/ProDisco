@@ -1,10 +1,10 @@
 # ProDisco (Progressive Disclosure Kubernetes MCP Server)
 
-ProDisco gives AI agents **Kubernetes access + Prometheus metrics analysis** through a single unified search tool. It follows Anthropic's [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes search tools which surface TypeScript modules, agents discover them to write code, and only the final console output returns to the agent.
+ProDisco gives AI agents **Kubernetes access + Prometheus metrics analysis** through two unified tools. It follows Anthropic's [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes search tools which surface API methods, agents discover them to write code, execute it in a sandbox, and only the final console output returns to the agent.
 
-**One tool, two domains:**
-- **Kubernetes Operations** - Discover API methods from `@kubernetes/client-node` to manage pods, deployments, services, and more
-- **Prometheus Metrics** - Discover methods from `prometheus-query` for PromQL queries and metrics analysis
+**Two tools:**
+- **kubernetes.searchTools** - Discover API methods, type definitions, cached scripts, and Prometheus methods
+- **kubernetes.runSandbox** - Execute TypeScript code in a sandboxed VM environment
 
 ## Why Progressive Disclosure Matters
 
@@ -58,7 +58,7 @@ claude mcp remove ProDisco
 | `K8S_CONTEXT` | No | Kubernetes context (defaults to current context) |
 | `PROMETHEUS_URL` | No | Prometheus server URL for metrics queries |
 
-> **Important:** These environment variables must be set where the AI agent runs, not just where the MCP server runs. This is because ProDisco follows the progressive disclosure pattern, the agent discovers API methods, writes TypeScript code, and executes it locally to probe your cluster. The agent's execution environment needs access to your kubeconfig and/or Prometheus endpoint.
+> **Important:** These environment variables must be set where the MCP server runs. The `runSandbox` tool executes code within the MCP server process, which needs access to your kubeconfig and/or Prometheus endpoint.
 
 > **Tip:** If you're using a kind cluster for local testing, you can port-forward to Prometheus:
 > ```bash
@@ -79,17 +79,63 @@ claude mcp add --transport stdio prodisco -- node dist/server.js
 claude mcp remove prodisco # remove when you're done
 ```
 
-### Scripts cache convention
+### Startup Options
 
-**Script Location:** `~/.prodisco/scripts/cache/`
+| Flag | Description |
+|------|-------------|
+| `--clear-cache` | Clear the scripts cache before starting |
 
-ProDisco automatically creates a `~/.prodisco/scripts/cache/` directory in your home directory for storing helper scripts. This ensures scripts work from any directory and persist across sessions.
+Example:
+```bash
+node dist/server.js --clear-cache
+```
 
 ---
 
 ## Available Tools
 
-ProDisco exposes a single unified tool with four modes:
+ProDisco exposes two tools:
+
+### kubernetes.runSandbox
+
+Execute TypeScript code in a sandboxed VM environment for Kubernetes and Prometheus operations.
+
+**Input:**
+```typescript
+{
+  // Provide one of:
+  code?: string;     // TypeScript code to execute directly
+  cached?: string;   // Name of a cached script to run (from searchTools results)
+
+  timeout?: number;  // Execution timeout in ms (default: 30000, max: 120000)
+}
+```
+
+**Sandbox Environment:**
+- `k8s` - Full `@kubernetes/client-node` library
+- `kc` - Pre-configured KubeConfig instance
+- `console` - Captured output (log, error, warn, info)
+- `require()` - Whitelisted modules: `@kubernetes/client-node`, `prometheus-query`
+- `process.env` - Environment variables (PROMETHEUS_URL, etc.)
+
+**Examples:**
+```typescript
+// Execute code directly
+{
+  code: `
+    const api = kc.makeApiClient(k8s.CoreV1Api);
+    const pods = await api.listNamespacedPod({ namespace: 'default' });
+    console.log(\`Found \${pods.items.length} pods\`);
+  `
+}
+
+// Run a cached script by name
+{ cached: "script-2025-01-01T12-00-00-abc123.ts" }
+```
+
+### kubernetes.searchTools
+
+A unified search interface with four modes:
 
 | Mode | Purpose | Example |
 |------|---------|---------|
@@ -99,10 +145,6 @@ ProDisco exposes a single unified tool with four modes:
 | `prometheus` | Find Prometheus API methods | `{ mode: "prometheus", category: "query" }` |
 
 For comprehensive documentation including architecture details and example workflows, see [docs/search-tools.md](docs/search-tools.md).
-
-### kubernetes.searchTools
-
-A unified search interface for Kubernetes operations and metrics analysis.
 
 **Input:**
 ```typescript

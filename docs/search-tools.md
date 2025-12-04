@@ -2,6 +2,8 @@
 
 The `kubernetes.searchTools` tool is a unified interface for discovering Kubernetes API methods, type definitions, cached scripts, and Prometheus/statistics library methods. It supports four modes designed for progressive disclosure: start with method discovery, drill into types as needed, reuse existing scripts, and analyze metrics with Prometheus.
 
+Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8s`, `kc` (pre-configured KubeConfig), `console`, and `require("prometheus-query")`.
+
 ## Quick Reference
 
 | Mode | Purpose | Required Params | Example |
@@ -64,12 +66,16 @@ Search for Kubernetes API methods by resource type. This is the starting point f
     resourceType: string,   // e.g., "Pod"
     description: string,
     parameters: [...],      // Method parameters with types
-    example: string,        // Complete usage example
+    example: string,        // Sandbox-compatible usage example
     inputSchema: {...},     // Parameter schema
     outputSchema: {...},    // Return value schema
   }],
   totalMatches: number,     // Total matching methods (for pagination)
-  relevantScripts: [...],   // Cached scripts matching the search
+  relevantScripts: [{       // Cached scripts matching the search
+    filename: string,
+    description: string,
+    apiClasses: string[]
+  }],
   facets: {                 // Result breakdown for refining search
     apiClass: { "CoreV1Api": 15, "AppsV1Api": 3 },
     action: { "list": 5, "read": 4, "create": 3 },
@@ -79,9 +85,6 @@ Search for Kubernetes API methods by resource type. This is the starting point f
     offset: number,
     limit: number,
     hasMore: boolean
-  },
-  paths: {
-    scriptsDirectory: string  // Where to write new scripts
   }
 }
 ```
@@ -141,7 +144,7 @@ Use dot notation to navigate to nested types:
 
 ### Scripts Mode
 
-Search and discover cached scripts in `~/.prodisco/scripts/cache/`.
+Search and discover cached scripts. Scripts are automatically cached when successfully executed via `runSandbox`.
 
 **Parameters:**
 
@@ -174,14 +177,12 @@ Search and discover cached scripts in `~/.prodisco/scripts/cache/`.
   mode: "scripts",
   summary: string,
   scripts: [{
-    filename: "get-pod-logs.ts",
-    filePath: "/Users/you/.prodisco/scripts/cache/get-pod-logs.ts",
+    filename: "script-2025-01-01T12-00-00-abc123.ts",
     description: "Get logs from a pod in the default namespace",
     apiClasses: ["CoreV1Api"]
   }],
   totalMatches: number,
-  pagination: { offset, limit, hasMore },
-  paths: { scriptsDirectory: string }
+  pagination: { offset, limit, hasMore }
 }
 ```
 
@@ -265,7 +266,7 @@ The response includes a "NEXT STEPS" section showing how to:
     description: string,
     parameters: [...],      // Method parameters with types
     returnType: string,
-    example: string,        // Usage example
+    example: string,        // Sandbox-compatible usage example
   }],
   totalMatches: number,
   libraries: {
@@ -275,8 +276,7 @@ The response includes a "NEXT STEPS" section showing how to:
   facets: {
     category: { "query": 2, "metadata": 10, "alerts": 5 }
   },
-  pagination: { offset, limit, hasMore },
-  paths: { scriptsDirectory: string }
+  pagination: { offset, limit, hasMore }
 }
 ```
 
@@ -303,44 +303,44 @@ If `PROMETHEUS_URL` is not set:
 
 ```
 Step 1: Discover the API method
-> { resourceType: "Pod", action: "list", scope: "namespaced" }
+> searchTools({ resourceType: "Pod", action: "list", scope: "namespaced" })
 
 Step 2: Get type definition for understanding the response
-> { mode: "types", types: ["V1Pod.spec", "V1Pod.status"] }
+> searchTools({ mode: "types", types: ["V1Pod.spec", "V1Pod.status"] })
 
-Step 3: Write and run the script
-> Write to ~/.prodisco/scripts/cache/list-pods.ts
-> Run: npx tsx ~/.prodisco/scripts/cache/list-pods.ts
+Step 3: Execute in sandbox
+> runSandbox({ code: `
+    const api = kc.makeApiClient(k8s.CoreV1Api);
+    const pods = await api.listNamespacedPod({ namespace: 'default' });
+    console.log(\`Found \${pods.items.length} pods\`);
+    pods.items.forEach(p => console.log(p.metadata?.name));
+  ` })
 ```
 
 #### Workflow 2: Create a Deployment
 
 ```
 Step 1: Find the create method
-> { resourceType: "Deployment", action: "create" }
+> searchTools({ resourceType: "Deployment", action: "create" })
 
 Step 2: Get the full Deployment spec structure
-> { mode: "types", types: ["V1Deployment.spec"], depth: 2 }
+> searchTools({ mode: "types", types: ["V1Deployment.spec"], depth: 2 })
 
 Step 3: Check for existing deployment scripts
-> { mode: "scripts", searchTerm: "deployment" }
+> searchTools({ mode: "scripts", searchTerm: "deployment" })
 
-Step 4: Write the script using discovered types and examples
+Step 4: Execute using discovered types
+> runSandbox({ code: `...` })
 ```
 
-#### Workflow 3: Debug Pod Issues
+#### Workflow 3: Reuse a Cached Script
 
 ```
-Step 1: Find relevant methods
-> { resourceType: "Pod", action: "read" }
-> { resourceType: "Pod" }  // See connect methods for logs/exec
+Step 1: Search for existing scripts
+> searchTools({ mode: "scripts", searchTerm: "logs" })
 
-Step 2: Look for existing debug scripts
-> { mode: "scripts", searchTerm: "logs" }
-> { mode: "scripts", searchTerm: "debug" }
-
-Step 3: Run existing script or adapt for your needs
-> npx tsx ~/.prodisco/scripts/cache/get-pod-logs.ts
+Step 2: Run cached script by filename
+> runSandbox({ cached: "script-2025-01-01T12-00-00-abc123.ts" })
 ```
 
 #### Workflow 4: Query P99 Latency from Prometheus
@@ -350,30 +350,23 @@ Step 3: Run existing script or adapt for your needs
 { "mode": "prometheus", "category": "query" }
 ```
 
-**Step 2:** Write the script using PromQL's built-in histogram_quantile:
+**Step 2:** Execute in sandbox:
 ```typescript
-import { PrometheusDriver } from 'prometheus-query';
+runSandbox({ code: `
+  const { PrometheusDriver } = require('prometheus-query');
+  const prom = new PrometheusDriver({ endpoint: process.env.PROMETHEUS_URL });
 
-const prom = new PrometheusDriver({
-  endpoint: process.env.PROMETHEUS_URL || 'http://prometheus:9090'
-});
+  const end = new Date();
+  const start = new Date(end.getTime() - 60 * 60 * 1000); // 1 hour ago
 
-const end = new Date();
-const start = new Date(end.getTime() - 60 * 60 * 1000); // 1 hour ago
+  const result = await prom.rangeQuery(
+    'histogram_quantile(0.99, rate(apiserver_request_duration_seconds_bucket[5m]))',
+    start, end, '1m'
+  );
 
-// PromQL handles percentile calculation directly
-const result = await prom.rangeQuery(
-  'histogram_quantile(0.99, rate(apiserver_request_duration_seconds_bucket[5m]))',
-  start, end, '1m'
-);
-
-const latestValue = result.result[0]?.values.slice(-1)[0]?.value;
-console.log(`P99 latency: ${latestValue?.toFixed(3)}s`);
-```
-
-**Step 3:** Execute script
-```bash
-npx tsx ~/.prodisco/scripts/cache/api-latency-p99.ts
+  const latestValue = result.result[0]?.values.slice(-1)[0]?.value;
+  console.log(\`P99 latency: \${latestValue?.toFixed(3)}s\`);
+` })
 ```
 
 ---
@@ -402,8 +395,7 @@ const oramaSchema = {
   action: 'enum',            // Filterable: "list", "create", "prometheus", "metric", etc.
   scope: 'enum',             // Filterable: "namespaced", "cluster", "prometheus"
   apiClass: 'enum',          // Filterable: "CoreV1Api", "prometheus-query", "prometheus-metric", etc.
-  id: 'string',              // Unique identifier
-  filePath: 'string',        // Script path (empty for methods)
+  id: 'string',              // Unique identifier (for scripts: "script:<filename>")
   library: 'enum',           // Prometheus: "prometheus-query"
   category: 'enum',          // Prometheus: "query", "metadata", "alerts"
   metricType: 'enum',        // Prometheus metrics: "gauge", "counter", "histogram", "summary"
@@ -425,7 +417,7 @@ boost: {
 
 The index is pre-warmed at server startup via `warmupSearchIndex()` to avoid latency on the first search. This indexes:
 - All API methods from 10 API classes (~500+ methods)
-- All cached scripts in `~/.prodisco/scripts/cache/`
+- All cached scripts in `.cache/scripts/`
 - Prometheus library methods from `prometheus-query`
 - **Prometheus cluster metrics** (background, non-blocking) - if `PROMETHEUS_URL` is set, actual metrics are fetched from the cluster and indexed. This runs in the background and refreshes every 30 minutes.
 
@@ -458,22 +450,19 @@ Type definitions are extracted using the TypeScript Compiler API.
 
 ### Scripts Indexing
 
-Scripts are indexed from `~/.prodisco/scripts/cache/` with real-time updates.
+Scripts executed via `runSandbox` are automatically cached and indexed for future reuse.
+
+**Automatic Caching:**
+- Successfully executed scripts are saved to `.cache/scripts/` within the package directory
+- Filenames use content-based hashing to prevent duplicates: `script-<timestamp>-<hash>.ts`
+- Scripts are indexed immediately after caching for instant searchability
 
 **Metadata Extraction:**
 
-From each `.ts` file, we extract:
+From each cached script, we extract:
 1. **Description**: First comment block (JSDoc or `//` comments)
-2. **Resource Types**: From filename (e.g., `get-pod-logs.ts` → `["pod", "log"]`)
-3. **API Classes**: From code patterns (e.g., `CoreV1Api`, `AppsV1Api`)
-4. **Keywords**: From description text
-
-**Filesystem Watcher:**
-
-Using `chokidar`, the index updates automatically:
-- `add`: New scripts are indexed immediately
-- `change`: Modified scripts are re-indexed
-- `unlink`: Deleted scripts are removed from index
+2. **API Classes**: From code patterns (e.g., `CoreV1Api`, `AppsV1Api`)
+3. **Keywords**: From description text
 
 ---
 
@@ -491,9 +480,9 @@ Using `chokidar`, the index updates automatically:
 - File location for reference
 
 **Scripts Mode:**
-- Script metadata (description, API classes)
-- Full file paths for execution
+- Script metadata (filename, description, API classes)
 - Pagination for large script collections
+- Use `runSandbox({ cached: "filename" })` to execute
 
 ---
 

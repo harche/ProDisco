@@ -1,15 +1,15 @@
 import { describe, expect, it, afterAll } from 'vitest';
 import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import * as os from 'os';
 
 import { searchToolsTool } from '../tools/kubernetes/searchTools.js';
+import { SCRIPTS_CACHE_DIR } from '../util/paths.js';
 
 // =============================================================================
 // Test Script Setup - MUST happen before any tests run to ensure the script
 // is indexed when Orama DB is initialized during the first test
 // =============================================================================
-const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+const scriptsDirectory = SCRIPTS_CACHE_DIR;
 const testScriptName = 'test-search-pods.ts';
 const testScriptPath = join(scriptsDirectory, testScriptName);
 const testScriptContent = `/**
@@ -725,7 +725,7 @@ describe('kubernetes.searchTools', () => {
       expect(result).toHaveProperty('paths');
       expect(result.paths).toHaveProperty('scriptsDirectory');
       expect(typeof result.paths.scriptsDirectory).toBe('string');
-      expect(result.paths.scriptsDirectory).toContain('.prodisco');
+      expect(result.paths.scriptsDirectory).toContain('.cache');
     });
 
     it('returns cachedScripts array in results', async () => {
@@ -856,8 +856,9 @@ describe('kubernetes.searchTools', () => {
       expect(result.tools.length).toBeGreaterThan(0);
       const method = result.tools[0];
 
-      expect(method.example).toContain('import * as k8s');
-      expect(method.example).toContain('KubeConfig');
+      // Sandbox-compatible examples provide k8s and kc directly, no imports needed
+      expect(method.example).toContain('Sandbox provides');
+      expect(method.example).toContain('kc.makeApiClient');
       expect(method.example).toContain(method.apiClass);
     });
 
@@ -957,13 +958,15 @@ describe('kubernetes.searchTools', () => {
 
       expect(result.usage).toContain('USAGE');
       expect(result.usage).toContain('await');
-      expect(result.usage).toContain('@kubernetes/client-node');
+      // Updated to check for sandbox instructions instead of import statement
+      expect(result.usage).toContain('runSandbox');
     });
 
-    it('usage mentions scripts directory', async () => {
+    it('usage mentions sandbox provides', async () => {
       const result = await searchTools({ resourceType: 'Pod' });
 
-      expect(result.usage).toContain(result.paths.scriptsDirectory);
+      // Usage now references sandbox instead of scripts directory
+      expect(result.usage).toContain('Sandbox provides');
     });
   });
 
@@ -975,29 +978,29 @@ describe('kubernetes.searchTools', () => {
       expect(Array.isArray(result.relevantScripts)).toBe(true);
     });
 
-    it('relevantScripts have correct structure', async () => {
+    it('relevantScripts have correct structure (no filePath for security)', async () => {
       const result = await searchTools({ resourceType: 'Pod', limit: 5 });
 
       // If there are any relevant scripts, check their structure
       if (result.relevantScripts.length > 0) {
         const script = result.relevantScripts[0];
         expect(script).toHaveProperty('filename');
-        expect(script).toHaveProperty('filePath');
         expect(script).toHaveProperty('description');
         expect(script).toHaveProperty('apiClasses');
         expect(typeof script.filename).toBe('string');
-        expect(typeof script.filePath).toBe('string');
         expect(typeof script.description).toBe('string');
         expect(Array.isArray(script.apiClasses)).toBe(true);
+        // filePath should NOT be exposed for security
+        expect((script as Record<string, unknown>).filePath).toBeUndefined();
       }
     });
 
     it('summary shows relevant scripts section when scripts exist', async () => {
       const result = await searchTools({ resourceType: 'Pod', limit: 5 });
 
-      // If there are relevant scripts, they should be in the summary
+      // If there are relevant scripts, they should be in the summary with prominent header
       if (result.relevantScripts.length > 0) {
-        expect(result.summary).toContain('RELEVANT CACHED SCRIPTS');
+        expect(result.summary).toContain('CACHED SCRIPTS AVAILABLE');
       }
     });
 
@@ -1045,7 +1048,7 @@ describe('kubernetes.searchTools - Scripts Mode', () => {
     it('includes paths.scriptsDirectory in result', async () => {
       const result = await searchScripts({ mode: 'scripts' });
 
-      expect(result.paths.scriptsDirectory).toContain('.prodisco');
+      expect(result.paths.scriptsDirectory).toContain('.cache');
       expect(result.paths.scriptsDirectory).toContain('scripts');
       expect(result.paths.scriptsDirectory).toContain('cache');
     });
@@ -1117,13 +1120,14 @@ describe('kubernetes.searchTools - Scripts Mode', () => {
       expect(testScript!.apiClasses.includes('CoreV1Api')).toBe(true);
     });
 
-    it('provides full file path', async () => {
-      // List all scripts and find by filename (more reliable than Orama search)
+    it('does not expose file path for security', async () => {
+      // List all scripts and find by filename
       const result = await searchScripts({ mode: 'scripts', limit: 100 });
       const testScript = result.scripts.find(s => s.filename === testScriptName);
 
       expect(testScript).toBeDefined();
-      expect(testScript!.filePath).toBe(testScriptPath);
+      // filePath should NOT be exposed to the agent - security measure
+      expect((testScript as Record<string, unknown>).filePath).toBeUndefined();
     });
   });
 
@@ -1192,8 +1196,8 @@ describe('kubernetes.searchTools - Scripts Mode', () => {
       if (result.scripts.length > 0) {
         // Should list script filenames
         expect(result.summary).toContain('.ts');
-        // Should include run command
-        expect(result.summary).toContain('npx tsx');
+        // Should include run command for cached scripts
+        expect(result.summary).toContain('runSandbox({ cached:');
       }
     });
 
@@ -1206,17 +1210,16 @@ describe('kubernetes.searchTools - Scripts Mode', () => {
       }
     });
 
-    it('summary includes scripts directory path', async () => {
+    it('returns scripts directory in paths', async () => {
       const result = await searchScripts({ mode: 'scripts' });
 
-      expect(result.summary).toContain('Scripts directory:');
-      expect(result.summary).toContain('.prodisco');
+      expect(result.paths.scriptsDirectory).toContain('.cache');
     });
   });
 });
 
 describe('kubernetes.searchTools - Script Indexing', () => {
-  const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+  const scriptsDirectory = SCRIPTS_CACHE_DIR;
 
   describe('Script Indexing at Search Time', () => {
     it('scripts are indexed and searchable', async () => {
@@ -1406,7 +1409,7 @@ const api = kc.makeApiClient(k8s.BatchV1Api);
 });
 
 describe('kubernetes.searchTools - Filesystem Watcher', () => {
-  const scriptsDirectory = join(os.homedir(), '.prodisco', 'scripts', 'cache');
+  const scriptsDirectory = SCRIPTS_CACHE_DIR;
 
   describe('Watcher Events', () => {
     it('indexes newly added scripts', async () => {
@@ -1552,7 +1555,7 @@ describe('kubernetes.searchTools - Prometheus Mode', () => {
     it('includes paths.scriptsDirectory in result', async () => {
       const result = await searchPrometheus({ mode: 'prometheus' });
 
-      expect(result.paths.scriptsDirectory).toContain('.prodisco');
+      expect(result.paths.scriptsDirectory).toContain('.cache');
       expect(result.paths.scriptsDirectory).toContain('scripts');
       expect(result.paths.scriptsDirectory).toContain('cache');
     });
@@ -1779,7 +1782,7 @@ describe('kubernetes.searchTools - Prometheus Metrics Mode', () => {
         category: 'metrics',
       });
 
-      expect(result.paths.scriptsDirectory).toContain('.prodisco');
+      expect(result.paths.scriptsDirectory).toContain('.cache');
       expect(result.paths.scriptsDirectory).toContain('scripts');
       expect(result.paths.scriptsDirectory).toContain('cache');
     });

@@ -6,4 +6,4 @@ artifacts
 *.log
 
 # Agent-generated cached scripts
-scripts/cache/*.ts
+.cache/

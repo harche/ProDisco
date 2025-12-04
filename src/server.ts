@@ -3,7 +3,6 @@ import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { logger } from './util/logger.js';
@@ -12,12 +11,14 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version?: string };
 import { searchToolsTool, warmupSearchIndex, shutdownSearchIndex } from './tools/kubernetes/searchTools.js';
+import { runSandboxTool } from './tools/kubernetes/runSandbox.js';
 import {
   PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH,
   listGeneratedFiles,
   readGeneratedFile,
 } from './resources/filesystem.js';
 import { probeClusterConnectivity } from './kube/client.js';
+import { SCRIPTS_CACHE_DIR } from './util/paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,10 +31,10 @@ const server = new McpServer(
   },
   {
     instructions:
-      'Kubernetes operations via Progressive Disclosure. Use the kubernetes.searchTools tool to discover available operations. ' +
-      'The tool returns available Kubernetes API methods and a "paths.scriptsDirectory" for writing scripts. ' +
-      'Write scripts to scriptsDirectory and use bare imports: import * as k8s from \'@kubernetes/client-node\'. ' +
-      'The scriptsDirectory has a node_modules symlink that handles package resolution automatically.',
+      'Kubernetes and Prometheus operations via Progressive Disclosure. ' +
+      'Use kubernetes.searchTools to discover available APIs. ' +
+      'Use kubernetes.runSandbox to execute TypeScript scripts directly. ' +
+      'The sandbox provides: k8s, kc (pre-configured KubeConfig), console, and require("prometheus-query").',
   },
 );
 
@@ -189,7 +190,52 @@ server.registerTool(
   },
 );
 
+// Register kubernetes.runSandbox tool for executing scripts in a sandboxed environment
+server.registerTool(
+  runSandboxTool.name,
+  {
+    title: 'Kubernetes Run Sandbox',
+    description: runSandboxTool.description,
+    inputSchema: runSandboxTool.schema,
+  },
+  async (args: Record<string, unknown>) => {
+    const parsedArgs = await runSandboxTool.schema.parseAsync(args);
+    const result = await runSandboxTool.execute(parsedArgs);
+
+    // Build the output message
+    const cachedInfo = result.cachedScript ? ` [cached: ${result.cachedScript}]` : '';
+    const successMsg = `Execution successful${cachedInfo} (${result.executionTime}ms)\n\nOutput:\n${result.output}`;
+    const failMsg = `Execution failed${cachedInfo} (${result.executionTime}ms)\n\nError: ${result.error}\n\nOutput:\n${result.output}`;
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result.success ? successMsg : failMsg,
+        },
+      ],
+      structuredContent: result,
+    };
+  },
+);
+
 async function main() {
+  // Parse command line arguments
+  const args = process.argv.slice(2);
+  const clearCache = args.includes('--clear-cache');
+
+  // Handle --clear-cache flag
+  if (clearCache) {
+    logger.info('Clearing scripts cache...');
+    try {
+      await fs.promises.rm(SCRIPTS_CACHE_DIR, { recursive: true, force: true });
+      logger.info('Scripts cache cleared');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(`Failed to clear cache: ${message}`);
+    }
+  }
+
   // Probe cluster connectivity before starting the server
   // This ensures we fail fast if the cluster is not reachable
   logger.info('Probing Kubernetes cluster connectivity...');
@@ -202,10 +248,9 @@ async function main() {
     throw new Error(`Kubernetes cluster is not accessible: ${message}`);
   }
 
-  // Ensure ~/.prodisco/scripts/cache/ directory exists (using async API for consistency)
-  const scriptsDir = path.join(os.homedir(), '.prodisco', 'scripts', 'cache');
-  await fs.promises.mkdir(scriptsDir, { recursive: true });
-  logger.info(`Scripts directory: ${scriptsDir}`);
+  // Ensure scripts cache directory exists (server-controlled location)
+  await fs.promises.mkdir(SCRIPTS_CACHE_DIR, { recursive: true });
+  logger.info(`Scripts cache directory: ${SCRIPTS_CACHE_DIR}`);
 
   // Pre-warm the Orama search index to avoid delay on first search
   await warmupSearchIndex();

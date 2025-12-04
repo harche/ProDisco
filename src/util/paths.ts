@@ -14,3 +14,9 @@ export function getPackageRoot(): string {
 
 export const PACKAGE_ROOT = getPackageRoot();
 
+/**
+ * Server-controlled directory for caching executed scripts.
+ * Located within the package directory, not user's home directory.
+ */
+export const SCRIPTS_CACHE_DIR = path.join(PACKAGE_ROOT, '.cache', 'scripts');
+
