@@ -20,7 +20,7 @@ ProDisco goes a step further: instead of exposing custom TypeScript modules, it 
 
 ## Demo
 
-![Demo](docs/demo3.gif)
+[![Watch the demo](https://img.youtube.com/vi/W-DyrsGRJeQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=W-DyrsGRJeQ)
 
 ---
 
