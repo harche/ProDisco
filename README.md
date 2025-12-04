@@ -20,11 +20,7 @@ ProDisco goes a step further: instead of exposing custom TypeScript modules, it 
 
 ## Demo
 
-### Kubernetes Operations
-![Kubernetes Operations Demo](docs/demo.gif)
-
-### Prometheus Queries
-![Prometheus Queries Demo](docs/demo2.gif)
+![Demo](docs/demo3.gif)
 
 ---
 
