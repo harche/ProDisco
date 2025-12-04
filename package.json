@@ -43,24 +43,24 @@
   },
   "dependencies": {
     "@kubernetes/client-node": "^1.4.0",
-    "@modelcontextprotocol/sdk": "^1.22.0",
+    "@modelcontextprotocol/sdk": "^1.24.3",
     "@orama/orama": "^3.1.5",
     "chokidar": "^5.0.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.27.1",
     "prometheus-query": "^3.3.2",
     "typescript": "^5.9.3",
-    "yaml": "^2.8.1",
+    "yaml": "^2.8.2",
     "zod": "^3.23.8",
     "zod-to-json-schema": "^3.25.0"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.50",
+    "@anthropic-ai/claude-agent-sdk": "^0.1.58",
     "@types/node": "^24.10.1",
-    "@typescript-eslint/eslint-plugin": "^8.47.0",
-    "@typescript-eslint/parser": "^8.47.0",
+    "@typescript-eslint/eslint-plugin": "^8.48.1",
+    "@typescript-eslint/parser": "^8.48.1",
     "eslint": "^9.39.1",
     "husky": "^9.1.7",
-    "tsx": "^4.20.6",
-    "vitest": "^4.0.13"
+    "tsx": "^4.21.0",
+    "vitest": "^4.0.15"
   }
 }
