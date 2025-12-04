@@ -385,7 +385,6 @@ describe('kubernetes.runSandbox', () => {
 
     it('does not cache failed scripts', async () => {
       const uniqueMarker = `FAIL_${Date.now()}`;
-      const beforeCount = readdirSync(SCRIPTS_CACHE_DIR).length;
 
       const result = await runSandbox({
         code: `
@@ -396,12 +395,19 @@ describe('kubernetes.runSandbox', () => {
 
       expect(result.success).toBe(false);
 
-      // Wait a moment
+      // Wait a moment for any potential caching to complete
       await new Promise(resolve => setTimeout(resolve, 200));
 
-      // Check that no new script was added
-      const afterCount = readdirSync(SCRIPTS_CACHE_DIR).length;
-      expect(afterCount).toBe(beforeCount);
+      // Check that no script with our unique marker was cached
+      // (avoid counting all files which can be flaky due to other tests)
+      const files = readdirSync(SCRIPTS_CACHE_DIR, { withFileTypes: true })
+        .filter(f => f.isFile())
+        .map(f => f.name);
+      const failedScriptCached = files.some(f => {
+        const content = readFileSync(join(SCRIPTS_CACHE_DIR, f), 'utf-8');
+        return content.includes(uniqueMarker);
+      });
+      expect(failedScriptCached).toBe(false);
     });
 
     it('deduplicates scripts with identical content', async () => {
