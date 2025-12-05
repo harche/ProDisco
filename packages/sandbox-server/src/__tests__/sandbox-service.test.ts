@@ -5,11 +5,16 @@ import type { ExecuteRequest, ExecuteResponse, HealthCheckRequest, HealthCheckRe
 import { existsSync, rmSync } from 'node:fs';
 
 describe('SandboxService', () => {
-  const testCacheDir = '/tmp/prodisco-service-test-' + Date.now();
+  // Use unique cache directory per test to avoid conflicts when .ts and .js tests run in parallel
+  let testCacheDir: string;
+
+  beforeEach(() => {
+    testCacheDir = `/tmp/prodisco-service-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  });
 
   afterEach(() => {
     if (existsSync(testCacheDir)) {
-      rmSync(testCacheDir, { recursive: true });
+      rmSync(testCacheDir, { recursive: true, force: true });
     }
   });
 
