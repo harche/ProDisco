@@ -1076,7 +1076,7 @@ describe('kubernetes.searchTools - Scripts Mode', () => {
 
     it('finds test script by filename', async () => {
       // List all scripts and find by filename (more reliable than Orama search for exact filename)
-      const result = await searchScripts({ mode: 'scripts', limit: 100 });
+      const result = await searchScripts({ mode: 'scripts', limit: 1000 });
 
       expect(result.scripts.some(s => s.filename === testScriptName)).toBe(true);
     });
@@ -1102,7 +1102,7 @@ describe('kubernetes.searchTools - Scripts Mode', () => {
   describe('Script Metadata Extraction', () => {
     it('extracts description from first comment block', async () => {
       // List all scripts and find by filename (more reliable than Orama search)
-      const result = await searchScripts({ mode: 'scripts', limit: 100 });
+      const result = await searchScripts({ mode: 'scripts', limit: 1000 });
       const testScript = result.scripts.find(s => s.filename === testScriptName);
 
       expect(testScript).toBeDefined();
@@ -1112,7 +1112,7 @@ describe('kubernetes.searchTools - Scripts Mode', () => {
 
     it('extracts API classes from script content', async () => {
       // List all scripts and find by filename (more reliable than Orama search)
-      const result = await searchScripts({ mode: 'scripts', limit: 100 });
+      const result = await searchScripts({ mode: 'scripts', limit: 1000 });
       const testScript = result.scripts.find(s => s.filename === testScriptName);
 
       expect(testScript).toBeDefined();
@@ -1122,7 +1122,7 @@ describe('kubernetes.searchTools - Scripts Mode', () => {
 
     it('does not expose file path for security', async () => {
       // List all scripts and find by filename
-      const result = await searchScripts({ mode: 'scripts', limit: 100 });
+      const result = await searchScripts({ mode: 'scripts', limit: 1000 });
       const testScript = result.scripts.find(s => s.filename === testScriptName);
 
       expect(testScript).toBeDefined();
@@ -1155,7 +1155,7 @@ describe('kubernetes.searchTools - Scripts Mode', () => {
     });
 
     it('sets hasMore correctly', async () => {
-      const allScripts = await searchScripts({ mode: 'scripts', limit: 100 });
+      const allScripts = await searchScripts({ mode: 'scripts', limit: 1000 });
 
       if (allScripts.totalMatches > 2) {
         const limitedResult = await searchScripts({ mode: 'scripts', limit: 2 });
@@ -1202,7 +1202,7 @@ describe('kubernetes.searchTools - Scripts Mode', () => {
     });
 
     it('summary includes pagination info when paginating', async () => {
-      const allScripts = await searchScripts({ mode: 'scripts', limit: 100 });
+      const allScripts = await searchScripts({ mode: 'scripts', limit: 1000 });
 
       if (allScripts.totalMatches > 2) {
         const result = await searchScripts({ mode: 'scripts', limit: 2, offset: 2 });
@@ -1245,7 +1245,7 @@ const api = kc.makeApiClient(k8s.AppsV1Api);
         await new Promise(resolve => setTimeout(resolve, 500));
 
         // List all scripts and find by filename (more reliable than Orama search)
-        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const result = await searchScripts({ mode: 'scripts', limit: 1000 });
 
         expect(result.scripts.some(s => s.filename === newScriptName)).toBe(true);
       } finally {
@@ -1273,7 +1273,7 @@ console.log('test');
         await new Promise(resolve => setTimeout(resolve, 500));
 
         // List all scripts and find by filename (more reliable than search)
-        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const result = await searchScripts({ mode: 'scripts', limit: 1000 });
         const script = result.scripts.find(s => s.filename === scriptWithBlockComment);
 
         expect(script).toBeDefined();
@@ -1297,7 +1297,7 @@ console.log('test');
         writeFileSync(scriptPath, content);
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const result = await searchScripts({ mode: 'scripts', limit: 1000 });
         const script = result.scripts.find(s => s.filename === scriptWithLineComments);
 
         expect(script).toBeDefined();
@@ -1319,7 +1319,7 @@ console.log('test');
         writeFileSync(scriptPath, content);
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const result = await searchScripts({ mode: 'scripts', limit: 1000 });
         const script = result.scripts.find(s => s.filename === scriptNoComment);
 
         expect(script).toBeDefined();
@@ -1346,7 +1346,7 @@ const api = kc.makeApiClient(k8s.CoreV1Api);
         writeFileSync(scriptPath, content);
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const result = await searchScripts({ mode: 'scripts', limit: 10000 });
         const script = result.scripts.find(s => s.filename === 'temp-corev1-test.ts');
 
         expect(script).toBeDefined();
@@ -1370,7 +1370,7 @@ const api = kc.makeApiClient(k8s.AppsV1Api);
         writeFileSync(scriptPath, content);
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const result = await searchScripts({ mode: 'scripts', limit: 10000 });
         const script = result.scripts.find(s => s.filename === 'temp-appsv1-test.ts');
 
         expect(script).toBeDefined();
@@ -1394,7 +1394,7 @@ const api = kc.makeApiClient(k8s.BatchV1Api);
         writeFileSync(scriptPath, content);
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const result = await searchScripts({ mode: 'scripts', limit: 10000 });
         const script = result.scripts.find(s => s.filename === 'temp-batchv1-test.ts');
 
         expect(script).toBeDefined();
@@ -1427,7 +1427,7 @@ console.log('test');
         await new Promise(resolve => setTimeout(resolve, 500));
 
         // List all scripts and find by filename
-        const result = await searchScripts({ mode: 'scripts', limit: 100 });
+        const result = await searchScripts({ mode: 'scripts', limit: 1000 });
         expect(result.scripts.some(s => s.filename === newScript)).toBe(true);
       } finally {
         if (existsSync(newScriptPath)) {
@@ -1448,7 +1448,7 @@ console.log('test');
       await new Promise(resolve => setTimeout(resolve, 500));
 
       // Verify it exists by listing all
-      let result = await searchScripts({ mode: 'scripts', limit: 100 });
+      let result = await searchScripts({ mode: 'scripts', limit: 1000 });
       expect(result.scripts.some(s => s.filename === tempScript)).toBe(true);
 
       // Delete script
@@ -1456,7 +1456,7 @@ console.log('test');
       await new Promise(resolve => setTimeout(resolve, 500));
 
       // Should no longer be found when listing all
-      result = await searchScripts({ mode: 'scripts', limit: 100 });
+      result = await searchScripts({ mode: 'scripts', limit: 1000 });
       expect(result.scripts.some(s => s.filename === tempScript)).toBe(false);
     });
 
@@ -1476,7 +1476,7 @@ console.log('modified');
         await new Promise(resolve => setTimeout(resolve, 500));
 
         // Verify original description by listing all
-        let result = await searchScripts({ mode: 'scripts', limit: 100 });
+        let result = await searchScripts({ mode: 'scripts', limit: 1000 });
         let script = result.scripts.find(s => s.filename === modScript);
         expect(script).toBeDefined();
         expect(script!.description).toContain('Original description');
@@ -1486,7 +1486,7 @@ console.log('modified');
         await new Promise(resolve => setTimeout(resolve, 500));
 
         // Verify modified description
-        result = await searchScripts({ mode: 'scripts', limit: 100 });
+        result = await searchScripts({ mode: 'scripts', limit: 1000 });
         script = result.scripts.find(s => s.filename === modScript);
         expect(script).toBeDefined();
         expect(script!.description).toContain('Modified description');
