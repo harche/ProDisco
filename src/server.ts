@@ -207,16 +207,60 @@ server.registerTool(
     const parsedArgs = await runSandboxTool.schema.parseAsync(args);
     const result = await runSandboxTool.execute(parsedArgs);
 
-    // Build the output message
-    const cachedInfo = result.cachedScript ? ` [cached: ${result.cachedScript}]` : '';
-    const successMsg = `Execution successful${cachedInfo} (${result.executionTime}ms)\n\nOutput:\n${result.output}`;
-    const failMsg = `Execution failed${cachedInfo} (${result.executionTime}ms)\n\nError: ${result.error}\n\nOutput:\n${result.output}`;
+    // Build the output message based on mode
+    let text: string;
+
+    if ('error' in result && result.error && !('output' in result)) {
+      // Error result without output
+      text = `Error: ${result.error}`;
+    } else if (result.mode === 'execute' || result.mode === 'stream') {
+      // Execution results with output
+      const execResult = result as { success: boolean; output: string; error?: string; executionTimeMs: number; cachedScript?: string };
+      const cachedInfo = execResult.cachedScript ? ` [cached: ${execResult.cachedScript}]` : '';
+      if (execResult.success) {
+        text = `Execution successful${cachedInfo} (${execResult.executionTimeMs}ms)\n\nOutput:\n${execResult.output}`;
+      } else {
+        text = `Execution failed${cachedInfo} (${execResult.executionTimeMs}ms)\n\nError: ${execResult.error}\n\nOutput:\n${execResult.output}`;
+      }
+    } else if (result.mode === 'async') {
+      // Async mode - return execution ID
+      const asyncResult = result as { executionId: string; state: string; message: string };
+      text = `${asyncResult.message}\n\nExecution ID: ${asyncResult.executionId}\nState: ${asyncResult.state}`;
+    } else if (result.mode === 'status') {
+      // Status mode - return status and output
+      const statusResult = result as { executionId: string; state: string; output: string; errorOutput: string; result?: { success: boolean } };
+      const isComplete = statusResult.result !== undefined;
+      text = `Execution ${statusResult.executionId}\nState: ${statusResult.state}${isComplete ? ' (completed)' : ''}\n\nOutput:\n${statusResult.output}`;
+      if (statusResult.errorOutput) {
+        text += `\n\nErrors:\n${statusResult.errorOutput}`;
+      }
+    } else if (result.mode === 'cancel') {
+      // Cancel mode
+      const cancelResult = result as { success: boolean; executionId: string; state: string; message?: string };
+      text = cancelResult.success
+        ? `Execution ${cancelResult.executionId} cancelled. State: ${cancelResult.state}`
+        : `Failed to cancel execution ${cancelResult.executionId}: ${cancelResult.message || 'Unknown error'}`;
+    } else if (result.mode === 'list') {
+      // List mode
+      const listResult = result as { executions: Array<{ executionId: string; state: string; codePreview: string }>; totalCount: number };
+      if (listResult.executions.length === 0) {
+        text = 'No executions found.';
+      } else {
+        text = `Found ${listResult.totalCount} execution(s):\n\n`;
+        for (const exec of listResult.executions) {
+          text += `• ${exec.executionId} [${exec.state}]: ${exec.codePreview}\n`;
+        }
+      }
+    } else {
+      // Fallback
+      text = JSON.stringify(result, null, 2);
+    }
 
     return {
       content: [
         {
           type: 'text',
-          text: result.success ? successMsg : failMsg,
+          text,
         },
       ],
       structuredContent: result,
