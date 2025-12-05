@@ -490,6 +490,51 @@ const client3 = new SandboxClient();
 | Sandbox on remote host | TCP |
 | Production with network isolation | TCP with TLS (see Future Enhancements) |
 
+## Container Isolation
+
+The sandbox server can run in a Kubernetes cluster for stronger isolation. This is the recommended deployment model for production.
+
+### Files
+
+- **Dockerfile**: [`packages/sandbox-server/Dockerfile`](../packages/sandbox-server/Dockerfile) - Multi-stage build that produces a minimal production image
+- **Kubernetes manifests**: [`packages/sandbox-server/k8s/deployment.yaml`](../packages/sandbox-server/k8s/deployment.yaml) - Namespace, ServiceAccount, RBAC, Deployment, and Service
+
+### Building and Deploying
+
+```bash
+# Build the Docker image
+docker build -f packages/sandbox-server/Dockerfile -t prodisco/sandbox-server:latest .
+
+# For kind clusters, load the image
+kind load docker-image prodisco/sandbox-server:latest
+
+# Deploy to Kubernetes
+kubectl apply -f packages/sandbox-server/k8s/deployment.yaml
+
+# Connect from outside the cluster
+kubectl -n prodisco port-forward service/sandbox-server 50051:50051
+```
+
+### Connecting to Containerized Sandbox
+
+```typescript
+import { SandboxClient } from '@prodisco/sandbox-server';
+
+// Via port-forward
+const client = new SandboxClient({
+  useTcp: true,
+  tcpHost: 'localhost',
+  tcpPort: 50051,
+});
+
+// Or via in-cluster DNS
+const client = new SandboxClient({
+  useTcp: true,
+  tcpHost: 'sandbox-server.prodisco.svc.cluster.local',
+  tcpPort: 50051,
+});
+```
+
 ## Future Enhancements
 
 ### TLS/mTLS
@@ -500,21 +545,6 @@ const credentials = grpc.credentials.createSsl(
   fs.readFileSync('client-key.pem'),
   fs.readFileSync('client-cert.pem')
 );
-```
-
-### Container Isolation
-Run the sandbox server in a container for stronger isolation:
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: sandbox-server
-spec:
-  containers:
-  - name: sandbox
-    image: prodisco/sandbox-server:latest
-    ports:
-    - containerPort: 50051
 ```
 
 ### Streaming Execution

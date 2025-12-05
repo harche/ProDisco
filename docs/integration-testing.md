@@ -72,3 +72,54 @@ the cluster.
 CI currently skips this workflow; it is intended for manual validation on a
 developer workstation.
 
+## Container Integration Tests
+
+The project also includes automated container integration tests that run in CI. These tests verify the sandbox-server works correctly when deployed as a container in a Kubernetes cluster.
+
+### Running Container Integration Tests
+
+```bash
+./scripts/integration/run-container-integration.sh
+```
+
+Or with a custom local port (to avoid conflicts):
+
+```bash
+LOCAL_PORT=50053 ./scripts/integration/run-container-integration.sh
+```
+
+### Files
+
+- **Test runner**: [`scripts/integration/run-container-integration.sh`](../scripts/integration/run-container-integration.sh) - Creates KIND cluster, builds/loads Docker image, deploys, and runs tests
+- **Test suite**: [`scripts/integration/container-tests.ts`](../scripts/integration/container-tests.ts) - TypeScript tests for health check, code execution, K8s API access, caching, and error handling
+- **CI workflow**: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) - The `container-integration` job
+
+### What the Test Does
+
+1. Creates a KIND cluster (`sandbox-int`)
+2. Builds the sandbox-server Docker image
+3. Loads the image into KIND and deploys using K8s manifests
+4. Sets up port-forwarding to the sandbox-server service
+5. Runs the test suite which verifies:
+   - Health check returns healthy with `inClusterContext`
+   - Simple code and TypeScript execution
+   - Kubernetes API access (list namespaces, list pods)
+   - Script caching
+   - Error and timeout handling
+6. Cleans up the KIND cluster
+
+### Environment Variables
+
+| Variable      | Default       | Description                                      |
+|---------------|---------------|--------------------------------------------------|
+| `CLUSTER_NAME`| `sandbox-int` | KIND cluster name for container tests            |
+| `LOCAL_PORT`  | `50052`       | Local port for port-forwarding (avoids conflicts)|
+| `KIND_BIN`    | `kind`        | Custom path to the `kind` binary                 |
+| `KUBECTL_BIN` | `kubectl`     | Custom path to `kubectl`                         |
+
+### Artifacts
+
+Container integration test artifacts are stored in `artifacts/container-integration/`:
+- `kubeconfig` - Kubeconfig for the test cluster
+- `deployment.yaml` - The actual manifest applied to the cluster
+
