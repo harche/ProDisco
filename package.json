@@ -1,6 +1,6 @@
 {
   "name": "@prodisco/k8s-mcp",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "ProDisco: Kubernetes MCP server with progressive disclosure",
   "type": "module",
   "main": "dist/server.js",
