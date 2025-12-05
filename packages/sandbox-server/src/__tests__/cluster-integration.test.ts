@@ -414,17 +414,17 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
       expect(data.resultType).toBe('vector');
     });
 
-    it('queries kube-state-metrics', async () => {
+    it('queries container memory metrics', async () => {
       const result = await client.execute({
         code: `
           const prom = require('prometheus-query');
           const driver = new prom.PrometheusDriver({
             endpoint: 'http://localhost:9090',
           });
-          const response = await driver.instantQuery('kube_pod_info');
+          const response = await driver.instantQuery('container_memory_usage_bytes{container!=""}');
           console.log(JSON.stringify({
             resultType: response.resultType,
-            podCount: response.result.length,
+            containerCount: response.result.length,
           }));
         `,
         timeoutMs: 30000,
@@ -433,7 +433,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
       expect(result.success).toBe(true);
       const data = JSON.parse(result.output);
       expect(data.resultType).toBe('vector');
-      expect(data.podCount).toBeGreaterThan(0);
+      expect(data.containerCount).toBeGreaterThan(0);
     });
 
     it('performs range query', async () => {
@@ -484,7 +484,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
   });
 
   describe('Combined K8s + Prometheus', () => {
-    it('correlates pod info with metrics', async () => {
+    it('correlates pod info with container metrics', async () => {
       const result = await client.execute({
         code: `
           // Get pods from Kubernetes
@@ -492,12 +492,12 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
           const podsResponse = await api.listNamespacedPod({ namespace: 'kube-system', limit: 5 });
           const podNames = podsResponse.items.map(p => p.metadata?.name).filter(Boolean);
 
-          // Query Prometheus for pod metrics
+          // Query Prometheus for container CPU metrics (available from cadvisor)
           const prom = require('prometheus-query');
           const driver = new prom.PrometheusDriver({
             endpoint: 'http://localhost:9090',
           });
-          const response = await driver.instantQuery('kube_pod_status_phase');
+          const response = await driver.instantQuery('container_cpu_usage_seconds_total{container!=""}');
 
           console.log(JSON.stringify({
             k8sPodCount: podNames.length,
