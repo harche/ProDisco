@@ -125,7 +125,7 @@ jobs:
 
       - name: Run cluster integration tests
         timeout-minutes: 10
-        run: npm test -- cluster-integration -w @prodisco/sandbox-server
+        run: npm test -w @prodisco/sandbox-server -- cluster-integration
 
       - name: Collect logs on failure
         if: failure()
