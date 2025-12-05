@@ -4,6 +4,9 @@
   "description": "ProDisco: Kubernetes MCP server with progressive disclosure",
   "type": "module",
   "main": "dist/server.js",
+  "workspaces": [
+    "packages/*"
+  ],
   "bin": {
     "prodisco-k8s": "dist/server.js"
   },
@@ -42,6 +45,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@grpc/grpc-js": "^1.12.5",
     "@kubernetes/client-node": "^1.4.0",
     "@modelcontextprotocol/sdk": "^1.24.3",
     "@orama/orama": "^3.1.5",

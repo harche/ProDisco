@@ -1,0 +1,36 @@
+{
+  "name": "@prodisco/sandbox-server",
+  "version": "0.1.0",
+  "description": "gRPC sandbox server for code execution with Kubernetes context",
+  "type": "module",
+  "main": "dist/client/index.js",
+  "exports": {
+    ".": "./dist/client/index.js",
+    "./client": "./dist/client/index.js",
+    "./server": "./dist/server/index.js"
+  },
+  "bin": {
+    "sandbox-server": "dist/server/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server/index.ts",
+    "start": "node dist/server/index.js",
+    "proto:generate": "buf generate",
+    "proto:lint": "buf lint"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.2.3",
+    "@grpc/grpc-js": "^1.12.5",
+    "@kubernetes/client-node": "^1.4.0",
+    "esbuild": "^0.27.1",
+    "prometheus-query": "^3.3.2"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.47.2",
+    "@types/node": "^24.10.1",
+    "ts-proto": "^2.6.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
