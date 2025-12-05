@@ -24,6 +24,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: npm run proto:generate -w @prodisco/sandbox-server
+      - run: npm run build -w @prodisco/sandbox-server
       - run: npm run build
       - run: npm run test
 
