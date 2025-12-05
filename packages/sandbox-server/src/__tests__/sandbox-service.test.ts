@@ -219,9 +219,11 @@ describe('SandboxService', () => {
 
     it('does not duplicate cache for same code', async () => {
       const service = createSandboxService({ cacheDir: testCacheDir });
+      // Use unique code to avoid collisions with other tests
+      const uniqueCode = `console.log("dedupe test ${Date.now()}-${Math.random().toString(36).slice(2)}")`;
 
       const request: ExecuteRequest = {
-        source: { $case: 'code', code: 'console.log("dedupe test")' },
+        source: { $case: 'code', code: uniqueCode },
         timeoutMs: undefined,
       };
 

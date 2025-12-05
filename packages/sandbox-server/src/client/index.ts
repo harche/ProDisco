@@ -7,9 +7,18 @@ import {
 } from '../generated/sandbox.js';
 
 const DEFAULT_SOCKET_PATH = '/tmp/prodisco-sandbox.sock';
+const DEFAULT_TCP_HOST = 'localhost';
+const DEFAULT_TCP_PORT = 50051;
 
 export interface SandboxClientOptions {
+  /** Unix socket path for local connections */
   socketPath?: string;
+  /** TCP host to connect to (e.g., 'localhost', 'sandbox.example.com') */
+  tcpHost?: string;
+  /** TCP port to connect to */
+  tcpPort?: number;
+  /** Use TCP transport instead of Unix socket */
+  useTcp?: boolean;
 }
 
 export interface ExecuteOptions {
@@ -27,16 +36,58 @@ export interface ExecuteResult {
 }
 
 /**
+ * Determine if TCP transport should be used based on options and environment.
+ */
+function shouldUseTcp(options: SandboxClientOptions): boolean {
+  if (options.useTcp !== undefined) {
+    return options.useTcp;
+  }
+  // Check environment variable
+  const envUseTcp = process.env.SANDBOX_USE_TCP;
+  if (envUseTcp !== undefined) {
+    return envUseTcp === 'true' || envUseTcp === '1';
+  }
+  // Check if TCP host or port is specified
+  if (options.tcpHost || options.tcpPort || process.env.SANDBOX_TCP_HOST || process.env.SANDBOX_TCP_PORT) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Get the connection address based on options.
+ */
+function getConnectionAddress(options: SandboxClientOptions): string {
+  if (shouldUseTcp(options)) {
+    const host = options.tcpHost || process.env.SANDBOX_TCP_HOST || DEFAULT_TCP_HOST;
+    const port = options.tcpPort || parseInt(process.env.SANDBOX_TCP_PORT || '', 10) || DEFAULT_TCP_PORT;
+    return `${host}:${port}`;
+  }
+
+  const socketPath = options.socketPath || process.env.SANDBOX_SOCKET_PATH || DEFAULT_SOCKET_PATH;
+  return `unix://${socketPath}`;
+}
+
+/**
  * SandboxClient provides a high-level interface to the gRPC sandbox server.
+ *
+ * Supports both Unix socket (default) and TCP transport.
+ *
+ * Unix socket (default):
+ *   new SandboxClient({ socketPath: '/tmp/sandbox.sock' })
+ *
+ * TCP transport:
+ *   new SandboxClient({ useTcp: true, tcpHost: 'localhost', tcpPort: 50051 })
+ *   new SandboxClient({ tcpHost: 'sandbox.example.com', tcpPort: 50051 })
  */
 export class SandboxClient {
   private client: SandboxServiceClient;
 
   constructor(options: SandboxClientOptions = {}) {
-    const socketPath = options.socketPath || process.env.SANDBOX_SOCKET_PATH || DEFAULT_SOCKET_PATH;
+    const address = getConnectionAddress(options);
 
     this.client = new SandboxServiceClient(
-      `unix://${socketPath}`,
+      address,
       grpc.credentials.createInsecure(),
       {
         'grpc.keepalive_time_ms': 10000,
