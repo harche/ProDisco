@@ -132,16 +132,39 @@ ProDisco exposes two tools:
 
 ### kubernetes.runSandbox
 
-Execute TypeScript code in a sandboxed VM environment for Kubernetes and Prometheus operations.
+Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus operations. Supports multiple execution modes for different use cases.
+
+**Execution Modes:**
+
+| Mode | Purpose | Key Parameters |
+|------|---------|----------------|
+| `execute` (default) | Blocking execution, waits for completion | `code` or `cached`, `timeout` |
+| `stream` | Real-time output streaming | `code` or `cached`, `timeout` |
+| `async` | Start execution, return immediately | `code` or `cached`, `timeout` |
+| `status` | Get status/output of async execution | `executionId`, `wait`, `outputOffset` |
+| `cancel` | Cancel a running execution | `executionId` |
+| `list` | List active and recent executions | `states`, `limit`, `includeCompletedWithinMs` |
 
 **Input:**
 ```typescript
 {
-  // Provide one of:
+  // Mode selection (default: 'execute')
+  mode?: 'execute' | 'stream' | 'async' | 'status' | 'cancel' | 'list';
+
+  // Execute/Stream/Async mode parameters
   code?: string;     // TypeScript code to execute directly
   cached?: string;   // Name of a cached script to run (from searchTools results)
-
   timeout?: number;  // Execution timeout in ms (default: 30000, max: 120000)
+
+  // Status/Cancel mode parameters
+  executionId?: string;   // ID from async mode response
+  wait?: boolean;         // Long-poll until completion (status mode)
+  outputOffset?: number;  // Offset for incremental reads (status mode)
+
+  // List mode parameters
+  states?: ('pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timeout')[];
+  limit?: number;                  // Max results (default: 10)
+  includeCompletedWithinMs?: number;  // Include recent completions
 }
 ```
 
@@ -154,7 +177,7 @@ Execute TypeScript code in a sandboxed VM environment for Kubernetes and Prometh
 
 **Examples:**
 ```typescript
-// Execute code directly
+// Execute mode (default) - blocking execution
 {
   code: `
     const api = kc.makeApiClient(k8s.CoreV1Api);
@@ -163,8 +186,24 @@ Execute TypeScript code in a sandboxed VM environment for Kubernetes and Prometh
   `
 }
 
-// Run a cached script by name
+// Run a cached script
 { cached: "script-2025-01-01T12-00-00-abc123.ts" }
+
+// Stream mode - real-time output
+{ mode: "stream", code: "for(let i=0; i<5; i++) console.log(i)" }
+
+// Async mode - start long-running task
+{ mode: "async", code: "longRunningTask()" }
+// Returns: { executionId: "abc-123", state: "running", ... }
+
+// Status mode - check async execution progress
+{ mode: "status", executionId: "abc-123", wait: true }
+
+// Cancel mode - stop a running execution
+{ mode: "cancel", executionId: "abc-123" }
+
+// List mode - show running executions
+{ mode: "list", states: ["running"], limit: 5 }
 ```
 
 ### kubernetes.searchTools
