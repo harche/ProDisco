@@ -308,7 +308,9 @@ async function startSandboxServer(): Promise<void> {
   }
 
   // Local mode: spawn subprocess
-  const sandboxServerPath = path.resolve(__dirname, '../packages/sandbox-server/dist/server/index.js');
+  // Use require.resolve to find the sandbox-server package, works both in development
+  // (where it's in packages/) and when installed from npm (where it's in node_modules/)
+  const sandboxServerPath = require.resolve('@prodisco/sandbox-server/server');
   const socketPath = process.env.SANDBOX_SOCKET_PATH || '/tmp/prodisco-sandbox.sock';
 
   logger.info('Starting sandbox gRPC server...');
