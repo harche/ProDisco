@@ -16,6 +16,8 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server/index.ts",
     "start": "node dist/server/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "proto:generate": "buf generate",
     "proto:lint": "buf lint"
   },
@@ -31,6 +33,7 @@
     "@types/node": "^24.10.1",
     "ts-proto": "^2.6.1",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
   }
 }
