@@ -286,26 +286,46 @@ async function startSandboxServer(): Promise<void> {
 
 ### runSandbox Tool (`src/tools/kubernetes/runSandbox.ts`)
 
-The MCP tool is a thin wrapper that forwards requests to the gRPC server:
+The MCP tool exposes all gRPC execution methods through a unified multi-mode API:
 
 ```typescript
+// Schema with 6 execution modes
+const RunSandboxInputSchema = z.object({
+  mode: z.enum(['execute', 'stream', 'async', 'status', 'cancel', 'list']).default('execute'),
+
+  // Execute/Stream/Async mode
+  code: z.string().optional(),
+  cached: z.string().optional(),
+  timeout: z.number().max(120000).default(30000).optional(),
+
+  // Status/Cancel mode
+  executionId: z.string().optional(),
+  wait: z.boolean().optional(),
+  outputOffset: z.number().optional(),
+
+  // List mode
+  states: z.array(z.enum(['pending', 'running', 'completed', 'failed', 'cancelled', 'timeout'])).optional(),
+  limit: z.number().max(100).default(10).optional(),
+  includeCompletedWithinMs: z.number().optional(),
+});
+
 async execute(input) {
-  const { code, cached, timeout = 30000 } = input;
-  const client = getSandboxClient();
+  const { mode = 'execute' } = input;
 
-  const result = await client.execute({
-    code,
-    cached,
-    timeoutMs: timeout,
-  });
-
-  return {
-    success: result.success,
-    output: result.output,
-    error: result.error,
-    executionTime: result.executionTimeMs,
-    cachedScript: result.cached?.name,
-  };
+  switch (mode) {
+    case 'execute':
+      return executeExecuteMode(input);  // Blocking execution
+    case 'stream':
+      return executeStreamMode(input);   // Streaming with real-time output
+    case 'async':
+      return executeAsyncMode(input);    // Fire-and-forget with execution ID
+    case 'status':
+      return executeStatusMode(input);   // Poll/wait for execution status
+    case 'cancel':
+      return executeCancelMode(input);   // Cancel running execution
+    case 'list':
+      return executeListMode(input);     // List active/recent executions
+  }
 }
 ```
 

@@ -2576,7 +2576,11 @@ async function executeMethodMode(input: z.infer<typeof SearchToolsInputSchema>):
   summary += `EXECUTION OPTIONS:\n`;
   summary += `  - New code: runSandbox({ code: '<TypeScript code>' })\n`;
   summary += `  - Cached script: runSandbox({ cached: '<script-name>' })\n`;
-  summary += `TIP: Start code with a descriptive comment for searchability\n`;
+  summary += `  - Execution modes:\n`;
+  summary += `      mode: "execute" (default) - blocking, waits for completion\n`;
+  summary += `      mode: "stream" - real-time output for long-running ops\n`;
+  summary += `      mode: "async" - non-blocking, returns executionId to check later\n`;
+  summary += `TIP: Use "stream" or "async" for operations that may take time (list across namespaces, watch, etc.)\n`;
   summary += `For type definitions: use mode: "types" with types: ["V1Pod"]\n\n`;
 
   const usage =
@@ -2586,7 +2590,8 @@ async function executeMethodMode(input: z.infer<typeof SearchToolsInputSchema>):
     '- Sandbox provides: k8s, kc (KubeConfig), console, require("prometheus-query")\n' +
     '- All methods require object parameter: await api.method({ param: value })\n' +
     '- List operations return: response.items (array)\n' +
-    '- Single resource operations return: response (object)';
+    '- Single resource operations return: response (object)\n' +
+    '- Execution modes: "execute" (blocking), "stream" (real-time), "async" (non-blocking)';
 
   return {
     mode: 'methods',
@@ -2985,7 +2990,11 @@ async function executePrometheusMode(input: z.infer<typeof SearchToolsInputSchem
   summary += `\nEXECUTION OPTIONS:\n`;
   summary += `  - New code: runSandbox({ code: '<TypeScript code>' })\n`;
   summary += `  - Cached script: runSandbox({ cached: '<script-name>' })\n`;
-  summary += `TIP: Start code with a descriptive comment for searchability\n`;
+  summary += `  - Execution modes:\n`;
+  summary += `      mode: "execute" (default) - blocking, waits for completion\n`;
+  summary += `      mode: "stream" - real-time output for range queries\n`;
+  summary += `      mode: "async" - non-blocking for long queries, check status later\n`;
+  summary += `TIP: Use "stream" or "async" for Prometheus queries over large time ranges.\n`;
 
   // Add tip about metrics category
   if (prometheusUrl) {
@@ -2997,7 +3006,8 @@ async function executePrometheusMode(input: z.infer<typeof SearchToolsInputSchem
     'USAGE:\n' +
     '- New code: runSandbox({ code: "..." })\n' +
     '- Cached script: runSandbox({ cached: "script-name.ts" })\n' +
-    '- Sandbox provides: k8s, kc (KubeConfig), console, require("prometheus-query")';
+    '- Sandbox provides: k8s, kc (KubeConfig), console, require("prometheus-query")\n' +
+    '- Execution modes: "execute" (blocking), "stream" (real-time), "async" (non-blocking)';
 
   // If PROMETHEUS_URL is not set, return error result
   if (!prometheusUrl) {

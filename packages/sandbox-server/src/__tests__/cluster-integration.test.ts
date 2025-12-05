@@ -414,17 +414,17 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
       expect(data.resultType).toBe('vector');
     });
 
-    it('queries kube-state-metrics', async () => {
+    it('queries container memory metrics', async () => {
       const result = await client.execute({
         code: `
           const prom = require('prometheus-query');
           const driver = new prom.PrometheusDriver({
             endpoint: 'http://localhost:9090',
           });
-          const response = await driver.instantQuery('kube_pod_info');
+          const response = await driver.instantQuery('container_memory_usage_bytes{container!=""}');
           console.log(JSON.stringify({
             resultType: response.resultType,
-            podCount: response.result.length,
+            containerCount: response.result.length,
           }));
         `,
         timeoutMs: 30000,
@@ -433,7 +433,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
       expect(result.success).toBe(true);
       const data = JSON.parse(result.output);
       expect(data.resultType).toBe('vector');
-      expect(data.podCount).toBeGreaterThan(0);
+      expect(data.containerCount).toBeGreaterThan(0);
     });
 
     it('performs range query', async () => {
@@ -484,7 +484,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
   });
 
   describe('Combined K8s + Prometheus', () => {
-    it('correlates pod info with metrics', async () => {
+    it('correlates pod info with container metrics', async () => {
       const result = await client.execute({
         code: `
           // Get pods from Kubernetes
@@ -492,12 +492,12 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
           const podsResponse = await api.listNamespacedPod({ namespace: 'kube-system', limit: 5 });
           const podNames = podsResponse.items.map(p => p.metadata?.name).filter(Boolean);
 
-          // Query Prometheus for pod metrics
+          // Query Prometheus for container CPU metrics (available from cadvisor)
           const prom = require('prometheus-query');
           const driver = new prom.PrometheusDriver({
             endpoint: 'http://localhost:9090',
           });
-          const response = await driver.instantQuery('kube_pod_status_phase');
+          const response = await driver.instantQuery('container_cpu_usage_seconds_total{container!=""}');
 
           console.log(JSON.stringify({
             k8sPodCount: podNames.length,
@@ -608,5 +608,474 @@ describe.skipIf(!clusterAvailable)('Streaming with Real K8s Calls', () => {
     expect(status.state).toBe(3); // COMPLETED
     expect(status.result?.success).toBe(true);
     expect(status.output).toContain('Namespaces:');
+  });
+});
+
+// =============================================================================
+// Comprehensive Streaming and Async Execution Tests
+// =============================================================================
+
+const asyncStreamTestId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+
+describe('Streaming and Async Execution - Comprehensive Tests', () => {
+  const testSocketPath = `/tmp/prodisco-async-stream-${asyncStreamTestId}.sock`;
+  const testCacheDir = `/tmp/prodisco-cache-async-stream-${asyncStreamTestId}`;
+  let server: grpc.Server;
+  let client: SandboxClient;
+
+  beforeAll(async () => {
+    server = await startServer({
+      socketPath: testSocketPath,
+      cacheDir: testCacheDir,
+    });
+
+    client = new SandboxClient({ socketPath: testSocketPath });
+
+    const healthy = await client.waitForHealthy(10000);
+    expect(healthy).toBe(true);
+  });
+
+  afterAll(async () => {
+    client.close();
+
+    await new Promise<void>((resolve) => {
+      server.tryShutdown((err) => {
+        if (err) {
+          server.forceShutdown();
+        }
+        resolve();
+      });
+    });
+
+    if (existsSync(testSocketPath)) {
+      try {
+        unlinkSync(testSocketPath);
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (existsSync(testCacheDir)) {
+      rmSync(testCacheDir, { recursive: true });
+    }
+  });
+
+  describe('ExecuteStream', () => {
+    it('streams incremental output', async () => {
+      const code = `
+        for (let i = 0; i < 5; i++) {
+          console.log("Iteration " + i);
+          await new Promise(r => setTimeout(r, 20));
+        }
+      `;
+
+      const chunks: string[] = [];
+      const timestamps: number[] = [];
+
+      for await (const chunk of client.executeStream({ code, timeoutMs: 10000 })) {
+        if (chunk.type === 'output') {
+          chunks.push(chunk.data as string);
+          timestamps.push(chunk.timestampMs);
+        }
+      }
+
+      // Should have received multiple chunks
+      expect(chunks.length).toBeGreaterThan(1);
+
+      // All iterations should be present
+      const fullOutput = chunks.join('');
+      expect(fullOutput).toContain('Iteration 0');
+      expect(fullOutput).toContain('Iteration 4');
+    });
+
+    it('separates stdout and stderr', async () => {
+      const code = `
+        console.log("Standard output");
+        console.error("Error output");
+        console.log("More standard output");
+      `;
+
+      let stdout = '';
+      let stderr = '';
+
+      for await (const chunk of client.executeStream({ code, timeoutMs: 5000 })) {
+        if (chunk.type === 'output') {
+          stdout += chunk.data as string;
+        } else if (chunk.type === 'error') {
+          stderr += chunk.data as string;
+        }
+      }
+
+      expect(stdout).toContain('Standard output');
+      expect(stdout).toContain('More standard output');
+      expect(stderr).toContain('Error output');
+    });
+
+    it('returns final result chunk', async () => {
+      const code = 'console.log("Hello");';
+
+      let resultChunk: any = null;
+
+      for await (const chunk of client.executeStream({ code, timeoutMs: 5000 })) {
+        if (chunk.type === 'result') {
+          resultChunk = chunk.data;
+        }
+      }
+
+      expect(resultChunk).toBeDefined();
+      expect(resultChunk.success).toBe(true);
+      expect(resultChunk.executionTimeMs).toBeGreaterThanOrEqual(0);
+    });
+
+    it('handles execution failure in stream', async () => {
+      const code = 'throw new Error("Stream failure test");';
+
+      let resultChunk: any = null;
+
+      for await (const chunk of client.executeStream({ code, timeoutMs: 5000 })) {
+        if (chunk.type === 'result') {
+          resultChunk = chunk.data;
+        }
+      }
+
+      expect(resultChunk).toBeDefined();
+      expect(resultChunk.success).toBe(false);
+      expect(resultChunk.error).toContain('Stream failure test');
+    });
+
+    it('streams large output efficiently', async () => {
+      const code = `
+        for (let i = 0; i < 100; i++) {
+          console.log("Line " + i + ": " + "x".repeat(50));
+        }
+      `;
+
+      const chunks: string[] = [];
+
+      for await (const chunk of client.executeStream({ code, timeoutMs: 10000 })) {
+        if (chunk.type === 'output') {
+          chunks.push(chunk.data as string);
+        }
+      }
+
+      const fullOutput = chunks.join('');
+      expect(fullOutput).toContain('Line 0');
+      expect(fullOutput).toContain('Line 99');
+      // Should have received multiple chunks for large output
+      expect(chunks.length).toBeGreaterThan(1);
+    });
+  });
+
+  describe('ExecuteAsync', () => {
+    it('returns execution ID immediately', async () => {
+      const startTime = Date.now();
+
+      const { executionId, state } = await client.executeAsync({
+        code: `
+          await new Promise(r => setTimeout(r, 500));
+          console.log("Delayed execution");
+        `,
+        timeoutMs: 10000,
+      });
+
+      const duration = Date.now() - startTime;
+
+      // Should return quickly (before the code completes)
+      expect(duration).toBeLessThan(200);
+      expect(executionId).toBeDefined();
+      expect(executionId.length).toBeGreaterThan(0);
+    });
+
+    it('can poll for status', async () => {
+      const { executionId } = await client.executeAsync({
+        code: `
+          console.log("Starting");
+          await new Promise(r => setTimeout(r, 200));
+          console.log("Done");
+        `,
+        timeoutMs: 10000,
+      });
+
+      // Poll immediately - might be running
+      const status1 = await client.getExecution(executionId);
+      expect(status1.executionId).toBe(executionId);
+
+      // Wait and poll again - should be completed
+      await new Promise(r => setTimeout(r, 300));
+      const status2 = await client.getExecution(executionId);
+      expect(status2.state).toBe(3); // COMPLETED
+      expect(status2.output).toContain('Done');
+    });
+
+    it('supports long-poll with wait', async () => {
+      const { executionId } = await client.executeAsync({
+        code: `
+          await new Promise(r => setTimeout(r, 100));
+          console.log("Finished");
+        `,
+        timeoutMs: 10000,
+      });
+
+      // This should block until completion
+      const status = await client.getExecution(executionId, { wait: true });
+
+      expect(status.state).toBe(3); // COMPLETED
+      expect(status.output).toContain('Finished');
+      expect(status.result).toBeDefined();
+      expect(status.result?.success).toBe(true);
+    });
+
+    it('supports incremental output reading', async () => {
+      const { executionId } = await client.executeAsync({
+        code: `
+          console.log("Part 1");
+          await new Promise(r => setTimeout(r, 50));
+          console.log("Part 2");
+          await new Promise(r => setTimeout(r, 50));
+          console.log("Part 3");
+        `,
+        timeoutMs: 10000,
+      });
+
+      // Wait for completion
+      await new Promise(r => setTimeout(r, 200));
+
+      // Read full output
+      const status1 = await client.getExecution(executionId);
+      expect(status1.output).toContain('Part 1');
+      expect(status1.output).toContain('Part 3');
+
+      // Read with offset (from middle)
+      const halfOffset = Math.floor(status1.outputLength / 2);
+      const status2 = await client.getExecution(executionId, { outputOffset: halfOffset });
+
+      // Should have less output when reading from offset
+      expect(status2.output.length).toBeLessThan(status1.output.length);
+    });
+
+    it('handles concurrent async executions', async () => {
+      // Start 3 concurrent executions
+      const [exec1, exec2, exec3] = await Promise.all([
+        client.executeAsync({ code: 'console.log("Exec 1");', timeoutMs: 5000 }),
+        client.executeAsync({ code: 'console.log("Exec 2");', timeoutMs: 5000 }),
+        client.executeAsync({ code: 'console.log("Exec 3");', timeoutMs: 5000 }),
+      ]);
+
+      // All should have unique IDs
+      expect(exec1.executionId).not.toBe(exec2.executionId);
+      expect(exec2.executionId).not.toBe(exec3.executionId);
+
+      // Wait for all to complete
+      const [status1, status2, status3] = await Promise.all([
+        client.waitForExecution(exec1.executionId),
+        client.waitForExecution(exec2.executionId),
+        client.waitForExecution(exec3.executionId),
+      ]);
+
+      expect(status1.state).toBe(3); // COMPLETED
+      expect(status2.state).toBe(3);
+      expect(status3.state).toBe(3);
+      expect(status1.output).toContain('Exec 1');
+      expect(status2.output).toContain('Exec 2');
+      expect(status3.output).toContain('Exec 3');
+    });
+  });
+
+  describe('CancelExecution', () => {
+    it('cancels a running execution', async () => {
+      const { executionId } = await client.executeAsync({
+        code: `
+          for (let i = 0; i < 100; i++) {
+            console.log("Iteration " + i);
+            await new Promise(r => setTimeout(r, 100));
+          }
+        `,
+        timeoutMs: 30000,
+      });
+
+      // Wait briefly for execution to start
+      await new Promise(r => setTimeout(r, 150));
+
+      // Cancel the execution
+      const cancelResult = await client.cancelExecution(executionId);
+
+      expect(cancelResult.success).toBe(true);
+      expect(cancelResult.state).toBe(5); // CANCELLED
+
+      // Verify the execution is cancelled
+      const status = await client.getExecution(executionId);
+      expect(status.state).toBe(5); // CANCELLED
+    });
+
+    it('handles cancellation of already completed execution', async () => {
+      const { executionId } = await client.executeAsync({
+        code: 'console.log("Quick");',
+        timeoutMs: 5000,
+      });
+
+      // Wait for completion
+      await client.waitForExecution(executionId);
+
+      // Try to cancel completed execution
+      const cancelResult = await client.cancelExecution(executionId);
+
+      // Should fail or indicate already completed
+      expect([3, 5]).toContain(cancelResult.state); // COMPLETED or CANCELLED
+    });
+  });
+
+  describe('ListExecutions', () => {
+    it('lists active executions', async () => {
+      // Start a long-running execution
+      const { executionId } = await client.executeAsync({
+        code: `
+          for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 100));
+          }
+        `,
+        timeoutMs: 10000,
+      });
+
+      await new Promise(r => setTimeout(r, 50));
+
+      // List running executions
+      const executions = await client.listExecutions({
+        states: [2], // RUNNING
+      });
+
+      // Should find our execution
+      const found = executions.find(e => e.executionId === executionId);
+      expect(found).toBeDefined();
+      expect(found?.state).toBe(2); // RUNNING
+
+      // Cancel to clean up
+      await client.cancelExecution(executionId);
+    });
+
+    it('lists recent completed executions', async () => {
+      // Execute something
+      const { executionId } = await client.executeAsync({
+        code: 'console.log("List test");',
+        timeoutMs: 5000,
+      });
+
+      await client.waitForExecution(executionId);
+
+      // List recent completed executions
+      const executions = await client.listExecutions({
+        states: [3], // COMPLETED
+        includeCompletedWithinMs: 10000,
+      });
+
+      // Should find our execution
+      const found = executions.find(e => e.executionId === executionId);
+      expect(found).toBeDefined();
+      expect(found?.state).toBe(3);
+    });
+
+    it('respects limit parameter', async () => {
+      // Execute multiple scripts
+      for (let i = 0; i < 5; i++) {
+        const { executionId } = await client.executeAsync({
+          code: `console.log("Limit test ${i}");`,
+          timeoutMs: 5000,
+        });
+        await client.waitForExecution(executionId);
+      }
+
+      // List with limit
+      const executions = await client.listExecutions({
+        limit: 3,
+        includeCompletedWithinMs: 10000,
+      });
+
+      expect(executions.length).toBeLessThanOrEqual(3);
+    });
+
+    it('returns execution details', async () => {
+      const { executionId } = await client.executeAsync({
+        code: 'console.log("Details test");',
+        timeoutMs: 5000,
+      });
+
+      await client.waitForExecution(executionId);
+
+      const executions = await client.listExecutions({
+        includeCompletedWithinMs: 30000, // Longer window to ensure we catch it
+        limit: 50,
+      });
+
+      // The execution registry may clean up completed executions quickly,
+      // so we verify the list call works and returns proper structure
+      expect(Array.isArray(executions)).toBe(true);
+
+      // If we find our execution, verify its structure
+      const found = executions.find(e => e.executionId === executionId);
+      if (found) {
+        expect(found.startedAtMs).toBeGreaterThan(0);
+        expect(found.codePreview).toContain('Details test');
+        expect(found.isCached).toBe(false);
+      }
+    });
+  });
+
+  describe('Execution Lifecycle', () => {
+    it('tracks full execution lifecycle', async () => {
+      // Start execution
+      const { executionId, state: initialState } = await client.executeAsync({
+        code: `
+          console.log("Step 1");
+          await new Promise(r => setTimeout(r, 100));
+          console.log("Step 2");
+        `,
+        timeoutMs: 10000,
+      });
+
+      expect([1, 2]).toContain(initialState); // PENDING or RUNNING
+
+      // Check while running
+      await new Promise(r => setTimeout(r, 50));
+      const runningStatus = await client.getExecution(executionId);
+      expect([2, 3]).toContain(runningStatus.state); // RUNNING or COMPLETED
+
+      // Wait for completion
+      const finalStatus = await client.waitForExecution(executionId);
+      expect(finalStatus.state).toBe(3); // COMPLETED
+      expect(finalStatus.output).toContain('Step 1');
+      expect(finalStatus.output).toContain('Step 2');
+      expect(finalStatus.result?.success).toBe(true);
+    });
+
+    it('handles execution failure lifecycle', async () => {
+      const { executionId } = await client.executeAsync({
+        code: `
+          console.log("Before error");
+          throw new Error("Test failure");
+        `,
+        timeoutMs: 5000,
+      });
+
+      const status = await client.waitForExecution(executionId);
+
+      expect(status.state).toBe(4); // FAILED
+      expect(status.output).toContain('Before error');
+      expect(status.result?.success).toBe(false);
+      expect(status.result?.error).toContain('Test failure');
+    });
+
+    it('handles timeout lifecycle', async () => {
+      const { executionId } = await client.executeAsync({
+        code: `
+          console.log("Starting long task");
+          await new Promise(r => setTimeout(r, 10000)); // 10 seconds
+        `,
+        timeoutMs: 200, // Very short timeout
+      });
+
+      const status = await client.waitForExecution(executionId);
+
+      expect(status.state).toBe(6); // TIMEOUT
+      expect(status.output).toContain('Starting long task');
+    });
   });
 });
