@@ -117,7 +117,8 @@ async function runTests(): Promise<void> {
         timeoutMs: 5000,
       });
       if (!result.success) throw new Error('Execution failed: ' + result.error);
-      if (!result.cachedAs) throw new Error('Script was not cached');
+      if (!result.cached) throw new Error('Script was not cached');
+      if (!result.cached.name) throw new Error('Cached entry missing name');
     }),
 
     test('Error handling - syntax error', async () => {

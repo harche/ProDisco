@@ -124,6 +124,7 @@ jobs:
           curl -s http://localhost:9090/-/healthy || echo "Prometheus health check failed"
 
       - name: Run cluster integration tests
+        timeout-minutes: 10
         run: npm test -- cluster-integration -w @prodisco/sandbox-server
 
       - name: Collect logs on failure
