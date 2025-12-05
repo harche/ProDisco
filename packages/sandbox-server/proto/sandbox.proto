@@ -5,11 +5,32 @@ package prodisco.sandbox.v1;
 // SandboxService handles code execution in a secure sandbox environment.
 // The implementation determines the runtime (TypeScript, Go, etc.).
 service SandboxService {
-  // Execute runs code in the sandbox
+  // Execute runs code in the sandbox (blocking, waits for completion)
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // ExecuteStream runs code with real-time output streaming
+  rpc ExecuteStream(ExecuteRequest) returns (stream ExecuteChunk);
+
+  // ExecuteAsync starts execution and returns immediately with an execution ID
+  rpc ExecuteAsync(ExecuteRequest) returns (ExecuteAsyncResponse);
+
+  // GetExecution retrieves status and output of an async execution
+  rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
+
+  // CancelExecution cancels a running execution
+  rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
+
+  // ListExecutions lists active and recent executions
+  rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
 
   // HealthCheck verifies the sandbox server is running and properly configured
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+
+  // ListCache returns all cached entries for indexing/discovery
+  rpc ListCache(ListCacheRequest) returns (ListCacheResponse);
+
+  // ClearCache removes all cached entries
+  rpc ClearCache(ClearCacheRequest) returns (ClearCacheResponse);
 }
 
 message ExecuteRequest {
@@ -22,6 +43,21 @@ message ExecuteRequest {
 
   // Execution timeout in milliseconds
   optional int32 timeout_ms = 3;
+}
+
+// CacheEntry represents a cached execution that can be re-run
+message CacheEntry {
+  // Unique name of the cached entry (e.g., "list-pods-abc123.ts")
+  string name = 1;
+
+  // Human-readable description extracted from the code
+  string description = 2;
+
+  // Timestamp when the entry was cached (milliseconds since epoch)
+  int64 created_at_ms = 3;
+
+  // Content hash for deduplication
+  string content_hash = 4;
 }
 
 message ExecuteResponse {
@@ -37,8 +73,9 @@ message ExecuteResponse {
   // Execution time in milliseconds
   int64 execution_time_ms = 4;
 
-  // Name assigned if this execution was cached for future use
-  optional string cached_as = 5;
+  // Full cache entry if this execution was newly cached
+  // Not set if execution failed or if the code was already cached (duplicate)
+  optional CacheEntry cached = 5;
 }
 
 message HealthCheckRequest {}
@@ -49,4 +86,178 @@ message HealthCheckResponse {
 
   // Current Kubernetes context name (if applicable)
   string kubernetes_context = 2;
+}
+
+message ListCacheRequest {
+  // Optional filter pattern (e.g., "list-*" or "pods")
+  optional string filter = 1;
+}
+
+message ListCacheResponse {
+  // All matching cache entries
+  repeated CacheEntry entries = 1;
+}
+
+message ClearCacheRequest {}
+
+message ClearCacheResponse {
+  // Number of entries deleted
+  int64 deleted_count = 1;
+}
+
+// ============================================================================
+// Streaming and Async Execution Messages
+// ============================================================================
+
+// ExecutionState represents the lifecycle state of an execution
+enum ExecutionState {
+  EXECUTION_STATE_UNSPECIFIED = 0;
+  EXECUTION_STATE_PENDING = 1;     // Queued, waiting to run
+  EXECUTION_STATE_RUNNING = 2;     // Currently executing
+  EXECUTION_STATE_COMPLETED = 3;   // Finished successfully
+  EXECUTION_STATE_FAILED = 4;      // Finished with error
+  EXECUTION_STATE_CANCELLED = 5;   // Cancelled by user
+  EXECUTION_STATE_TIMEOUT = 6;     // Exceeded time limit
+}
+
+// ExecuteChunk is a streaming response chunk during execution
+message ExecuteChunk {
+  // Unique execution ID (same across all chunks)
+  string execution_id = 1;
+
+  // Type of chunk
+  oneof chunk {
+    // Output data (stdout/console.log)
+    string output = 2;
+    // Error output (stderr/console.error)
+    string error_output = 3;
+    // Final result when execution completes
+    ExecuteResult result = 4;
+  }
+
+  // Timestamp of this chunk (milliseconds since epoch)
+  int64 timestamp_ms = 5;
+}
+
+// ExecuteResult is the final result sent as the last chunk
+message ExecuteResult {
+  // Whether execution completed successfully
+  bool success = 1;
+
+  // Error message if execution failed
+  optional string error = 2;
+
+  // Total execution time in milliseconds
+  int64 execution_time_ms = 3;
+
+  // Final execution state
+  ExecutionState state = 4;
+
+  // Cache entry if newly cached
+  optional CacheEntry cached = 5;
+}
+
+// ExecuteAsyncResponse is returned immediately when starting async execution
+message ExecuteAsyncResponse {
+  // Unique execution ID for tracking
+  string execution_id = 1;
+
+  // Initial state (typically PENDING or RUNNING)
+  ExecutionState state = 2;
+}
+
+// GetExecutionRequest requests status of an async execution
+message GetExecutionRequest {
+  // Execution ID from ExecuteAsyncResponse
+  string execution_id = 1;
+
+  // If true, wait for completion (long-poll)
+  bool wait = 2;
+
+  // Offset in output buffer to start reading from (for incremental reads)
+  int64 output_offset = 3;
+}
+
+// GetExecutionResponse contains current status and buffered output
+message GetExecutionResponse {
+  // Execution ID
+  string execution_id = 1;
+
+  // Current state
+  ExecutionState state = 2;
+
+  // Buffered output since offset (stdout)
+  string output = 3;
+
+  // Buffered error output since offset (stderr)
+  string error_output = 4;
+
+  // Current total output length (for next offset)
+  int64 output_length = 5;
+
+  // Current total error output length
+  int64 error_output_length = 6;
+
+  // Result if execution has finished (state is terminal)
+  optional ExecuteResult result = 7;
+}
+
+// CancelExecutionRequest cancels a running execution
+message CancelExecutionRequest {
+  // Execution ID to cancel
+  string execution_id = 1;
+}
+
+// CancelExecutionResponse confirms cancellation
+message CancelExecutionResponse {
+  // Whether cancellation was successful
+  bool success = 1;
+
+  // Current state after cancellation attempt
+  ExecutionState state = 2;
+
+  // Message if cancellation failed (e.g., already completed)
+  optional string message = 3;
+}
+
+// ListExecutionsRequest lists executions
+message ListExecutionsRequest {
+  // Filter by state (empty = all states)
+  repeated ExecutionState states = 1;
+
+  // Maximum number of results
+  int32 limit = 2;
+
+  // Include completed executions from last N milliseconds
+  int64 include_completed_within_ms = 3;
+}
+
+// ExecutionInfo is summary info about an execution
+message ExecutionInfo {
+  // Execution ID
+  string execution_id = 1;
+
+  // Current state
+  ExecutionState state = 2;
+
+  // When execution started
+  int64 started_at_ms = 3;
+
+  // When execution finished (if terminal state)
+  optional int64 finished_at_ms = 4;
+
+  // Code preview (first 100 chars)
+  string code_preview = 5;
+
+  // Whether using cached script
+  bool is_cached = 6;
+
+  // Cached script name if is_cached
+  optional string cached_name = 7;
+}
+
+// ListExecutionsResponse contains list of executions
+message ListExecutionsResponse {
+  // List of execution summaries
+  repeated ExecutionInfo executions = 1;
 }

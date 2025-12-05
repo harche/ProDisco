@@ -3,8 +3,11 @@ import { CacheManager, type CachedCode } from '../server/cache-manager.js';
 import { existsSync, mkdirSync, rmSync, readdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+// Generate unique ID for test isolation (avoid collision between src and dist tests)
+const testId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+
 describe('CacheManager', () => {
-  const testCacheDir = '/tmp/prodisco-cache-test-' + Date.now();
+  const testCacheDir = `/tmp/prodisco-cache-test-${testId}`;
   let cacheManager: CacheManager;
 
   beforeEach(() => {
@@ -68,20 +71,23 @@ describe('CacheManager', () => {
   });
 
   describe('cache()', () => {
-    it('caches code and returns filename', async () => {
+    it('caches code and returns CacheEntry with name', async () => {
       const code = 'console.log("test");';
-      const filename = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code);
 
-      expect(filename).toBeDefined();
-      expect(filename).toMatch(/^script-.*\.ts$/);
+      expect(entry).toBeDefined();
+      expect(entry!.name).toMatch(/^script-.*\.ts$/);
+      expect(entry!.description).toBeDefined();
+      expect(entry!.createdAtMs).toBeDefined();
+      expect(entry!.contentHash).toBeDefined();
     });
 
     it('creates file with correct content', async () => {
       const code = 'console.log("hello world");';
-      const filename = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code);
 
-      expect(filename).toBeDefined();
-      const filePath = join(testCacheDir, filename!);
+      expect(entry).toBeDefined();
+      const filePath = join(testCacheDir, entry!.name);
       expect(existsSync(filePath)).toBe(true);
 
       const content = readFileSync(filePath, 'utf-8');
@@ -92,42 +98,43 @@ describe('CacheManager', () => {
     it('uses hash-based filename for deduplication', async () => {
       const code = 'console.log("unique code");';
 
-      const filename1 = await cacheManager.cache(code);
-      const filename2 = await cacheManager.cache(code);
+      const entry1 = await cacheManager.cache(code);
+      const entry2 = await cacheManager.cache(code);
 
       // Second cache should return undefined (already cached)
-      expect(filename1).toBeDefined();
-      expect(filename2).toBeUndefined();
+      expect(entry1).toBeDefined();
+      expect(entry2).toBeUndefined();
     });
 
     it('caches different code separately', async () => {
       const code1 = 'console.log("code 1");';
       const code2 = 'console.log("code 2");';
 
-      const filename1 = await cacheManager.cache(code1);
-      const filename2 = await cacheManager.cache(code2);
+      const entry1 = await cacheManager.cache(code1);
+      const entry2 = await cacheManager.cache(code2);
 
-      expect(filename1).toBeDefined();
-      expect(filename2).toBeDefined();
-      expect(filename1).not.toBe(filename2);
+      expect(entry1).toBeDefined();
+      expect(entry2).toBeDefined();
+      expect(entry1!.name).not.toBe(entry2!.name);
     });
 
     it('includes timestamp in filename', async () => {
       const code = 'console.log("timestamp test");';
-      const filename = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code);
 
-      expect(filename).toBeDefined();
+      expect(entry).toBeDefined();
       // Format: script-YYYY-MM-DDTHH-MM-SS-hash.ts
-      expect(filename).toMatch(/^script-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-[a-f0-9]{12}\.ts$/);
+      expect(entry!.name).toMatch(/^script-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-[a-f0-9]{12}\.ts$/);
     });
 
-    it('includes hash in filename', async () => {
+    it('includes hash in filename and contentHash field', async () => {
       const code = 'console.log("hash test");';
-      const filename = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code);
 
-      expect(filename).toBeDefined();
+      expect(entry).toBeDefined();
       // Should contain a 12-character hex hash
-      expect(filename).toMatch(/-[a-f0-9]{12}\.ts$/);
+      expect(entry!.name).toMatch(/-[a-f0-9]{12}\.ts$/);
+      expect(entry!.contentHash).toMatch(/^[a-f0-9]{12}$/);
     });
 
     it('handles concurrent cache calls safely', async () => {
@@ -136,9 +143,9 @@ describe('CacheManager', () => {
       const results = await Promise.all(codes.map(code => cacheManager.cache(code)));
 
       // All unique codes should be cached
-      const filenames = results.filter(r => r !== undefined);
-      expect(filenames.length).toBe(10);
-      expect(new Set(filenames).size).toBe(10);
+      const entries = results.filter(r => r !== undefined);
+      expect(entries.length).toBe(10);
+      expect(new Set(entries.map(e => e!.name)).size).toBe(10);
     });
 
     it('returns undefined on caching error (silently fails)', async () => {
@@ -309,10 +316,10 @@ describe('CacheManager', () => {
 
   describe('Edge Cases', () => {
     it('handles empty code', async () => {
-      const filename = await cacheManager.cache('');
+      const entry = await cacheManager.cache('');
 
-      expect(filename).toBeDefined();
-      const filePath = join(testCacheDir, filename!);
+      expect(entry).toBeDefined();
+      const filePath = join(testCacheDir, entry!.name);
       const content = readFileSync(filePath, 'utf-8');
       // Should have just the header
       expect(content).toContain('// Executed via sandbox at');
@@ -320,19 +327,19 @@ describe('CacheManager', () => {
 
     it('handles code with special characters', async () => {
       const code = 'console.log("Special: $`\\n\\t{}[]");';
-      const filename = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code);
 
-      expect(filename).toBeDefined();
-      const result = cacheManager.find(filename!);
+      expect(entry).toBeDefined();
+      const result = cacheManager.find(entry!.name);
       expect(result!.code).toContain(code);
     });
 
     it('handles code with Unicode', async () => {
       const code = 'console.log("Hello 世界 🌍");';
-      const filename = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code);
 
-      expect(filename).toBeDefined();
-      const result = cacheManager.find(filename!);
+      expect(entry).toBeDefined();
+      const result = cacheManager.find(entry!.name);
       expect(result!.code).toContain('世界');
       expect(result!.code).toContain('🌍');
     });

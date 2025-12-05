@@ -4,7 +4,13 @@
  * Run with: npx tsx scripts/integration/container-tests.ts
  */
 
+import { spawn, type ChildProcess } from 'node:child_process';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { SandboxClient } from '../../packages/sandbox-server/dist/client/index.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 interface TestResult {
   name: string;
@@ -144,6 +150,62 @@ async function runTests(): Promise<void> {
           return;
         }
         throw error;
+      }
+    }),
+
+    test('MCP server uses TCP mode when configured', async () => {
+      // This test verifies the MCP server correctly identifies TCP mode from env vars
+      // and attempts to connect to remote sandbox instead of spawning a subprocess.
+      // We run the server briefly and check the log messages.
+      const serverPath = path.resolve(__dirname, '../../dist/server.js');
+
+      const serverProcess: ChildProcess = spawn('node', [serverPath], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          SANDBOX_USE_TCP: 'true',
+          SANDBOX_TCP_HOST: host,
+          SANDBOX_TCP_PORT: String(port),
+        },
+      });
+
+      let stderr = '';
+
+      serverProcess.stderr?.on('data', (data: Buffer) => {
+        stderr += data.toString();
+      });
+
+      // Wait for the initial log messages (give it 5 seconds to start)
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => {
+          serverProcess.kill('SIGTERM');
+          resolve();
+        }, 5000);
+
+        // Resolve early if we see the connection message
+        const checkOutput = () => {
+          if (stderr.includes('Connecting to remote sandbox server')) {
+            clearTimeout(timeout);
+            // Give it a moment then kill
+            setTimeout(() => {
+              serverProcess.kill('SIGTERM');
+              resolve();
+            }, 500);
+          }
+        };
+
+        serverProcess.stderr?.on('data', checkOutput);
+      });
+
+      // The key assertions:
+      // 1. Server should log that it's connecting to remote sandbox (TCP mode)
+      if (!stderr.includes(`Connecting to remote sandbox server at ${host}:${port}`)) {
+        throw new Error(`Expected TCP connection log. Got: ${stderr}`);
+      }
+
+      // 2. Server should NOT log subprocess spawn (local mode)
+      if (stderr.includes('Starting sandbox gRPC server...')) {
+        throw new Error('Should NOT spawn local subprocess in TCP mode');
       }
     }),
   ];

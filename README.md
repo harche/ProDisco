@@ -28,18 +28,21 @@ ProDisco goes a step further: instead of exposing custom TypeScript modules, it 
 
 ### Add to Claude Code
 
-Add ProDisco to Claude Code with a single command:
+Add ProDisco to Claude Code:
 
 ```bash
-claude mcp add ProDisco --env KUBECONFIG="${HOME}/.kube/config" -- npx -y @prodisco/k8s-mcp
+# Set environment variables first (--env flag may not work reliably)
+export KUBECONFIG="${HOME}/.kube/config"
+
+# Then add the MCP server
+claude mcp add ProDisco -- npx -y @prodisco/k8s-mcp
 ```
 
 **With Prometheus (optional):**
 ```bash
-claude mcp add ProDisco \
-  --env KUBECONFIG="${HOME}/.kube/config" \
-  --env PROMETHEUS_URL="http://localhost:9090" \
-  -- npx -y @prodisco/k8s-mcp
+export KUBECONFIG="${HOME}/.kube/config"
+export PROMETHEUS_URL="http://localhost:9090"
+claude mcp add ProDisco -- npx -y @prodisco/k8s-mcp
 ```
 
 Remove if needed:
@@ -54,13 +57,48 @@ claude mcp remove ProDisco
 | `K8S_CONTEXT` | No | Kubernetes context (defaults to current context) |
 | `PROMETHEUS_URL` | No | Prometheus server URL for metrics queries |
 
-> **Important:** These environment variables must be set where the MCP server runs. The `runSandbox` tool executes code within the MCP server process, which needs access to your kubeconfig and/or Prometheus endpoint.
+> **Important:** Export environment variables before running `claude mcp add`. The `--env` flag may not reliably pass variables to the MCP server process.
 
 > **Tip:** If you're using a kind cluster for local testing, you can port-forward to Prometheus:
 > ```bash
 > kubectl port-forward -n monitoring svc/prometheus-server 9090:80
 > ```
 > Then set `PROMETHEUS_URL="http://localhost:9090"`
+
+### Container Isolation (Advanced)
+
+For stronger isolation, you can run the sandbox server in a Kubernetes cluster and connect to it via TCP instead of using the local subprocess.
+
+**1. Deploy the sandbox server to your cluster:**
+```bash
+# Build and load the image (for kind clusters)
+docker build -f packages/sandbox-server/Dockerfile -t prodisco/sandbox-server:latest .
+kind load docker-image prodisco/sandbox-server:latest
+
+# Deploy
+kubectl apply -f packages/sandbox-server/k8s/deployment.yaml
+
+# Port-forward to access locally
+kubectl -n prodisco port-forward service/sandbox-server 50051:50051
+```
+
+**2. Configure the MCP server to use TCP transport:**
+```bash
+export KUBECONFIG="${HOME}/.kube/config"
+export SANDBOX_USE_TCP=true
+export SANDBOX_TCP_HOST=localhost
+export SANDBOX_TCP_PORT=50051
+claude mcp add ProDisco -- npx -y @prodisco/k8s-mcp
+```
+
+**Sandbox transport environment variables:**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SANDBOX_USE_TCP` | `false` | Use TCP instead of local subprocess |
+| `SANDBOX_TCP_HOST` | `localhost` | Sandbox server host |
+| `SANDBOX_TCP_PORT` | `50051` | Sandbox server port |
+
+See [docs/grpc-sandbox-architecture.md](docs/grpc-sandbox-architecture.md) for full architecture details.
 
 ### Development Setup
 

@@ -824,6 +824,7 @@ class SearchToolsService {
    * Index a script file immediately into Orama.
    * Called by runSandbox after caching a new script to ensure
    * it's immediately searchable without waiting for the filesystem watcher.
+   * @deprecated Use indexCacheEntry instead for gRPC-based caching
    */
   async indexScriptImmediately(filePath: string): Promise<void> {
     if (!this.oramaDb) {
@@ -843,6 +844,55 @@ class SearchToolsService {
       this.indexedScriptPaths.add(filePath);
       logger.info(`Orama: Immediately indexed new script ${basename(filePath)}`);
     }
+  }
+
+  /**
+   * Index a cache entry from gRPC ExecuteResponse.
+   * This is the preferred method when cache is in a remote sandbox container.
+   */
+  async indexCacheEntry(entry: {
+    name: string;
+    description: string;
+    createdAtMs: number;
+    contentHash: string;
+  }): Promise<void> {
+    if (!this.oramaDb) {
+      // DB not initialized yet
+      return;
+    }
+
+    const entryId = `script:${entry.name}`;
+
+    // Skip if already indexed
+    if (this.indexedScriptPaths.has(entryId)) {
+      return;
+    }
+
+    // Build search tokens from description
+    const keywords = entry.description
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(word => word.length > 2)
+      .filter(word => !['the', 'and', 'for', 'from', 'with', 'this', 'that'].includes(word));
+
+    const searchTokens = [entry.description, ...keywords].join(' ');
+
+    const doc: OramaDocument = {
+      id: entryId,
+      documentType: 'script',
+      resourceType: '',
+      methodName: 'sandbox-script',
+      description: entry.description,
+      searchTokens,
+      action: 'script',
+      scope: 'script',
+      apiClass: 'CachedScript',
+      filePath: entry.name, // Use name as path since cache is remote
+    };
+
+    await insert(this.oramaDb, doc);
+    this.indexedScriptPaths.add(entryId);
+    logger.info(`Orama: Indexed cache entry ${entry.name}`);
   }
 
   /**

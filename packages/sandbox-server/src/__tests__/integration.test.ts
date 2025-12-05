@@ -4,9 +4,12 @@ import { existsSync, rmSync, unlinkSync } from 'node:fs';
 import { startServer } from '../server/index.js';
 import { SandboxClient } from '../client/index.js';
 
+// Generate unique ID for test isolation
+const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+
 describe('Integration Tests - Client/Server Communication', () => {
-  const testSocketPath = `/tmp/prodisco-sandbox-test-${Date.now()}.sock`;
-  const testCacheDir = `/tmp/prodisco-cache-integration-${Date.now()}`;
+  const testSocketPath = `/tmp/prodisco-sandbox-test-${uniqueId}.sock`;
+  const testCacheDir = `/tmp/prodisco-cache-integration-${uniqueId}`;
   let server: grpc.Server;
   let client: SandboxClient;
 
@@ -148,13 +151,15 @@ describe('Integration Tests - Client/Server Communication', () => {
   });
 
   describe('Caching', () => {
-    it('caches successful executions', async () => {
+    it('caches successful executions and returns CacheEntry', async () => {
       const code = `console.log("cache integration test ${Date.now()}")`;
       const result = await client.execute({ code });
 
       expect(result.success).toBe(true);
-      expect(result.cachedAs).toBeDefined();
-      expect(result.cachedAs).toMatch(/^script-.*\.ts$/);
+      expect(result.cached).toBeDefined();
+      expect(result.cached!.name).toMatch(/^script-.*\.ts$/);
+      expect(result.cached!.description).toBeDefined();
+      expect(result.cached!.contentHash).toBeDefined();
     });
 
     it('can execute cached scripts', async () => {
@@ -164,16 +169,17 @@ describe('Integration Tests - Client/Server Communication', () => {
       // First execution - gets cached
       const firstResult = await client.execute({ code });
       expect(firstResult.success).toBe(true);
-      expect(firstResult.cachedAs).toBeDefined();
+      expect(firstResult.cached).toBeDefined();
 
       // Execute from cache
       const cachedResult = await client.execute({
-        cached: firstResult.cachedAs!,
+        cached: firstResult.cached!.name,
       });
 
       expect(cachedResult.success).toBe(true);
       expect(cachedResult.output).toBe(uniqueValue);
-      expect(cachedResult.cachedAs).toBe(firstResult.cachedAs);
+      // When running from cache, cached is not returned (not a new cache)
+      expect(cachedResult.cached).toBeUndefined();
     });
 
     it('returns error for non-existent cached script', async () => {
@@ -193,9 +199,9 @@ describe('Integration Tests - Client/Server Communication', () => {
 
       expect(result1.success).toBe(true);
       expect(result2.success).toBe(true);
-      expect(result1.cachedAs).toBeDefined();
+      expect(result1.cached).toBeDefined();
       // Second execution of same code should not create new cache entry
-      expect(result2.cachedAs).toBeUndefined();
+      expect(result2.cached).toBeUndefined();
     });
   });
 
@@ -383,9 +389,12 @@ describe('Integration Tests - Client/Server Communication', () => {
   });
 });
 
+// Generate unique ID for SandboxClient tests
+const clientUniqueId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+
 describe('SandboxClient', () => {
-  const testSocketPath = `/tmp/prodisco-client-test-${Date.now()}.sock`;
-  const testCacheDir = `/tmp/prodisco-cache-client-${Date.now()}`;
+  const testSocketPath = `/tmp/prodisco-client-test-${clientUniqueId}.sock`;
+  const testCacheDir = `/tmp/prodisco-cache-client-${clientUniqueId}`;
   let server: grpc.Server;
 
   beforeAll(async () => {

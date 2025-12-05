@@ -21,7 +21,14 @@ type RunSandboxResult = {
   returnValue?: unknown;    // Return value from script (if any)
   error?: string;           // Error message if failed
   executionTime: number;    // Execution time in ms
-  cachedScript?: string;    // Name of cached script that was executed (if using cached mode)
+  cachedScript?: string;    // Name of cached script that was executed or newly cached
+  /** Full cache entry if newly cached (for immediate indexing) */
+  cached?: {
+    name: string;
+    description: string;
+    createdAtMs: number;
+    contentHash: string;
+  };
 };
 
 export const runSandboxTool: ToolDefinition<RunSandboxResult, typeof RunSandboxInputSchema> = {
@@ -48,13 +55,16 @@ export const runSandboxTool: ToolDefinition<RunSandboxResult, typeof RunSandboxI
         timeoutMs: timeout,
       });
 
-      // Index newly cached scripts for searchability
-      if (result.success && result.cachedAs && !cached) {
-        // The sandbox server cached it, now index it for search
-        const cacheDir = process.env.SCRIPTS_CACHE_DIR || '/tmp/prodisco-scripts';
-        const filepath = `${cacheDir}/${result.cachedAs}`;
+      // Index newly cached scripts for searchability using CacheEntry metadata
+      if (result.success && result.cached) {
+        // The sandbox server cached it and returned full entry for immediate indexing
         try {
-          await searchToolsService.indexScriptImmediately(filepath);
+          await searchToolsService.indexCacheEntry({
+            name: result.cached.name,
+            description: result.cached.description,
+            createdAtMs: result.cached.createdAtMs,
+            contentHash: result.cached.contentHash,
+          });
         } catch {
           // Silently ignore indexing errors
         }
@@ -66,7 +76,8 @@ export const runSandboxTool: ToolDefinition<RunSandboxResult, typeof RunSandboxI
         returnValue: undefined,
         error: result.error,
         executionTime: result.executionTimeMs,
-        cachedScript: result.cachedAs,
+        cachedScript: result.cached?.name ?? (cached ? cached : undefined),
+        cached: result.cached,
       };
 
     } catch (error) {

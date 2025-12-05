@@ -1,0 +1,612 @@
+/**
+ * Cluster Integration Tests
+ *
+ * These tests require a running Kubernetes cluster and Prometheus.
+ * They are skipped if no cluster is available.
+ *
+ * To run these tests:
+ * 1. Ensure kubectl is configured with a valid context
+ * 2. Ensure Prometheus is running (port-forward to localhost:9090)
+ * 3. Run: npm test -- --grep "Cluster Integration"
+ */
+import { describe, expect, it, beforeAll, afterAll } from 'vitest';
+import * as grpc from '@grpc/grpc-js';
+import { existsSync, rmSync, unlinkSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { startServer } from '../server/index.js';
+import { SandboxClient } from '../client/index.js';
+
+// Check if cluster is available
+function isClusterAvailable(): boolean {
+  try {
+    execSync('kubectl cluster-info', { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Check if Prometheus is available
+function isPrometheusAvailable(): boolean {
+  try {
+    execSync('curl -s http://localhost:9090/-/healthy', { stdio: 'pipe' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const clusterAvailable = isClusterAvailable();
+const prometheusAvailable = isPrometheusAvailable();
+
+// Generate unique IDs for test isolation (avoid collision between src and dist tests)
+const clusterTestId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+
+describe.skipIf(!clusterAvailable)('Cluster Integration Tests', () => {
+  const testSocketPath = `/tmp/prodisco-cluster-test-${clusterTestId}.sock`;
+  const testCacheDir = `/tmp/prodisco-cache-cluster-${clusterTestId}`;
+  let server: grpc.Server;
+  let client: SandboxClient;
+
+  beforeAll(async () => {
+    // Start the server with Prometheus URL if available
+    server = await startServer({
+      socketPath: testSocketPath,
+      cacheDir: testCacheDir,
+      prometheusUrl: prometheusAvailable ? 'http://localhost:9090' : undefined,
+    });
+
+    client = new SandboxClient({ socketPath: testSocketPath });
+
+    const healthy = await client.waitForHealthy(10000);
+    expect(healthy).toBe(true);
+  });
+
+  afterAll(async () => {
+    client.close();
+
+    await new Promise<void>((resolve) => {
+      server.tryShutdown((err) => {
+        if (err) {
+          server.forceShutdown();
+        }
+        resolve();
+      });
+    });
+
+    if (existsSync(testSocketPath)) {
+      try {
+        unlinkSync(testSocketPath);
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (existsSync(testCacheDir)) {
+      rmSync(testCacheDir, { recursive: true });
+    }
+  });
+
+  describe('Kubernetes API - Namespaces', () => {
+    it('lists namespaces', async () => {
+      const result = await client.execute({
+        code: `
+          const api = kc.makeApiClient(k8s.CoreV1Api);
+          const response = await api.listNamespace();
+          const names = response.items.map(ns => ns.metadata?.name).filter(Boolean);
+          console.log(JSON.stringify(names));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const namespaces = JSON.parse(result.output);
+      expect(Array.isArray(namespaces)).toBe(true);
+      expect(namespaces).toContain('default');
+      expect(namespaces).toContain('kube-system');
+    });
+
+    it('gets a specific namespace', async () => {
+      const result = await client.execute({
+        code: `
+          const api = kc.makeApiClient(k8s.CoreV1Api);
+          const response = await api.readNamespace({ name: 'default' });
+          console.log(JSON.stringify({
+            name: response.metadata?.name,
+            status: response.status?.phase,
+          }));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const namespace = JSON.parse(result.output);
+      expect(namespace.name).toBe('default');
+      expect(namespace.status).toBe('Active');
+    });
+  });
+
+  describe('Kubernetes API - Pods', () => {
+    it('lists pods in kube-system', async () => {
+      const result = await client.execute({
+        code: `
+          const api = kc.makeApiClient(k8s.CoreV1Api);
+          const response = await api.listNamespacedPod({ namespace: 'kube-system' });
+          const pods = response.items.map(pod => ({
+            name: pod.metadata?.name,
+            status: pod.status?.phase,
+          }));
+          console.log(JSON.stringify(pods));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const pods = JSON.parse(result.output);
+      expect(Array.isArray(pods)).toBe(true);
+      expect(pods.length).toBeGreaterThan(0);
+      // All pods should have a status
+      pods.forEach((pod: { name: string; status: string }) => {
+        expect(pod.name).toBeDefined();
+        expect(pod.status).toBeDefined();
+      });
+    });
+
+    it('lists pods across all namespaces', async () => {
+      const result = await client.execute({
+        code: `
+          const api = kc.makeApiClient(k8s.CoreV1Api);
+          const response = await api.listPodForAllNamespaces();
+          console.log(response.items.length);
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const podCount = parseInt(result.output, 10);
+      expect(podCount).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Kubernetes API - Nodes', () => {
+    it('lists cluster nodes', async () => {
+      const result = await client.execute({
+        code: `
+          const api = kc.makeApiClient(k8s.CoreV1Api);
+          const response = await api.listNode();
+          const nodes = response.items.map(node => ({
+            name: node.metadata?.name,
+            ready: node.status?.conditions?.find(c => c.type === 'Ready')?.status === 'True',
+          }));
+          console.log(JSON.stringify(nodes));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const nodes = JSON.parse(result.output);
+      expect(Array.isArray(nodes)).toBe(true);
+      expect(nodes.length).toBeGreaterThan(0);
+      // At least one node should be ready
+      expect(nodes.some((n: { ready: boolean }) => n.ready)).toBe(true);
+    });
+
+    it('gets node resources', async () => {
+      const result = await client.execute({
+        code: `
+          const api = kc.makeApiClient(k8s.CoreV1Api);
+          const response = await api.listNode();
+          const node = response.items[0];
+          const resources = {
+            cpu: node.status?.capacity?.cpu,
+            memory: node.status?.capacity?.memory,
+          };
+          console.log(JSON.stringify(resources));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const resources = JSON.parse(result.output);
+      expect(resources.cpu).toBeDefined();
+      expect(resources.memory).toBeDefined();
+    });
+  });
+
+  describe('Kubernetes API - Services', () => {
+    it('lists services in default namespace', async () => {
+      const result = await client.execute({
+        code: `
+          const api = kc.makeApiClient(k8s.CoreV1Api);
+          const response = await api.listNamespacedService({ namespace: 'default' });
+          const services = response.items.map(svc => ({
+            name: svc.metadata?.name,
+            type: svc.spec?.type,
+            clusterIP: svc.spec?.clusterIP,
+          }));
+          console.log(JSON.stringify(services));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const services = JSON.parse(result.output);
+      expect(Array.isArray(services)).toBe(true);
+      // kubernetes service should always exist in default namespace
+      expect(services.some((s: { name: string }) => s.name === 'kubernetes')).toBe(true);
+    });
+  });
+
+  describe('Kubernetes API - Deployments', () => {
+    it('lists deployments in kube-system', async () => {
+      const result = await client.execute({
+        code: `
+          const api = kc.makeApiClient(k8s.AppsV1Api);
+          const response = await api.listNamespacedDeployment({ namespace: 'kube-system' });
+          const deployments = response.items.map(dep => ({
+            name: dep.metadata?.name,
+            replicas: dep.spec?.replicas,
+            available: dep.status?.availableReplicas,
+          }));
+          console.log(JSON.stringify(deployments));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const deployments = JSON.parse(result.output);
+      expect(Array.isArray(deployments)).toBe(true);
+      // coredns deployment should exist in kube-system
+      expect(deployments.some((d: { name: string }) => d.name === 'coredns')).toBe(true);
+    });
+  });
+
+  describe('Kubernetes API - ConfigMaps', () => {
+    it('lists configmaps in kube-system', async () => {
+      const result = await client.execute({
+        code: `
+          const api = kc.makeApiClient(k8s.CoreV1Api);
+          const response = await api.listNamespacedConfigMap({ namespace: 'kube-system' });
+          const configmaps = response.items.map(cm => cm.metadata?.name).filter(Boolean);
+          console.log(JSON.stringify(configmaps));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const configmaps = JSON.parse(result.output);
+      expect(Array.isArray(configmaps)).toBe(true);
+      expect(configmaps.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Kubernetes API - Events', () => {
+    it('lists recent events', async () => {
+      const result = await client.execute({
+        code: `
+          const api = kc.makeApiClient(k8s.CoreV1Api);
+          const response = await api.listEventForAllNamespaces({ limit: 10 });
+          const events = response.items.map(event => ({
+            type: event.type,
+            reason: event.reason,
+            message: event.message?.substring(0, 100),
+          }));
+          console.log(JSON.stringify(events));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const events = JSON.parse(result.output);
+      expect(Array.isArray(events)).toBe(true);
+    });
+  });
+
+  describe('Kubernetes Context', () => {
+    it('returns current context in health check', async () => {
+      const health = await client.healthCheck();
+      expect(health.healthy).toBe(true);
+      expect(health.kubernetesContext).toBeDefined();
+      expect(typeof health.kubernetesContext).toBe('string');
+    });
+
+    it('can access current context from sandbox', async () => {
+      const result = await client.execute({
+        code: `
+          const context = kc.getCurrentContext();
+          console.log(context);
+        `,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.output.length).toBeGreaterThan(0);
+    });
+  });
+});
+
+const promTestId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+
+describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integration Tests', () => {
+  const testSocketPath = `/tmp/prodisco-prom-test-${promTestId}.sock`;
+  const testCacheDir = `/tmp/prodisco-cache-prom-${promTestId}`;
+  let server: grpc.Server;
+  let client: SandboxClient;
+
+  beforeAll(async () => {
+    server = await startServer({
+      socketPath: testSocketPath,
+      cacheDir: testCacheDir,
+      prometheusUrl: 'http://localhost:9090',
+    });
+
+    client = new SandboxClient({ socketPath: testSocketPath });
+
+    const healthy = await client.waitForHealthy(10000);
+    expect(healthy).toBe(true);
+  });
+
+  afterAll(async () => {
+    client.close();
+
+    await new Promise<void>((resolve) => {
+      server.tryShutdown((err) => {
+        if (err) {
+          server.forceShutdown();
+        }
+        resolve();
+      });
+    });
+
+    if (existsSync(testSocketPath)) {
+      try {
+        unlinkSync(testSocketPath);
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (existsSync(testCacheDir)) {
+      rmSync(testCacheDir, { recursive: true });
+    }
+  });
+
+  describe('Prometheus Queries', () => {
+    it('queries up metric', async () => {
+      const result = await client.execute({
+        code: `
+          const prom = require('prometheus-query');
+          const driver = new prom.PrometheusDriver({
+            endpoint: 'http://localhost:9090',
+          });
+          const response = await driver.instantQuery('up');
+          console.log(JSON.stringify({
+            resultType: response.resultType,
+            resultCount: response.result.length,
+          }));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const data = JSON.parse(result.output);
+      expect(data.resultType).toBe('vector');
+      expect(data.resultCount).toBeGreaterThan(0);
+    });
+
+    it('queries container metrics', async () => {
+      const result = await client.execute({
+        code: `
+          const prom = require('prometheus-query');
+          const driver = new prom.PrometheusDriver({
+            endpoint: 'http://localhost:9090',
+          });
+          const response = await driver.instantQuery('container_cpu_usage_seconds_total');
+          console.log(JSON.stringify({
+            resultType: response.resultType,
+            hasResults: response.result.length > 0,
+          }));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const data = JSON.parse(result.output);
+      expect(data.resultType).toBe('vector');
+    });
+
+    it('queries kube-state-metrics', async () => {
+      const result = await client.execute({
+        code: `
+          const prom = require('prometheus-query');
+          const driver = new prom.PrometheusDriver({
+            endpoint: 'http://localhost:9090',
+          });
+          const response = await driver.instantQuery('kube_pod_info');
+          console.log(JSON.stringify({
+            resultType: response.resultType,
+            podCount: response.result.length,
+          }));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const data = JSON.parse(result.output);
+      expect(data.resultType).toBe('vector');
+      expect(data.podCount).toBeGreaterThan(0);
+    });
+
+    it('performs range query', async () => {
+      const result = await client.execute({
+        code: `
+          const prom = require('prometheus-query');
+          const driver = new prom.PrometheusDriver({
+            endpoint: 'http://localhost:9090',
+          });
+          const end = new Date();
+          const start = new Date(end.getTime() - 5 * 60 * 1000); // 5 minutes ago
+          const response = await driver.rangeQuery('up', start, end, 60);
+          console.log(JSON.stringify({
+            resultType: response.resultType,
+            seriesCount: response.result.length,
+          }));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const data = JSON.parse(result.output);
+      expect(data.resultType).toBe('matrix');
+      expect(data.seriesCount).toBeGreaterThan(0);
+    });
+
+    it('queries node metrics', async () => {
+      const result = await client.execute({
+        code: `
+          const prom = require('prometheus-query');
+          const driver = new prom.PrometheusDriver({
+            endpoint: 'http://localhost:9090',
+          });
+          const response = await driver.instantQuery('node_memory_MemTotal_bytes');
+          const nodes = response.result.map(r => ({
+            instance: r.metric.labels.instance,
+            memoryBytes: parseFloat(r.value.value),
+          }));
+          console.log(JSON.stringify(nodes));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const nodes = JSON.parse(result.output);
+      expect(Array.isArray(nodes)).toBe(true);
+    });
+  });
+
+  describe('Combined K8s + Prometheus', () => {
+    it('correlates pod info with metrics', async () => {
+      const result = await client.execute({
+        code: `
+          // Get pods from Kubernetes
+          const api = kc.makeApiClient(k8s.CoreV1Api);
+          const podsResponse = await api.listNamespacedPod({ namespace: 'kube-system', limit: 5 });
+          const podNames = podsResponse.items.map(p => p.metadata?.name).filter(Boolean);
+
+          // Query Prometheus for pod metrics
+          const prom = require('prometheus-query');
+          const driver = new prom.PrometheusDriver({
+            endpoint: 'http://localhost:9090',
+          });
+          const response = await driver.instantQuery('kube_pod_status_phase');
+
+          console.log(JSON.stringify({
+            k8sPodCount: podNames.length,
+            prometheusMetricCount: response.result.length,
+          }));
+        `,
+        timeoutMs: 30000,
+      });
+
+      expect(result.success).toBe(true);
+      const data = JSON.parse(result.output);
+      expect(data.k8sPodCount).toBeGreaterThan(0);
+      expect(data.prometheusMetricCount).toBeGreaterThan(0);
+    });
+  });
+});
+
+const streamTestId = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+
+describe.skipIf(!clusterAvailable)('Streaming with Real K8s Calls', () => {
+  const testSocketPath = `/tmp/prodisco-stream-k8s-${streamTestId}.sock`;
+  const testCacheDir = `/tmp/prodisco-cache-stream-k8s-${streamTestId}`;
+  let server: grpc.Server;
+  let client: SandboxClient;
+
+  beforeAll(async () => {
+    server = await startServer({
+      socketPath: testSocketPath,
+      cacheDir: testCacheDir,
+    });
+
+    client = new SandboxClient({ socketPath: testSocketPath });
+
+    const healthy = await client.waitForHealthy(10000);
+    expect(healthy).toBe(true);
+  });
+
+  afterAll(async () => {
+    client.close();
+
+    await new Promise<void>((resolve) => {
+      server.tryShutdown((err) => {
+        if (err) {
+          server.forceShutdown();
+        }
+        resolve();
+      });
+    });
+
+    if (existsSync(testSocketPath)) {
+      try {
+        unlinkSync(testSocketPath);
+      } catch {
+        // Ignore
+      }
+    }
+
+    if (existsSync(testCacheDir)) {
+      rmSync(testCacheDir, { recursive: true });
+    }
+  });
+
+  it('streams output while listing pods', async () => {
+    const code = `
+      const api = kc.makeApiClient(k8s.CoreV1Api);
+      console.log("Fetching pods...");
+      const response = await api.listPodForAllNamespaces();
+      console.log("Found " + response.items.length + " pods");
+      for (const pod of response.items.slice(0, 3)) {
+        console.log("Pod: " + pod.metadata?.name);
+      }
+      console.log("Done!");
+    `;
+
+    const chunks: string[] = [];
+    let result: any = null;
+
+    for await (const chunk of client.executeStream({ code, timeoutMs: 30000 })) {
+      if (chunk.type === 'output') {
+        chunks.push(chunk.data as string);
+      } else if (chunk.type === 'result') {
+        result = chunk.data;
+      }
+    }
+
+    expect(chunks.length).toBeGreaterThan(0);
+    expect(chunks.join('')).toContain('Fetching pods');
+    expect(chunks.join('')).toContain('Found');
+    expect(chunks.join('')).toContain('Done!');
+    expect(result?.success).toBe(true);
+  });
+
+  it('handles async execution with real K8s calls', async () => {
+    const { executionId, state } = await client.executeAsync({
+      code: `
+        const api = kc.makeApiClient(k8s.CoreV1Api);
+        const response = await api.listNamespace();
+        console.log("Namespaces: " + response.items.length);
+      `,
+      timeoutMs: 30000,
+    });
+
+    expect(executionId).toBeDefined();
+
+    // Wait for completion
+    const status = await client.waitForExecution(executionId);
+
+    expect(status.state).toBe(3); // COMPLETED
+    expect(status.result?.success).toBe(true);
+    expect(status.output).toContain('Namespaces:');
+  });
+});
