@@ -1,0 +1,162 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prodisco
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sandbox-server
+rules:
+  # Read access to most resources for querying
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - configmaps
+      - secrets
+      - namespaces
+      - nodes
+      - persistentvolumes
+      - persistentvolumeclaims
+      - events
+      - serviceaccounts
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - daemonsets
+      - replicasets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources:
+      - storageclasses
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sandbox-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sandbox-server
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-server
+    namespace: prodisco
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+  labels:
+    app: sandbox-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandbox-server
+  template:
+    metadata:
+      labels:
+        app: sandbox-server
+    spec:
+      serviceAccountName: sandbox-server
+      containers:
+        - name: sandbox
+          image: prodisco/sandbox-server:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 50051
+              name: grpc
+              protocol: TCP
+          env:
+            - name: SANDBOX_USE_TCP
+              value: "true"
+            - name: SANDBOX_TCP_HOST
+              value: "0.0.0.0"
+            - name: SANDBOX_TCP_PORT
+              value: "50051"
+            - name: SCRIPTS_CACHE_DIR
+              value: "/tmp/prodisco-scripts"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const grpc = require('@grpc/grpc-js');
+                  const client = new grpc.Client('localhost:50051', grpc.credentials.createInsecure());
+                  client.waitForReady(Date.now() + 1000, (err) => process.exit(err ? 1 : 0));
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - |
+                  const grpc = require('@grpc/grpc-js');
+                  const client = new grpc.Client('localhost:50051', grpc.credentials.createInsecure());
+                  client.waitForReady(Date.now() + 1000, (err) => process.exit(err ? 1 : 0));
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          volumeMounts:
+            - name: scripts-cache
+              mountPath: /tmp/prodisco-scripts
+      volumes:
+        - name: scripts-cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+  labels:
+    app: sandbox-server
+spec:
+  type: ClusterIP
+  ports:
+    - port: 50051
+      targetPort: 50051
+      protocol: TCP
+      name: grpc
+  selector:
+    app: sandbox-server
