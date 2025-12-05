@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fs from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { logger } from './util/logger.js';
@@ -12,6 +13,10 @@ const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version?: string };
 import { searchToolsTool, warmupSearchIndex, shutdownSearchIndex } from './tools/kubernetes/searchTools.js';
 import { runSandboxTool } from './tools/kubernetes/runSandbox.js';
+import { getSandboxClient, closeSandboxClient } from '@prodisco/sandbox-server/client';
+
+// Track the sandbox server subprocess
+let sandboxProcess: ChildProcess | null = null;
 import {
   PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH,
   listGeneratedFiles,
@@ -219,6 +224,70 @@ server.registerTool(
   },
 );
 
+/**
+ * Start the gRPC sandbox server as a subprocess.
+ */
+async function startSandboxServer(): Promise<void> {
+  const sandboxServerPath = path.resolve(__dirname, '../packages/sandbox-server/dist/server/index.js');
+  const socketPath = process.env.SANDBOX_SOCKET_PATH || '/tmp/prodisco-sandbox.sock';
+
+  logger.info('Starting sandbox gRPC server...');
+
+  sandboxProcess = spawn('node', [sandboxServerPath], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      SANDBOX_SOCKET_PATH: socketPath,
+      SCRIPTS_CACHE_DIR,
+    },
+  });
+
+  // Log sandbox server output
+  sandboxProcess.stdout?.on('data', (data: Buffer) => {
+    logger.info(`[sandbox] ${data.toString().trim()}`);
+  });
+
+  sandboxProcess.stderr?.on('data', (data: Buffer) => {
+    logger.error(`[sandbox] ${data.toString().trim()}`);
+  });
+
+  sandboxProcess.on('error', (error) => {
+    logger.error('Sandbox server process error', error);
+  });
+
+  sandboxProcess.on('exit', (code, signal) => {
+    if (code !== 0 && code !== null) {
+      logger.error(`Sandbox server exited with code ${code}`);
+    } else if (signal) {
+      logger.info(`Sandbox server terminated by signal ${signal}`);
+    }
+    sandboxProcess = null;
+  });
+
+  // Wait for the sandbox server to become healthy
+  const client = getSandboxClient({ socketPath });
+  const healthy = await client.waitForHealthy(10000);
+
+  if (!healthy) {
+    throw new Error('Sandbox server failed to start within timeout');
+  }
+
+  logger.info('Sandbox gRPC server is ready');
+}
+
+/**
+ * Stop the sandbox server subprocess.
+ */
+function stopSandboxServer(): void {
+  closeSandboxClient();
+
+  if (sandboxProcess) {
+    logger.info('Stopping sandbox server...');
+    sandboxProcess.kill('SIGTERM');
+    sandboxProcess = null;
+  }
+}
+
 async function main() {
   // Parse command line arguments
   const args = process.argv.slice(2);
@@ -236,6 +305,13 @@ async function main() {
     }
   }
 
+  // Ensure scripts cache directory exists (server-controlled location)
+  await fs.promises.mkdir(SCRIPTS_CACHE_DIR, { recursive: true });
+  logger.info(`Scripts cache directory: ${SCRIPTS_CACHE_DIR}`);
+
+  // Start the sandbox gRPC server
+  await startSandboxServer();
+
   // Probe cluster connectivity before starting the server
   // This ensures we fail fast if the cluster is not reachable
   logger.info('Probing Kubernetes cluster connectivity...');
@@ -248,10 +324,6 @@ async function main() {
     throw new Error(`Kubernetes cluster is not accessible: ${message}`);
   }
 
-  // Ensure scripts cache directory exists (server-controlled location)
-  await fs.promises.mkdir(SCRIPTS_CACHE_DIR, { recursive: true });
-  logger.info(`Scripts cache directory: ${SCRIPTS_CACHE_DIR}`);
-
   // Pre-warm the Orama search index to avoid delay on first search
   await warmupSearchIndex();
 
@@ -262,11 +334,12 @@ async function main() {
 
 /**
  * Graceful shutdown handler.
- * Stops the script watcher and cleans up resources.
+ * Stops the sandbox server, script watcher, and cleans up resources.
  */
 async function shutdown(signal: string): Promise<void> {
   logger.info(`Received ${signal}, shutting down gracefully...`);
   try {
+    stopSandboxServer();
     await shutdownSearchIndex();
     logger.info('Shutdown complete');
     process.exit(0);

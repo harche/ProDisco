@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+package prodisco.sandbox.v1;
+
+// SandboxService handles code execution in a secure sandbox environment.
+// The implementation determines the runtime (TypeScript, Go, etc.).
+service SandboxService {
+  // Execute runs code in the sandbox
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+  // HealthCheck verifies the sandbox server is running and properly configured
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+message ExecuteRequest {
+  oneof source {
+    // Code to execute
+    string code = 1;
+    // Name of a cached execution to run
+    string cached = 2;
+  }
+
+  // Execution timeout in milliseconds
+  optional int32 timeout_ms = 3;
+}
+
+message ExecuteResponse {
+  // Whether execution completed successfully
+  bool success = 1;
+
+  // Captured output (stdout/console)
+  string output = 2;
+
+  // Error message if execution failed
+  optional string error = 3;
+
+  // Execution time in milliseconds
+  int64 execution_time_ms = 4;
+
+  // Name assigned if this execution was cached for future use
+  optional string cached_as = 5;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  // Whether the server is healthy
+  bool healthy = 1;
+
+  // Current Kubernetes context name (if applicable)
+  string kubernetes_context = 2;
+}

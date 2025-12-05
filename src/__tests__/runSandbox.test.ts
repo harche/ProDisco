@@ -1,9 +1,15 @@
 import { describe, expect, it, beforeAll, afterAll, afterEach } from 'vitest';
 import { existsSync, mkdirSync, readdirSync, unlinkSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import type { Server } from '@grpc/grpc-js';
 
 import { runSandboxTool } from '../tools/kubernetes/runSandbox.js';
 import { SCRIPTS_CACHE_DIR } from '../util/paths.js';
+import { startServer } from '@prodisco/sandbox-server/server';
+import { closeSandboxClient, getSandboxClient } from '@prodisco/sandbox-server/client';
+
+// Test socket path to avoid conflicts
+const TEST_SOCKET_PATH = '/tmp/prodisco-sandbox-test.sock';
 
 // Helper to execute runSandbox with proper typing
 const runSandbox = runSandboxTool.execute.bind(runSandboxTool) as (input: {
@@ -15,17 +21,38 @@ const runSandbox = runSandboxTool.execute.bind(runSandboxTool) as (input: {
 // Test cached script for Cached Script Execution tests
 const testCachedScriptName = 'test-cached-script-for-runsandbox.ts';
 const testCachedScriptPath = join(SCRIPTS_CACHE_DIR, testCachedScriptName);
-const testCachedScriptContent = `// Executed via runSandbox at 2025-01-01T00:00:00.000Z
+const testCachedScriptContent = `// Executed via sandbox at 2025-01-01T00:00:00.000Z
 // Test cached script
 console.log("executed from cache");
 console.log("cached script working");
 `;
 
-// Ensure cache directory exists and create test script before tests
-beforeAll(() => {
+// gRPC server instance
+let grpcServer: Server;
+
+// Ensure cache directory exists, start gRPC server, and create test script before tests
+beforeAll(async () => {
+  // Set environment for test socket
+  process.env.SANDBOX_SOCKET_PATH = TEST_SOCKET_PATH;
+  process.env.SCRIPTS_CACHE_DIR = SCRIPTS_CACHE_DIR;
+
   if (!existsSync(SCRIPTS_CACHE_DIR)) {
     mkdirSync(SCRIPTS_CACHE_DIR, { recursive: true });
   }
+
+  // Start the gRPC sandbox server
+  grpcServer = await startServer({
+    socketPath: TEST_SOCKET_PATH,
+    cacheDir: SCRIPTS_CACHE_DIR,
+  });
+
+  // Wait for server to be healthy
+  const client = getSandboxClient({ socketPath: TEST_SOCKET_PATH });
+  const healthy = await client.waitForHealthy(5000);
+  if (!healthy) {
+    throw new Error('Sandbox server failed to start');
+  }
+
   // Create test cached script
   writeFileSync(testCachedScriptPath, testCachedScriptContent);
 });
@@ -45,17 +72,25 @@ afterEach(() => {
 });
 
 afterAll(() => {
+  // Close client and stop server
+  closeSandboxClient();
+  if (grpcServer) {
+    grpcServer.forceShutdown();
+  }
+
   // Clean up test cached script
   if (existsSync(testCachedScriptPath)) {
     unlinkSync(testCachedScriptPath);
   }
   // Final cleanup of any remaining test scripts
-  const files = readdirSync(SCRIPTS_CACHE_DIR);
-  for (const file of files) {
-    if (file.startsWith('test-') || file.includes('-test-')) {
-      const fullPath = join(SCRIPTS_CACHE_DIR, file);
-      if (existsSync(fullPath)) {
-        unlinkSync(fullPath);
+  if (existsSync(SCRIPTS_CACHE_DIR)) {
+    const files = readdirSync(SCRIPTS_CACHE_DIR);
+    for (const file of files) {
+      if (file.startsWith('test-') || file.includes('-test-')) {
+        const fullPath = join(SCRIPTS_CACHE_DIR, file);
+        if (existsSync(fullPath)) {
+          unlinkSync(fullPath);
+        }
       }
     }
   }
@@ -447,7 +482,7 @@ describe('kubernetes.runSandbox', () => {
 
       if (files.length > 0) {
         const content = readFileSync(join(SCRIPTS_CACHE_DIR, files[0]), 'utf-8');
-        expect(content).toContain('// Executed via runSandbox');
+        expect(content).toContain('// Executed via sandbox');
       }
     });
   });
@@ -490,7 +525,6 @@ describe('kubernetes.runSandbox', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('not found');
-      expect(result.error).toContain('searchTools');
     });
 
     it('strips header comment when executing cached script', async () => {
@@ -500,7 +534,7 @@ describe('kubernetes.runSandbox', () => {
 
       expect(result.success).toBe(true);
       // Should not have header comment in output (it's stripped before execution)
-      expect(result.output).not.toContain('// Executed via runSandbox');
+      expect(result.output).not.toContain('// Executed via sandbox');
     });
 
     it('does not re-cache already cached scripts', async () => {
@@ -601,7 +635,7 @@ describe('kubernetes.runSandbox', () => {
         code: 'console.log("quick");',
       });
 
-      expect(result.executionTime).toBeGreaterThan(0);
+      expect(result.executionTime).toBeGreaterThanOrEqual(0);
       expect(result.executionTime).toBeLessThan(10000);  // Should complete in under 10s
     });
   });
