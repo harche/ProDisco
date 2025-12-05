@@ -448,24 +448,28 @@ describe('kubernetes.runSandbox', () => {
     it('deduplicates scripts with identical content', async () => {
       // Use unique code to avoid collisions with other tests or runs
       const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const uniqueMarker = `DEDUP_TEST_${uniqueId}`;
       const code = `
-        // Deduplication test script ${uniqueId}
-        console.log("same content ${uniqueId}");
+        // Deduplication test script ${uniqueMarker}
+        console.log("same content ${uniqueMarker}");
       `;
 
       // Execute same code twice
       await runSandbox({ code });
-      await new Promise(resolve => setTimeout(resolve, 200));
-
-      const afterFirstCount = readdirSync(SCRIPTS_CACHE_DIR).length;
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
       await runSandbox({ code });
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
-      const afterSecondCount = readdirSync(SCRIPTS_CACHE_DIR).length;
+      // Count files containing our unique marker - should be exactly 1
+      const filesWithMarker = readdirSync(SCRIPTS_CACHE_DIR)
+        .filter((f) => f.endsWith('.ts'))
+        .filter((f) => {
+          const content = readFileSync(join(SCRIPTS_CACHE_DIR, f), 'utf-8');
+          return content.includes(uniqueMarker);
+        });
 
-      // Should not create a duplicate
-      expect(afterSecondCount).toBe(afterFirstCount);
+      expect(filesWithMarker.length).toBe(1);
     });
 
     it('adds header comment to cached scripts', async () => {

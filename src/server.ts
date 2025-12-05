@@ -225,9 +225,45 @@ server.registerTool(
 );
 
 /**
- * Start the gRPC sandbox server as a subprocess.
+ * Check if TCP transport is configured via environment variables.
+ */
+function isUsingTcpTransport(): boolean {
+  const envUseTcp = process.env.SANDBOX_USE_TCP;
+  if (envUseTcp === 'true' || envUseTcp === '1') {
+    return true;
+  }
+  // If TCP host or port is specified, assume TCP mode
+  if (process.env.SANDBOX_TCP_HOST || process.env.SANDBOX_TCP_PORT) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Start the gRPC sandbox server.
+ * In TCP mode, connects to an existing remote sandbox server.
+ * In local mode (default), spawns a subprocess.
  */
 async function startSandboxServer(): Promise<void> {
+  // If using TCP transport, connect to remote sandbox server instead of spawning subprocess
+  if (isUsingTcpTransport()) {
+    const host = process.env.SANDBOX_TCP_HOST || 'localhost';
+    const port = process.env.SANDBOX_TCP_PORT || '50051';
+    logger.info(`Connecting to remote sandbox server at ${host}:${port}...`);
+
+    const client = getSandboxClient(); // Will use TCP env vars automatically
+    const healthy = await client.waitForHealthy(10000);
+
+    if (!healthy) {
+      throw new Error(`Remote sandbox server at ${host}:${port} is not reachable`);
+    }
+
+    const healthStatus = await client.healthCheck();
+    logger.info(`Remote sandbox server is ready (context: ${healthStatus.kubernetesContext})`);
+    return;
+  }
+
+  // Local mode: spawn subprocess
   const sandboxServerPath = path.resolve(__dirname, '../packages/sandbox-server/dist/server/index.js');
   const socketPath = process.env.SANDBOX_SOCKET_PATH || '/tmp/prodisco-sandbox.sock';
 
@@ -276,11 +312,12 @@ async function startSandboxServer(): Promise<void> {
 }
 
 /**
- * Stop the sandbox server subprocess.
+ * Stop the sandbox server subprocess (only in local mode).
  */
 function stopSandboxServer(): void {
   closeSandboxClient();
 
+  // Only stop subprocess if running in local mode
   if (sandboxProcess) {
     logger.info('Stopping sandbox server...');
     sandboxProcess.kill('SIGTERM');

@@ -20,11 +20,16 @@ The sandbox system follows a client-server model inspired by Kubernetes' kubelet
                                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Sandbox gRPC Server                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────┐ │
-│  │ Executor     │  │ CacheManager │  │ SandboxService        │ │
-│  │ (VM + esbuild│  │ (dedup,      │  │ (Execute, HealthCheck)│ │
-│  │  transform)  │  │  persist)    │  │                       │ │
-│  └──────────────┘  └──────────────┘  └───────────────────────┘ │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ SandboxService                                           │   │
+│  │ (Execute, ExecuteStream, ExecuteAsync, Cancel, List...)  │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                              │                                  │
+│  ┌──────────────┐  ┌────────┴───────┐  ┌──────────────────┐   │
+│  │ Executor     │  │ Execution      │  │ CacheManager     │   │
+│  │ (VM + esbuild│  │ Registry       │  │ (dedup, persist) │   │
+│  │  transform)  │  │ (state, output)│  │                  │   │
+│  └──────────────┘  └────────────────┘  └──────────────────┘   │
 │                                                                 │
 │  Pre-configured: k8s client, KubeConfig, prometheus-query      │
 └─────────────────────────────────────────────────────────────────┘
@@ -76,9 +81,17 @@ packages/sandbox-server/
 │   │   ├── index.ts               # Server entry point
 │   │   ├── sandbox-service.ts     # gRPC service implementation
 │   │   ├── executor.ts            # VM execution logic
+│   │   ├── execution-registry.ts  # Async execution state management
 │   │   └── cache-manager.ts       # Script caching with deduplication
-│   └── client/
-│       └── index.ts               # gRPC client wrapper
+│   ├── client/
+│   │   └── index.ts               # gRPC client wrapper
+│   └── __tests__/                 # Test files
+│       ├── integration.test.ts
+│       ├── streaming-execution.test.ts
+│       ├── async-execution.test.ts
+│       ├── execution-registry.test.ts
+│       ├── cache-manager.test.ts
+│       └── cluster-integration.test.ts
 ├── package.json
 ├── tsconfig.json
 └── buf.gen.yaml                   # Proto code generation config
@@ -94,10 +107,38 @@ syntax = "proto3";
 package prodisco.sandbox.v1;
 
 service SandboxService {
+  // Synchronous execution (blocks until complete)
   rpc Execute(ExecuteRequest) returns (ExecuteResponse);
-  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
-}
 
+  // Streaming execution (real-time output)
+  rpc ExecuteStream(ExecuteRequest) returns (stream ExecuteChunk);
+
+  // Async execution (fire-and-forget with polling)
+  rpc ExecuteAsync(ExecuteRequest) returns (ExecuteAsyncResponse);
+  rpc GetExecution(GetExecutionRequest) returns (GetExecutionResponse);
+  rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
+  rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
+
+  // Health and cache management
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc ListCache(ListCacheRequest) returns (ListCacheResponse);
+  rpc ClearCache(ClearCacheRequest) returns (ClearCacheResponse);
+}
+```
+
+### Execution Modes
+
+The API supports three execution modes for different use cases:
+
+| Mode | RPC | Use Case |
+|------|-----|----------|
+| **Synchronous** | `Execute` | Simple scripts, short execution time |
+| **Streaming** | `ExecuteStream` | Real-time output display, long-running scripts |
+| **Async** | `ExecuteAsync` + polling | Background execution, cancellation support |
+
+### Core Messages
+
+```protobuf
 message ExecuteRequest {
   oneof source {
     string code = 1;        // Code to execute
@@ -111,14 +152,107 @@ message ExecuteResponse {
   string output = 2;
   optional string error = 3;
   int64 execution_time_ms = 4;
-  optional string cached_as = 5;
+  optional CacheEntry cached = 5;  // Set if newly cached
 }
 
-message HealthCheckRequest {}
+message CacheEntry {
+  string name = 1;           // e.g., "script-2024-01-15T10-30-00-abc123def456.ts"
+  string description = 2;    // Extracted from code comments
+  int64 created_at_ms = 3;
+  string content_hash = 4;   // For deduplication
+}
+```
 
-message HealthCheckResponse {
-  bool healthy = 1;
-  string kubernetes_context = 2;
+### Execution State
+
+Async and streaming executions track state through their lifecycle:
+
+```protobuf
+enum ExecutionState {
+  EXECUTION_STATE_UNSPECIFIED = 0;
+  EXECUTION_STATE_PENDING = 1;     // Queued, waiting to run
+  EXECUTION_STATE_RUNNING = 2;     // Currently executing
+  EXECUTION_STATE_COMPLETED = 3;   // Finished successfully
+  EXECUTION_STATE_FAILED = 4;      // Finished with error
+  EXECUTION_STATE_CANCELLED = 5;   // Cancelled by user
+  EXECUTION_STATE_TIMEOUT = 6;     // Exceeded time limit
+}
+```
+
+### Streaming Messages
+
+```protobuf
+message ExecuteChunk {
+  string execution_id = 1;
+  oneof chunk {
+    string output = 2;           // stdout/console.log
+    string error_output = 3;     // stderr/console.error
+    ExecuteResult result = 4;    // Final result (last chunk)
+  }
+  int64 timestamp_ms = 5;
+}
+
+message ExecuteResult {
+  bool success = 1;
+  optional string error = 2;
+  int64 execution_time_ms = 3;
+  ExecutionState state = 4;
+  optional CacheEntry cached = 5;
+}
+```
+
+### Async Execution Messages
+
+```protobuf
+message ExecuteAsyncResponse {
+  string execution_id = 1;    // UUID for tracking
+  ExecutionState state = 2;   // Initial state (PENDING or RUNNING)
+}
+
+message GetExecutionRequest {
+  string execution_id = 1;
+  bool wait = 2;              // Long-poll until completion
+  int64 output_offset = 3;    // For incremental output reads
+}
+
+message GetExecutionResponse {
+  string execution_id = 1;
+  ExecutionState state = 2;
+  string output = 3;              // Buffered stdout since offset
+  string error_output = 4;        // Buffered stderr since offset
+  int64 output_length = 5;        // Total output length (for next offset)
+  int64 error_output_length = 6;
+  optional ExecuteResult result = 7;  // Set when in terminal state
+}
+
+message CancelExecutionRequest {
+  string execution_id = 1;
+}
+
+message CancelExecutionResponse {
+  bool success = 1;
+  ExecutionState state = 2;
+  optional string message = 3;    // Error message if cancellation failed
+}
+
+message ListExecutionsRequest {
+  repeated ExecutionState states = 1;  // Filter by state (empty = all)
+  int32 limit = 2;
+  int64 include_completed_within_ms = 3;  // Include recent completions
+}
+
+message ListExecutionsResponse {
+  repeated ExecutionInfo executions = 1;
+}
+
+message ExecutionInfo {
+  string execution_id = 1;
+  ExecutionState state = 2;
+  int64 started_at_ms = 3;
+  optional int64 finished_at_ms = 4;
+  string code_preview = 5;        // First 100 chars
+  bool is_cached = 6;
+  optional string cached_name = 7;
 }
 ```
 
@@ -170,7 +304,7 @@ async execute(input) {
     output: result.output,
     error: result.error,
     executionTime: result.executionTimeMs,
-    cachedScript: result.cachedAs,
+    cachedScript: result.cached?.name,
   };
 }
 ```
@@ -181,45 +315,111 @@ The client provides a high-level interface with connection management:
 
 ```typescript
 export class SandboxClient {
-  private client: SandboxServiceClient;
+  constructor(options?: SandboxClientOptions);
 
-  constructor(options: SandboxClientOptions = {}) {
-    const socketPath = options.socketPath || process.env.SANDBOX_SOCKET_PATH || DEFAULT_SOCKET_PATH;
-    this.client = new SandboxServiceClient(
-      `unix://${socketPath}`,
-      grpc.credentials.createInsecure()
-    );
-  }
+  // Synchronous execution
+  async execute(options: ExecuteOptions): Promise<ExecuteResult>;
 
-  async execute(options: ExecuteOptions): Promise<ExecuteResult> {
-    const request: ExecuteRequest = {
-      timeoutMs: options.timeoutMs,
-      source: undefined,
-    };
+  // Streaming execution (async generator)
+  async *executeStream(options: ExecuteOptions): AsyncGenerator<StreamChunk>;
+  async *executeStreamWithAbort(options: ExecuteOptions, signal?: AbortSignal): AsyncGenerator<StreamChunk>;
 
-    if (options.code) {
-      request.source = { $case: 'code', code: options.code };
-    } else if (options.cached) {
-      request.source = { $case: 'cached', cached: options.cached };
-    }
+  // Async execution
+  async executeAsync(options: ExecuteOptions): Promise<{ executionId: string; state: ExecutionState }>;
+  async getExecution(executionId: string, options?: { wait?: boolean; outputOffset?: number }): Promise<ExecutionStatus>;
+  async waitForExecution(executionId: string): Promise<ExecutionStatus>;
+  async cancelExecution(executionId: string): Promise<{ success: boolean; state: ExecutionState; message?: string }>;
+  async listExecutions(options?: ListExecutionsOptions): Promise<ExecutionSummary[]>;
 
-    return new Promise((resolve, reject) => {
-      this.client.execute(request, (error, response) => {
-        if (error) reject(error);
-        else resolve(/* map response */);
-      });
-    });
-  }
+  // Cache management
+  async listCache(filter?: string): Promise<CacheEntry[]>;
+  async clearCache(): Promise<number>;
 
+  // Health check
   async healthCheck(): Promise<{ healthy: boolean; kubernetesContext: string }>;
   async waitForHealthy(timeoutMs: number): Promise<boolean>;
+
   close(): void;
 }
 
 // Singleton pattern for connection reuse
-let globalClient: SandboxClient | null = null;
 export function getSandboxClient(options?: SandboxClientOptions): SandboxClient;
 export function closeSandboxClient(): void;
+```
+
+#### Streaming Example
+
+```typescript
+import { SandboxClient } from '@prodisco/sandbox-server';
+
+const client = new SandboxClient();
+
+// Stream output in real-time
+for await (const chunk of client.executeStream({ code: 'console.log("hello")' })) {
+  if (chunk.type === 'output') {
+    process.stdout.write(chunk.data);
+  } else if (chunk.type === 'error') {
+    process.stderr.write(chunk.data);
+  } else if (chunk.type === 'result') {
+    console.log('Finished:', chunk.data.success);
+  }
+}
+
+// With cancellation support
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 5000); // Cancel after 5 seconds
+
+try {
+  for await (const chunk of client.executeStreamWithAbort({ code: longRunningCode }, controller.signal)) {
+    console.log(chunk);
+  }
+} catch (e) {
+  if (e.name === 'AbortError') console.log('Cancelled by user');
+}
+```
+
+#### Async Execution Example
+
+```typescript
+// Start execution in background
+const { executionId, state } = await client.executeAsync({
+  code: `
+    for (let i = 0; i < 100; i++) {
+      console.log("Processing:", i);
+      await new Promise(r => setTimeout(r, 100));
+    }
+  `,
+  timeoutMs: 30000,
+});
+
+console.log('Started execution:', executionId);
+
+// Poll for incremental output
+let offset = 0;
+while (true) {
+  const status = await client.getExecution(executionId, { outputOffset: offset });
+
+  if (status.output) {
+    process.stdout.write(status.output);
+    offset = status.outputLength;
+  }
+
+  if (status.state >= 3) { // Terminal state
+    console.log('Finished:', status.result);
+    break;
+  }
+
+  await new Promise(r => setTimeout(r, 500));
+}
+
+// Or wait for completion with long-polling
+const finalStatus = await client.waitForExecution(executionId);
+
+// Cancel a running execution
+const cancelResult = await client.cancelExecution(executionId);
+if (cancelResult.success) {
+  console.log('Cancelled successfully');
+}
 ```
 
 ### gRPC Server (`packages/sandbox-server/src/server/index.ts`)
@@ -294,6 +494,58 @@ export class Executor {
 }
 ```
 
+### Execution Registry (`packages/sandbox-server/src/server/execution-registry.ts`)
+
+The execution registry manages async execution state, output buffering, and lifecycle:
+
+```typescript
+export class ExecutionRegistry {
+  // Create a new execution record
+  create(options: CreateOptions): Execution;
+
+  // Get execution by ID
+  get(id: string): Execution | undefined;
+
+  // Update execution state
+  setState(id: string, state: ExecutionState): void;
+
+  // Append output (notifies listeners)
+  appendOutput(id: string, data: string, isError?: boolean): void;
+
+  // Set final result
+  setResult(id: string, result: ExecuteResult): void;
+
+  // Add listener for streaming output
+  addOutputListener(id: string, callback: (chunk: StreamChunk) => void): () => void;
+
+  // Cancel a running execution
+  cancel(id: string): boolean;
+
+  // List executions with filtering
+  list(options?: ListOptions): Execution[];
+
+  // Check if state is terminal (COMPLETED, FAILED, CANCELLED, TIMEOUT)
+  isTerminalState(state: ExecutionState): boolean;
+
+  // Stop the registry (cleanup interval)
+  stop(): void;
+}
+
+interface Execution {
+  id: string;                     // UUID
+  code: string;
+  state: ExecutionState;
+  output: string;                 // Buffered stdout
+  errorOutput: string;            // Buffered stderr
+  result?: ExecuteResult;
+  abortController: AbortController;
+  startedAtMs: number;
+  finishedAtMs?: number;
+  isCached: boolean;
+  cachedName?: string;
+}
+```
+
 ### Cache Manager (`packages/sandbox-server/src/server/cache-manager.ts`)
 
 The cache manager handles script persistence with deduplication:
@@ -302,28 +554,33 @@ The cache manager handles script persistence with deduplication:
 export class CacheManager {
   private mutex = new Mutex();
 
-  async cacheScript(code: string): Promise<string | null> {
+  async cache(code: string): Promise<CacheEntry | undefined> {
     const release = await this.mutex.acquire();
     try {
       const hash = this.hashCode(code);
 
       // Check for existing script with same content
       const existing = await this.findByHash(hash);
-      if (existing) return null;  // Already cached
+      if (existing) return undefined;  // Already cached
 
       const filename = this.generateFilename(code, hash);
       const content = this.addHeader(code);
       await fs.writeFile(path.join(this.cacheDir, filename), content);
 
-      return filename;
+      return {
+        name: filename,
+        description: this.extractDescription(code),
+        createdAtMs: Date.now(),
+        contentHash: hash,
+      };
     } finally {
       release();
     }
   }
 
-  async findScript(nameOrPattern: string): Promise<string | null> {
-    // Try exact match, then without extension, then partial match
-  }
+  find(nameOrPattern: string): CachedCode | null;
+  list(filter?: string): CacheEntry[];
+  clear(): number;
 }
 ```
 
@@ -377,14 +634,76 @@ User → MCP Server → runSandbox Tool → gRPC Client
                     SandboxService.Execute()
                          │
                          ▼
-                    CacheManager.findScript("list-pods.ts")
+                    CacheManager.find("list-pods.ts")
                          │
                          ▼
                     Executor.execute(cachedCode)
                          │
                          ▼
                     ExecuteResponse
-                    { success: true, output: "...", cached_as: null }
+                    { success: true, output: "...", cached: null }
+```
+
+### 3. Streaming Execution
+
+```
+Client                          Server
+  │                               │
+  │── ExecuteStream(request) ───►│
+  │                               │
+  │                          ExecutionRegistry.create()
+  │                               │
+  │                          Executor.execute(code)
+  │                               │
+  │◄─── ExecuteChunk(output) ────│  (console.log)
+  │◄─── ExecuteChunk(output) ────│  (console.log)
+  │◄─── ExecuteChunk(error) ─────│  (console.error)
+  │◄─── ExecuteChunk(output) ────│  (console.log)
+  │                               │
+  │◄─── ExecuteChunk(result) ────│  (final result)
+  │                               │
+  ▼                               ▼
+```
+
+### 4. Async Execution with Polling
+
+```
+Client                          Server
+  │                               │
+  │── ExecuteAsync(request) ────►│
+  │                               │
+  │                          ExecutionRegistry.create()
+  │◄── ExecuteAsyncResponse ─────│  { executionId, state: PENDING }
+  │                               │
+  │                          Executor.execute() (background)
+  │                               │
+  │── GetExecution(id) ─────────►│
+  │◄── GetExecutionResponse ─────│  { state: RUNNING, output: "..." }
+  │                               │
+  │── GetExecution(id, wait) ───►│
+  │         ...long poll...       │
+  │◄── GetExecutionResponse ─────│  { state: COMPLETED, result: {...} }
+  ▼                               ▼
+```
+
+### 5. Execution Cancellation
+
+```
+Client                          Server
+  │                               │
+  │── ExecuteAsync(request) ────►│
+  │◄── { executionId } ──────────│
+  │                               │
+  │                          (execution running)
+  │                               │
+  │── CancelExecution(id) ──────►│
+  │                               │
+  │                          AbortController.abort()
+  │                          ExecutionRegistry.cancel()
+  │                               │
+  │◄── { success: true, ─────────│
+  │     state: CANCELLED }       │
+  ▼                               ▼
 ```
 
 ## Error Handling
@@ -392,10 +711,12 @@ User → MCP Server → runSandbox Tool → gRPC Client
 | Error Type | gRPC Status | Description |
 |------------|-------------|-------------|
 | Script not found | `NOT_FOUND` | Cached script doesn't exist |
+| Execution not found | `NOT_FOUND` | Unknown execution ID |
 | Syntax error | `INVALID_ARGUMENT` | TypeScript/JavaScript parse error |
 | Timeout | `DEADLINE_EXCEEDED` | Execution exceeded timeout |
 | Module not allowed | `PERMISSION_DENIED` | Attempted to require blocked module |
 | Runtime error | `INTERNAL` | Uncaught exception during execution |
+| Already cancelled | `FAILED_PRECONDITION` | Execution already in terminal state |
 
 ## Environment Variables
 
@@ -547,10 +868,22 @@ const credentials = grpc.credentials.createSsl(
 );
 ```
 
-### Streaming Execution
-Add streaming RPC for long-running scripts:
+### Resource Limits
+Per-execution resource constraints:
 ```protobuf
-service SandboxService {
-  rpc ExecuteStream(ExecuteRequest) returns (stream ExecuteChunk);
+message ResourceLimits {
+  int64 max_memory_bytes = 1;
+  int32 max_cpu_percent = 2;
+  int32 max_file_descriptors = 3;
+}
+```
+
+### Execution Queuing
+Queue executions when at capacity:
+```protobuf
+message ExecuteAsyncResponse {
+  string execution_id = 1;
+  ExecutionState state = 2;
+  int32 queue_position = 3;  // Position in queue if PENDING
 }
 ```

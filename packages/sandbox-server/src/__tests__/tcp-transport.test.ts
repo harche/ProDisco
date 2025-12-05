@@ -304,8 +304,8 @@ describe('TCP Transport - Script Caching', () => {
     const result = await client.execute({ code });
 
     expect(result.success).toBe(true);
-    expect(result.cachedAs).toBeDefined();
-    expect(result.cachedAs).toMatch(/^script-.*\.ts$/);
+    expect(result.cached).toBeDefined();
+    expect(result.cached!.name).toMatch(/^script-.*\.ts$/);
   });
 
   it('can execute cached scripts over TCP', async () => {
@@ -315,11 +315,11 @@ describe('TCP Transport - Script Caching', () => {
     // First execution - gets cached
     const firstResult = await client.execute({ code });
     expect(firstResult.success).toBe(true);
-    expect(firstResult.cachedAs).toBeDefined();
+    expect(firstResult.cached).toBeDefined();
 
     // Execute from cache
     const cachedResult = await client.execute({
-      cached: firstResult.cachedAs!,
+      cached: firstResult.cached!.name,
     });
 
     expect(cachedResult.success).toBe(true);

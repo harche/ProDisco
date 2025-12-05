@@ -10,8 +10,22 @@ export interface ExecutionResult {
   executionTimeMs: number;
 }
 
+export interface StreamingExecutionResult extends ExecutionResult {
+  cancelled: boolean;
+  timedOut: boolean;
+}
+
+export type OutputCallback = (output: string, isError: boolean) => void;
+
 export interface ExecutorConfig {
   prometheusUrl?: string;
+}
+
+export interface StreamingExecuteOptions {
+  code: string;
+  timeoutMs?: number;
+  onOutput?: OutputCallback;
+  signal?: AbortSignal;
 }
 
 /**
@@ -146,6 +160,189 @@ export class Executor {
         output: outputLines.join('\n'),
         error: error instanceof Error ? error.message : String(error),
         executionTimeMs: Date.now() - startTime,
+      };
+    }
+  }
+
+  /**
+   * Execute code with streaming output and cancellation support.
+   * @param options - Streaming execution options
+   */
+  async executeStreaming(options: StreamingExecuteOptions): Promise<StreamingExecutionResult> {
+    const { code, timeoutMs = 30000, onOutput, signal } = options;
+    const startTime = Date.now();
+    const outputLines: string[] = [];
+
+    // Check if already aborted
+    if (signal?.aborted) {
+      return {
+        success: false,
+        output: '',
+        error: 'Execution was cancelled',
+        executionTimeMs: 0,
+        cancelled: true,
+        timedOut: false,
+      };
+    }
+
+    // Clamp timeout
+    const timeout = Math.min(Math.max(timeoutMs, 1000), 120000);
+
+    try {
+      // 1. Wrap code in async IIFE BEFORE transforming
+      const wrappedTs = `(async () => {\n${code}\n})()`;
+
+      // 2. Transform TypeScript to JavaScript
+      const { code: jsCode } = await transform(wrappedTs, {
+        loader: 'ts',
+        format: 'cjs',
+        target: 'es2022',
+      });
+
+      // 3. Create sandbox context with streaming output
+      const sandbox: Record<string, unknown> = {
+        console: {
+          log: (...args: unknown[]) => {
+            const line = args.map(String).join(' ');
+            outputLines.push(line);
+            onOutput?.(line + '\n', false);
+          },
+          error: (...args: unknown[]) => {
+            const line = '[ERROR] ' + args.map(String).join(' ');
+            outputLines.push(line);
+            onOutput?.(line + '\n', true);
+          },
+          warn: (...args: unknown[]) => {
+            const line = '[WARN] ' + args.map(String).join(' ');
+            outputLines.push(line);
+            onOutput?.(line + '\n', false);
+          },
+          info: (...args: unknown[]) => {
+            const line = '[INFO] ' + args.map(String).join(' ');
+            outputLines.push(line);
+            onOutput?.(line + '\n', false);
+          },
+        },
+        k8s,
+        kc: this.kc,
+        require: (mod: string) => {
+          if (mod === '@kubernetes/client-node') return k8s;
+          if (mod === 'prometheus-query') return prometheusQuery;
+          throw new Error(`Module '${mod}' not available in sandbox`);
+        },
+        process: { env: process.env },
+        setTimeout,
+        setInterval,
+        clearTimeout,
+        clearInterval,
+        Promise,
+        JSON,
+        Buffer,
+        Date,
+        Math,
+        Array,
+        Object,
+        String,
+        Number,
+        Boolean,
+        Error,
+      };
+
+      // 4. Create completion promise
+      let resolveResult: (value: unknown) => void;
+      let rejectResult: (error: unknown) => void;
+      const resultPromise = new Promise((resolve, reject) => {
+        resolveResult = resolve;
+        rejectResult = reject;
+      });
+
+      sandbox.__resolve__ = resolveResult!;
+      sandbox.__reject__ = rejectResult!;
+
+      const context = vm.createContext(sandbox);
+
+      // 5. Execute code
+      const trimmedJsCode = jsCode.trim().replace(/;$/, '');
+      const finalCode = `
+        ${trimmedJsCode}
+        .then(() => __resolve__(undefined))
+        .catch((e) => __reject__(e));
+      `;
+
+      const script = new vm.Script(finalCode, {
+        filename: 'sandbox-script.js',
+      });
+
+      script.runInContext(context);
+
+      // 6. Wait with timeout and abort support
+      const timeoutPromise = new Promise<'timeout'>((resolve) => {
+        setTimeout(() => resolve('timeout'), timeout);
+      });
+
+      const abortPromise = new Promise<'abort'>((resolve) => {
+        if (signal) {
+          signal.addEventListener('abort', () => resolve('abort'), { once: true });
+        }
+      });
+
+      const result = await Promise.race([
+        resultPromise.then(() => 'success' as const),
+        resultPromise.catch((e) => ({ error: e })),
+        timeoutPromise,
+        abortPromise,
+      ]);
+
+      if (result === 'abort') {
+        return {
+          success: false,
+          output: outputLines.join('\n'),
+          error: 'Execution was cancelled',
+          executionTimeMs: Date.now() - startTime,
+          cancelled: true,
+          timedOut: false,
+        };
+      }
+
+      if (result === 'timeout') {
+        return {
+          success: false,
+          output: outputLines.join('\n'),
+          error: 'Script execution timed out',
+          executionTimeMs: Date.now() - startTime,
+          cancelled: false,
+          timedOut: true,
+        };
+      }
+
+      if (typeof result === 'object' && result !== null && 'error' in result) {
+        const error = (result as { error: unknown }).error;
+        return {
+          success: false,
+          output: outputLines.join('\n'),
+          error: error instanceof Error ? error.message : String(error),
+          executionTimeMs: Date.now() - startTime,
+          cancelled: false,
+          timedOut: false,
+        };
+      }
+
+      return {
+        success: true,
+        output: outputLines.join('\n'),
+        executionTimeMs: Date.now() - startTime,
+        cancelled: false,
+        timedOut: false,
+      };
+
+    } catch (error) {
+      return {
+        success: false,
+        output: outputLines.join('\n'),
+        error: error instanceof Error ? error.message : String(error),
+        executionTimeMs: Date.now() - startTime,
+        cancelled: false,
+        timedOut: false,
       };
     }
   }

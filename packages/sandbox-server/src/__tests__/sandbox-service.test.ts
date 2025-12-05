@@ -196,8 +196,8 @@ describe('SandboxService', () => {
       );
 
       expect(response.success).toBe(true);
-      expect(response.cachedAs).toBeDefined();
-      expect(response.cachedAs).toMatch(/^script-.*\.ts$/);
+      expect(response.cached).toBeDefined();
+      expect(response.cached!.name).toMatch(/^script-.*\.ts$/);
     });
 
     it('does not cache failed executions', async () => {
@@ -214,7 +214,7 @@ describe('SandboxService', () => {
       );
 
       expect(response.success).toBe(false);
-      expect(response.cachedAs).toBeUndefined();
+      expect(response.cached).toBeUndefined();
     });
 
     it('does not duplicate cache for same code', async () => {
@@ -239,9 +239,9 @@ describe('SandboxService', () => {
 
       expect(response1.success).toBe(true);
       expect(response2.success).toBe(true);
-      expect(response1.cachedAs).toBeDefined();
+      expect(response1.cached).toBeDefined();
       // Second execution of same code should not create new cache
-      expect(response2.cachedAs).toBeUndefined();
+      expect(response2.cached).toBeUndefined();
     });
   });
 
@@ -260,11 +260,11 @@ describe('SandboxService', () => {
         cacheRequest
       );
 
-      expect(cacheResponse.cachedAs).toBeDefined();
+      expect(cacheResponse.cached).toBeDefined();
 
       // Now execute the cached script
       const executeRequest: ExecuteRequest = {
-        source: { $case: 'cached', cached: cacheResponse.cachedAs! },
+        source: { $case: 'cached', cached: cacheResponse.cached!.name },
         timeoutMs: undefined,
       };
 
@@ -275,8 +275,8 @@ describe('SandboxService', () => {
 
       expect(response.success).toBe(true);
       expect(response.output).toBe('cached script output');
-      // Should return the cached script name
-      expect(response.cachedAs).toBe(cacheResponse.cachedAs);
+      // When running from cache, cached is not returned (not a new cache entry)
+      expect(response.cached).toBeUndefined();
     });
 
     it('returns error for non-existent cached script', async () => {
@@ -312,10 +312,10 @@ describe('SandboxService', () => {
         cacheRequest
       );
 
-      expect(cacheResponse.cachedAs).toBeDefined();
+      expect(cacheResponse.cached).toBeDefined();
 
       // Extract the hash from the filename
-      const match = cacheResponse.cachedAs!.match(/-([a-f0-9]{12})\.ts$/);
+      const match = cacheResponse.cached!.name.match(/-([a-f0-9]{12})\.ts$/);
       expect(match).not.toBeNull();
       const hash = match![1];
 

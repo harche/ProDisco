@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { CacheEntry } from '../generated/sandbox.js';
 
 /**
  * Simple async mutex to prevent race conditions during caching.
@@ -62,9 +63,9 @@ export class CacheManager {
   /**
    * Cache successfully executed code.
    * Uses a hash of the code to create a unique filename, avoiding duplicates.
-   * Returns the cached filename if a new file was created.
+   * Returns a CacheEntry if a new entry was created.
    */
-  async cache(code: string): Promise<string | undefined> {
+  async cache(code: string): Promise<CacheEntry | undefined> {
     await this.mutex.acquire();
 
     try {
@@ -83,21 +84,55 @@ export class CacheManager {
       }
 
       // Create new file with timestamp and hash
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const now = new Date();
+      const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
       const filename = `script-${timestamp}-${hash}.ts`;
       const filepath = join(this.cacheDir, filename);
 
       // Add a header comment with execution timestamp
-      const header = `// Executed via sandbox at ${new Date().toISOString()}\n`;
+      const header = `// Executed via sandbox at ${now.toISOString()}\n`;
       writeFileSync(filepath, header + code, 'utf-8');
 
-      return filename;
+      // Extract description from code (first comment or first meaningful line)
+      const description = this.extractDescription(code);
+
+      return {
+        name: filename,
+        description,
+        createdAtMs: now.getTime().toString(),
+        contentHash: hash,
+      };
     } catch {
       // Silently ignore caching errors - don't fail the execution
       return undefined;
     } finally {
       this.mutex.release();
     }
+  }
+
+  /**
+   * Extract a description from code.
+   * Looks for first comment line or first non-empty line.
+   */
+  private extractDescription(code: string): string {
+    const lines = code.trim().split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      // Skip empty lines
+      if (!trimmed) continue;
+      // Single-line comment
+      if (trimmed.startsWith('//')) {
+        return trimmed.slice(2).trim();
+      }
+      // Multi-line comment start
+      if (trimmed.startsWith('/*')) {
+        const match = trimmed.match(/\/\*\*?\s*(.+?)(?:\*\/)?$/);
+        if (match) return match[1].trim();
+      }
+      // Use first meaningful code line as fallback
+      return trimmed.slice(0, 100);
+    }
+    return 'Script execution';
   }
 
   /**
@@ -142,5 +177,71 @@ export class CacheManager {
       return lines.slice(1).join('\n').trim();
     }
     return content;
+  }
+
+  /**
+   * List all cached entries.
+   * Optionally filter by name pattern.
+   */
+  list(filter?: string): CacheEntry[] {
+    if (!existsSync(this.cacheDir)) {
+      return [];
+    }
+
+    const files = readdirSync(this.cacheDir).filter(f => f.endsWith('.ts'));
+    const entries: CacheEntry[] = [];
+
+    for (const filename of files) {
+      // Apply filter if provided
+      if (filter && !filename.toLowerCase().includes(filter.toLowerCase())) {
+        continue;
+      }
+
+      const filepath = join(this.cacheDir, filename);
+      try {
+        const stats = statSync(filepath);
+        const code = this.readCode(filepath);
+        const hash = createHash('sha256').update(code).digest('hex').slice(0, 12);
+
+        entries.push({
+          name: filename,
+          description: this.extractDescription(code),
+          createdAtMs: stats.mtimeMs.toString(),
+          contentHash: hash,
+        });
+      } catch {
+        // Skip files that can't be read
+        continue;
+      }
+    }
+
+    // Sort by creation time (newest first)
+    entries.sort((a, b) => Number(b.createdAtMs) - Number(a.createdAtMs));
+
+    return entries;
+  }
+
+  /**
+   * Clear all cached entries.
+   * Returns the number of entries deleted.
+   */
+  clear(): number {
+    if (!existsSync(this.cacheDir)) {
+      return 0;
+    }
+
+    const files = readdirSync(this.cacheDir).filter(f => f.endsWith('.ts'));
+    let deleted = 0;
+
+    for (const filename of files) {
+      try {
+        unlinkSync(join(this.cacheDir, filename));
+        deleted++;
+      } catch {
+        // Ignore deletion errors
+      }
+    }
+
+    return deleted;
   }
 }
