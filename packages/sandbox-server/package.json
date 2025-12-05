@@ -1,6 +1,6 @@
 {
   "name": "@prodisco/sandbox-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "gRPC sandbox server for code execution with Kubernetes context",
   "type": "module",
   "main": "dist/client/index.js",
@@ -12,6 +12,11 @@
   "bin": {
     "sandbox-server": "dist/server/index.js"
   },
+  "files": [
+    "dist",
+    "proto",
+    "k8s"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server/index.ts",
