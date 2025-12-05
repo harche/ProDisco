@@ -412,7 +412,7 @@ describe('kubernetes.runSandbox', () => {
 
       // Check that a script was cached
       const files = readdirSync(SCRIPTS_CACHE_DIR);
-      const cachedScript = files.find(f => f.includes(uniqueId.toString().slice(-8)));
+      const _cachedScript = files.find(f => f.includes(uniqueId.toString().slice(-8)));
 
       // May or may not find by ID, but cache should have scripts
       expect(files.length).toBeGreaterThan(0);
@@ -446,12 +446,12 @@ describe('kubernetes.runSandbox', () => {
     });
 
     it('deduplicates scripts with identical content', async () => {
+      // Use unique code to avoid collisions with other tests or runs
+      const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const code = `
-        // Deduplication test script
-        console.log("same content");
+        // Deduplication test script ${uniqueId}
+        console.log("same content ${uniqueId}");
       `;
-
-      const beforeCount = readdirSync(SCRIPTS_CACHE_DIR).length;
 
       // Execute same code twice
       await runSandbox({ code });

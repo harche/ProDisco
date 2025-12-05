@@ -44,11 +44,18 @@ The sandbox server lives in `packages/sandbox-server/` as an npm workspace packa
 - Future extraction to a separate repository if needed
 - Independent versioning and deployment
 
-### 3. Unix Socket First
-Communication uses Unix domain sockets (`/tmp/prodisco-sandbox.sock`) for:
-- Low latency local execution
+### 3. Flexible Transport: Unix Socket or TCP
+Communication supports both Unix domain sockets and TCP:
+
+**Unix Socket (default)** - Best for local execution:
+- Low latency
 - Simple setup with no network configuration
-- TCP support can be added later for remote execution
+- Secure by default (file system permissions)
+
+**TCP Transport** - Enables remote execution:
+- Connect to sandbox servers on different hosts
+- Suitable for containerized deployments
+- Configurable via options or environment variables
 
 ### 4. Language-Agnostic Protocol
 The gRPC protocol is designed to be language-agnostic:
@@ -395,6 +402,9 @@ User → MCP Server → runSandbox Tool → gRPC Client
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SANDBOX_SOCKET_PATH` | `/tmp/prodisco-sandbox.sock` | Unix socket path |
+| `SANDBOX_USE_TCP` | `false` | Use TCP transport instead of Unix socket (`true` or `1`) |
+| `SANDBOX_TCP_HOST` | `0.0.0.0` (server) / `localhost` (client) | TCP host to bind/connect to |
+| `SANDBOX_TCP_PORT` | `50051` | TCP port to bind/connect to |
 | `SCRIPTS_CACHE_DIR` | `/tmp/prodisco-scripts` | Directory for cached scripts |
 | `PROMETHEUS_URL` | (none) | Prometheus server URL |
 | `KUBECONFIG` | `~/.kube/config` | Kubernetes config path |
@@ -423,17 +433,64 @@ Run tests with:
 npm test
 ```
 
-## Future Enhancements
+## TCP Transport
 
-### TCP Transport
-Add TCP support for remote sandbox servers:
+The sandbox server supports TCP transport for remote execution. This enables running the sandbox server on a different host or in a container.
+
+### Server Configuration
+
+Start the server with TCP transport:
+
 ```typescript
-// Client
-new SandboxServiceClient('sandbox.example.com:50051', credentials);
+// Programmatic configuration
+import { startServer } from '@prodisco/sandbox-server';
 
-// Server
-server.bindAsync('0.0.0.0:50051', credentials, callback);
+await startServer({
+  useTcp: true,
+  tcpHost: '0.0.0.0',  // Bind to all interfaces
+  tcpPort: 50051,
+});
+
+// Or using environment variables
+// SANDBOX_USE_TCP=true SANDBOX_TCP_HOST=0.0.0.0 SANDBOX_TCP_PORT=50051 node server.js
 ```
+
+### Client Configuration
+
+Connect to a remote sandbox server:
+
+```typescript
+import { SandboxClient } from '@prodisco/sandbox-server';
+
+// Explicit TCP configuration
+const client = new SandboxClient({
+  useTcp: true,
+  tcpHost: 'sandbox.example.com',
+  tcpPort: 50051,
+});
+
+// Or infer TCP from host/port (useTcp is optional when host/port are specified)
+const client2 = new SandboxClient({
+  tcpHost: 'sandbox.example.com',
+  tcpPort: 50051,
+});
+
+// Or using environment variables
+// SANDBOX_USE_TCP=true SANDBOX_TCP_HOST=sandbox.example.com SANDBOX_TCP_PORT=50051
+const client3 = new SandboxClient();
+```
+
+### Choosing Between Unix Socket and TCP
+
+| Use Case | Recommended Transport |
+|----------|----------------------|
+| Local development | Unix socket (default) |
+| MCP server and sandbox on same host | Unix socket |
+| Sandbox in separate container | TCP |
+| Sandbox on remote host | TCP |
+| Production with network isolation | TCP with TLS (see Future Enhancements) |
+
+## Future Enhancements
 
 ### TLS/mTLS
 Secure communication for production deployments:
