@@ -68,6 +68,45 @@ jobs:
           path: artifacts/container-integration/
           retention-days: 7
 
+  npm-pack-integration:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: npm-pack-int
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Wait for cluster to be ready
+        run: |
+          kubectl wait --for=condition=Ready nodes --all --timeout=120s
+          kubectl cluster-info
+
+      - name: Run npm pack integration tests
+        timeout-minutes: 5
+        run: ./scripts/integration/run-npm-pack-integration.sh
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-pack-integration-artifacts
+          path: artifacts/npm-pack-integration/
+          retention-days: 7
+
   cluster-integration:
     runs-on: ubuntu-latest
     needs: build-and-test
