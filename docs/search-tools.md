@@ -4,6 +4,30 @@ The `kubernetes.searchTools` tool is a unified interface for discovering Kuberne
 
 Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8s`, `kc` (pre-configured KubeConfig), `console`, and `require("prometheus-query")`.
 
+---
+
+## Table of Contents
+
+- [Quick Reference](#quick-reference)
+- [User Guide](#user-guide)
+  - [Methods Mode (Default)](#methods-mode-default)
+  - [Types Mode](#types-mode)
+  - [Scripts Mode](#scripts-mode)
+  - [Prometheus Mode](#prometheus-mode)
+- [Example Workflows](#example-workflows)
+  - [List Pods in a Namespace](#workflow-1-list-pods-in-a-namespace)
+  - [Create a Deployment](#workflow-2-create-a-deployment)
+  - [Reuse a Cached Script](#workflow-3-reuse-a-cached-script)
+  - [Query P99 Latency from Prometheus](#workflow-4-query-p99-latency-from-prometheus)
+- [Technical Architecture](#technical-architecture)
+  - [Search Engine (Orama)](#search-engine-orama)
+  - [Type Resolution System](#type-resolution-system)
+  - [Scripts Indexing](#scripts-indexing)
+  - [Response Format](#response-format)
+- [API Classes Indexed](#api-classes-indexed)
+
+---
+
 ## Quick Reference
 
 | Mode | Purpose | Required Params | Example |
@@ -15,7 +39,7 @@ Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8
 
 ---
 
-## Part 1: User Guide
+## User Guide
 
 ### Methods Mode (Default)
 
@@ -241,6 +265,7 @@ Search for Prometheus API methods. This mode exposes methods from the `prometheu
 **Metrics Category Response:**
 
 When using `category: "metrics"`, metrics are grouped by semantic category for easier discovery:
+
 - **STATUS & LIFECYCLE** - status, phase, ready, restart metrics
 - **CPU & COMPUTE** - cpu, throttle metrics
 - **MEMORY** - memory, mem metrics
@@ -282,7 +307,7 @@ The response includes a "NEXT STEPS" section showing how to:
 
 **Environment Configuration:**
 
-- `PROMETHEUS_URL` is **required** for executing queries - set it when adding the MCP server:
+`PROMETHEUS_URL` is **required** for executing queries - set it when adding the MCP server:
 
 ```bash
 claude mcp add ProDisco \
@@ -297,9 +322,9 @@ If `PROMETHEUS_URL` is not set:
 
 ---
 
-### Example Agent Workflows
+## Example Workflows
 
-#### Workflow 1: List Pods in a Namespace
+### Workflow 1: List Pods in a Namespace
 
 ```
 Step 1: Discover the API method
@@ -317,7 +342,7 @@ Step 3: Execute in sandbox
   ` })
 ```
 
-#### Workflow 2: Create a Deployment
+### Workflow 2: Create a Deployment
 
 ```
 Step 1: Find the create method
@@ -333,7 +358,7 @@ Step 4: Execute using discovered types
 > runSandbox({ code: `...` })
 ```
 
-#### Workflow 3: Reuse a Cached Script
+### Workflow 3: Reuse a Cached Script
 
 ```
 Step 1: Search for existing scripts
@@ -343,14 +368,16 @@ Step 2: Run cached script by filename
 > runSandbox({ cached: "script-2025-01-01T12-00-00-abc123.ts" })
 ```
 
-#### Workflow 4: Query P99 Latency from Prometheus
+### Workflow 4: Query P99 Latency from Prometheus
 
 **Step 1:** Find query methods
+
 ```json
 { "mode": "prometheus", "category": "query" }
 ```
 
 **Step 2:** Execute in sandbox:
+
 ```typescript
 runSandbox({ code: `
   const { PrometheusDriver } = require('prometheus-query');
@@ -371,13 +398,14 @@ runSandbox({ code: `
 
 ---
 
-## Part 2: Technical Architecture
+## Technical Architecture
 
 ### Search Engine (Orama)
 
 searchTools uses [Orama](https://orama.com) for fast, typo-tolerant full-text search.
 
 **Why Orama:**
+
 - Sub-millisecond search performance
 - Built-in typo tolerance (configurable per query)
 - Faceted search for result breakdown
@@ -416,6 +444,7 @@ boost: {
 **Pre-warming:**
 
 The index is pre-warmed at server startup via `warmupSearchIndex()` to avoid latency on the first search. This indexes:
+
 - All API methods from 10 API classes (~500+ methods)
 - All cached scripts in `.cache/scripts/`
 - Prometheus library methods from `prometheus-query`
@@ -428,13 +457,14 @@ The index is pre-warmed at server startup via `warmupSearchIndex()` to avoid lat
 Type definitions are extracted using the TypeScript Compiler API.
 
 **Process:**
+
 1. Parse the type path (e.g., `V1Deployment.spec.template.spec`)
 2. Load the base type's `.d.ts` file from `@kubernetes/client-node`
 3. For path navigation:
    - Find the property in the current type
    - Extract the property's type node
-   - Resolve array types (`V1Container[]` → `V1Container`)
-   - Resolve union types (`T | undefined` → `T`)
+   - Resolve array types (`V1Container[]` -> `V1Container`)
+   - Resolve union types (`T | undefined` -> `T`)
 4. Recursively resolve nested types based on `depth` parameter
 
 **Path Resolution Examples:**
@@ -453,6 +483,7 @@ Type definitions are extracted using the TypeScript Compiler API.
 Scripts executed via `runSandbox` are automatically cached and indexed for future reuse.
 
 **Automatic Caching:**
+
 - Successfully executed scripts are saved to `.cache/scripts/` within the package directory
 - Filenames use content-based hashing to prevent duplicates: `script-<timestamp>-<hash>.ts`
 - Scripts are indexed immediately after caching for instant searchability
@@ -460,6 +491,7 @@ Scripts executed via `runSandbox` are automatically cached and indexed for futur
 **Metadata Extraction:**
 
 From each cached script, we extract:
+
 1. **Description**: First comment block (JSDoc or `//` comments)
 2. **API Classes**: From code patterns (e.g., `CoreV1Api`, `AppsV1Api`)
 3. **Keywords**: From description text
@@ -469,17 +501,20 @@ From each cached script, we extract:
 ### Response Format
 
 **Methods Mode:**
+
 - Relevant cached scripts shown first (top 5 matching)
 - Faceted breakdown for search refinement
 - Full method details with usage examples
 - Pagination metadata
 
 **Types Mode:**
+
 - Formatted type definitions
 - Nested type references for further exploration
 - File location for reference
 
 **Scripts Mode:**
+
 - Script metadata (filename, description, API classes)
 - Pagination for large script collections
 - Use `runSandbox({ cached: "filename" })` to execute

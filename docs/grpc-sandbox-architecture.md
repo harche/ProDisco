@@ -2,54 +2,111 @@
 
 This document describes the gRPC-based sandbox execution architecture used in ProDisco. The design decouples code execution from the MCP server, enabling flexible deployment options and improved isolation.
 
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Key Design Decisions](#key-design-decisions)
+- [Directory Structure](#directory-structure)
+- [Protocol Definition](#protocol-definition)
+  - [Service Definition](#service-definition)
+  - [Execution Modes](#execution-modes)
+  - [Core Messages](#core-messages)
+  - [Execution State](#execution-state)
+  - [Streaming Messages](#streaming-messages)
+  - [Async Execution Messages](#async-execution-messages)
+- [Component Details](#component-details)
+  - [MCP Server](#mcp-server)
+  - [runSandbox Tool](#runsandbox-tool)
+  - [gRPC Client](#grpc-client)
+  - [gRPC Server](#grpc-server)
+  - [Executor](#executor)
+  - [Execution Registry](#execution-registry)
+  - [Cache Manager](#cache-manager)
+- [Execution Flows](#execution-flows)
+  - [New Code Execution](#1-new-code-execution)
+  - [Cached Script Execution](#2-cached-script-execution)
+  - [Streaming Execution](#3-streaming-execution)
+  - [Async Execution with Polling](#4-async-execution-with-polling)
+  - [Execution Cancellation](#5-execution-cancellation)
+- [Error Handling](#error-handling)
+- [Configuration](#configuration)
+  - [Transport Configuration](#transport-configuration)
+  - [Security Configuration](#security-configuration)
+  - [Application Configuration](#application-configuration)
+- [TCP Transport](#tcp-transport)
+  - [Server Configuration](#server-configuration)
+  - [Client Configuration](#client-configuration)
+  - [Choosing Between Unix Socket and TCP](#choosing-between-unix-socket-and-tcp)
+- [Container Isolation](#container-isolation)
+  - [Building and Deploying](#building-and-deploying)
+  - [Connecting to Containerized Sandbox](#connecting-to-containerized-sandbox)
+- [Transport Security](#transport-security)
+  - [Security Modes](#security-modes)
+  - [TLS Configuration](#tls-configuration)
+  - [Certificate Management with cert-manager](#certificate-management-with-cert-manager)
+  - [Kubernetes Deployment with TLS](#kubernetes-deployment-with-tls)
+- [Testing](#testing)
+- [Future Enhancements](#future-enhancements)
+
+---
+
 ## Overview
 
 The sandbox system follows a client-server model inspired by Kubernetes' kubelet/containerd architecture:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         MCP Server                              │
-│  ┌─────────────────┐    ┌──────────────────────────────────┐   │
-│  │ searchTools     │    │ runSandbox Tool                  │   │
-│  │ (API discovery) │    │ (thin gRPC client wrapper)       │   │
-│  └─────────────────┘    └──────────────┬───────────────────┘   │
-│                                        │                        │
-└────────────────────────────────────────┼────────────────────────┘
-                                         │ gRPC over Unix Socket
-                                         │ unix:///tmp/prodisco-sandbox.sock
-                                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Sandbox gRPC Server                         │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ SandboxService                                           │   │
-│  │ (Execute, ExecuteStream, ExecuteAsync, Cancel, List...)  │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                              │                                  │
-│  ┌──────────────┐  ┌────────┴───────┐  ┌──────────────────┐   │
-│  │ Executor     │  │ Execution      │  │ CacheManager     │   │
-│  │ (VM + esbuild│  │ Registry       │  │ (dedup, persist) │   │
-│  │  transform)  │  │ (state, output)│  │                  │   │
-│  └──────────────┘  └────────────────┘  └──────────────────┘   │
-│                                                                 │
-│  Pre-configured: k8s client, KubeConfig, prometheus-query      │
-└─────────────────────────────────────────────────────────────────┘
++---------------------------------------------------------------------+
+|                         MCP Server                                   |
+|  +-------------------+    +--------------------------------------+   |
+|  | searchTools       |    | runSandbox Tool                      |   |
+|  | (API discovery)   |    | (thin gRPC client wrapper)           |   |
+|  +-------------------+    +------------------+-------------------+   |
+|                                              |                       |
++----------------------------------------------+-----------------------+
+                                               | gRPC over Unix Socket
+                                               | unix:///tmp/prodisco-sandbox.sock
+                                               v
++---------------------------------------------------------------------+
+|                     Sandbox gRPC Server                              |
+|  +---------------------------------------------------------------+   |
+|  | SandboxService                                                 |   |
+|  | (Execute, ExecuteStream, ExecuteAsync, Cancel, List...)       |   |
+|  +---------------------------------------------------------------+   |
+|                              |                                       |
+|  +----------------+  +-------+--------+  +----------------------+    |
+|  | Executor       |  | Execution      |  | CacheManager         |    |
+|  | (VM + esbuild  |  | Registry       |  | (dedup, persist)     |    |
+|  |  transform)    |  | (state, output)|  |                      |    |
+|  +----------------+  +----------------+  +----------------------+    |
+|                                                                      |
+|  Pre-configured: k8s client, KubeConfig, prometheus-query           |
++---------------------------------------------------------------------+
 ```
+
+---
 
 ## Key Design Decisions
 
 ### 1. Kubernetes-Aware Server
+
 The gRPC sandbox server has Kubernetes and Prometheus context baked in:
+
 - Loads `KubeConfig` from the environment at startup
 - Provides pre-configured `k8s` module and `kc` (KubeConfig instance)
 - Supports `require("prometheus-query")` for metrics queries
 
 ### 2. In-Repo but Extractable
+
 The sandbox server lives in `packages/sandbox-server/` as an npm workspace package. This allows:
+
 - Easy development and testing alongside the MCP server
 - Future extraction to a separate repository if needed
 - Independent versioning and deployment
 
 ### 3. Flexible Transport: Unix Socket or TCP
+
 Communication supports both Unix domain sockets and TCP:
 
 **Unix Socket (default)** - Best for local execution:
@@ -63,10 +120,14 @@ Communication supports both Unix domain sockets and TCP:
 - Configurable via options or environment variables
 
 ### 4. Language-Agnostic Protocol
+
 The gRPC protocol is designed to be language-agnostic:
+
 - `Execute` RPC accepts generic "code" (not TypeScript-specific)
 - Different server implementations could execute Go, Python, etc.
 - The protocol focuses on execution semantics, not language details
+
+---
 
 ## Directory Structure
 
@@ -97,7 +158,11 @@ packages/sandbox-server/
 └── buf.gen.yaml                   # Proto code generation config
 ```
 
+---
+
 ## Protocol Definition
+
+### Service Definition
 
 The gRPC service is defined in `proto/sandbox.proto`:
 
@@ -256,9 +321,11 @@ message ExecutionInfo {
 }
 ```
 
+---
+
 ## Component Details
 
-### MCP Server (`src/server.ts`)
+### MCP Server
 
 The MCP server spawns the sandbox server as a subprocess on startup:
 
@@ -284,7 +351,7 @@ async function startSandboxServer(): Promise<void> {
 }
 ```
 
-### runSandbox Tool (`src/tools/kubernetes/runSandbox.ts`)
+### runSandbox Tool
 
 The MCP tool exposes all gRPC execution methods through a unified multi-mode API:
 
@@ -329,7 +396,7 @@ async execute(input) {
 }
 ```
 
-### gRPC Client (`packages/sandbox-server/src/client/index.ts`)
+### gRPC Client
 
 The client provides a high-level interface with connection management:
 
@@ -367,7 +434,7 @@ export function getSandboxClient(options?: SandboxClientOptions): SandboxClient;
 export function closeSandboxClient(): void;
 ```
 
-#### Streaming Example
+**Streaming Example:**
 
 ```typescript
 import { SandboxClient } from '@prodisco/sandbox-server';
@@ -398,7 +465,7 @@ try {
 }
 ```
 
-#### Async Execution Example
+**Async Execution Example:**
 
 ```typescript
 // Start execution in background
@@ -442,7 +509,7 @@ if (cancelResult.success) {
 }
 ```
 
-### gRPC Server (`packages/sandbox-server/src/server/index.ts`)
+### gRPC Server
 
 The server binds to the Unix socket and handles graceful shutdown:
 
@@ -473,7 +540,7 @@ export async function startServer(config: ServerConfig = {}): Promise<grpc.Serve
 }
 ```
 
-### Executor (`packages/sandbox-server/src/server/executor.ts`)
+### Executor
 
 The executor runs code in a Node.js VM with a sandboxed context:
 
@@ -514,7 +581,7 @@ export class Executor {
 }
 ```
 
-### Execution Registry (`packages/sandbox-server/src/server/execution-registry.ts`)
+### Execution Registry
 
 The execution registry manages async execution state, output buffering, and lifecycle:
 
@@ -566,7 +633,7 @@ interface Execution {
 }
 ```
 
-### Cache Manager (`packages/sandbox-server/src/server/cache-manager.ts`)
+### Cache Manager
 
 The cache manager handles script persistence with deduplication:
 
@@ -604,62 +671,64 @@ export class CacheManager {
 }
 ```
 
-## Execution Flow
+---
+
+## Execution Flows
 
 ### 1. New Code Execution
 
 ```
-User → MCP Server → runSandbox Tool → gRPC Client
-                                           │
-                                           ▼
+User -> MCP Server -> runSandbox Tool -> gRPC Client
+                                           |
+                                           v
                                       ExecuteRequest
                                       { code: "...", timeout_ms: 30000 }
-                                           │
-                                           ▼ (Unix Socket)
-                                           │
-                    gRPC Server ◄──────────┘
-                         │
-                         ▼
+                                           |
+                                           v (Unix Socket)
+                                           |
+                    gRPC Server <----------+
+                         |
+                         v
                     SandboxService.Execute()
-                         │
-                    ┌────┴────┐
-                    ▼         ▼
+                         |
+                    +----+----+
+                    v         v
                Executor  CacheManager
                (VM run)  (save if success)
-                    │         │
-                    └────┬────┘
-                         ▼
+                    |         |
+                    +----+----+
+                         v
                     ExecuteResponse
                     { success: true, output: "...", cached_as: "script-abc123.ts" }
-                         │
-                         ▼ (Unix Socket)
-                         │
-User ◄── MCP Server ◄── runSandbox Tool ◄── gRPC Client
+                         |
+                         v (Unix Socket)
+                         |
+User <-- MCP Server <-- runSandbox Tool <-- gRPC Client
 ```
 
 ### 2. Cached Script Execution
 
 ```
-User → MCP Server → runSandbox Tool → gRPC Client
-                                           │
-                                           ▼
+User -> MCP Server -> runSandbox Tool -> gRPC Client
+                                           |
+                                           v
                                       ExecuteRequest
                                       { cached: "list-pods.ts" }
-                                           │
-                                           ▼ (Unix Socket)
-                                           │
-                    gRPC Server ◄──────────┘
-                         │
-                         ▼
+                                           |
+                                           v (Unix Socket)
+                                           |
+                    gRPC Server <----------+
+                         |
+                         v
                     SandboxService.Execute()
-                         │
-                         ▼
+                         |
+                         v
                     CacheManager.find("list-pods.ts")
-                         │
-                         ▼
+                         |
+                         v
                     Executor.execute(cachedCode)
-                         │
-                         ▼
+                         |
+                         v
                     ExecuteResponse
                     { success: true, output: "...", cached: null }
 ```
@@ -668,63 +737,65 @@ User → MCP Server → runSandbox Tool → gRPC Client
 
 ```
 Client                          Server
-  │                               │
-  │── ExecuteStream(request) ───►│
-  │                               │
-  │                          ExecutionRegistry.create()
-  │                               │
-  │                          Executor.execute(code)
-  │                               │
-  │◄─── ExecuteChunk(output) ────│  (console.log)
-  │◄─── ExecuteChunk(output) ────│  (console.log)
-  │◄─── ExecuteChunk(error) ─────│  (console.error)
-  │◄─── ExecuteChunk(output) ────│  (console.log)
-  │                               │
-  │◄─── ExecuteChunk(result) ────│  (final result)
-  │                               │
-  ▼                               ▼
+  |                               |
+  |-- ExecuteStream(request) --->|
+  |                               |
+  |                          ExecutionRegistry.create()
+  |                               |
+  |                          Executor.execute(code)
+  |                               |
+  |<--- ExecuteChunk(output) ----|  (console.log)
+  |<--- ExecuteChunk(output) ----|  (console.log)
+  |<--- ExecuteChunk(error) -----|  (console.error)
+  |<--- ExecuteChunk(output) ----|  (console.log)
+  |                               |
+  |<--- ExecuteChunk(result) ----|  (final result)
+  |                               |
+  v                               v
 ```
 
 ### 4. Async Execution with Polling
 
 ```
 Client                          Server
-  │                               │
-  │── ExecuteAsync(request) ────►│
-  │                               │
-  │                          ExecutionRegistry.create()
-  │◄── ExecuteAsyncResponse ─────│  { executionId, state: PENDING }
-  │                               │
-  │                          Executor.execute() (background)
-  │                               │
-  │── GetExecution(id) ─────────►│
-  │◄── GetExecutionResponse ─────│  { state: RUNNING, output: "..." }
-  │                               │
-  │── GetExecution(id, wait) ───►│
-  │         ...long poll...       │
-  │◄── GetExecutionResponse ─────│  { state: COMPLETED, result: {...} }
-  ▼                               ▼
+  |                               |
+  |-- ExecuteAsync(request) ---->|
+  |                               |
+  |                          ExecutionRegistry.create()
+  |<-- ExecuteAsyncResponse -----|  { executionId, state: PENDING }
+  |                               |
+  |                          Executor.execute() (background)
+  |                               |
+  |-- GetExecution(id) --------->|
+  |<-- GetExecutionResponse -----|  { state: RUNNING, output: "..." }
+  |                               |
+  |-- GetExecution(id, wait) --->|
+  |         ...long poll...       |
+  |<-- GetExecutionResponse -----|  { state: COMPLETED, result: {...} }
+  v                               v
 ```
 
 ### 5. Execution Cancellation
 
 ```
 Client                          Server
-  │                               │
-  │── ExecuteAsync(request) ────►│
-  │◄── { executionId } ──────────│
-  │                               │
-  │                          (execution running)
-  │                               │
-  │── CancelExecution(id) ──────►│
-  │                               │
-  │                          AbortController.abort()
-  │                          ExecutionRegistry.cancel()
-  │                               │
-  │◄── { success: true, ─────────│
-  │     state: CANCELLED }       │
-  ▼                               ▼
+  |                               |
+  |-- ExecuteAsync(request) ---->|
+  |<-- { executionId } ----------|
+  |                               |
+  |                          (execution running)
+  |                               |
+  |-- CancelExecution(id) ------>|
+  |                               |
+  |                          AbortController.abort()
+  |                          ExecutionRegistry.cancel()
+  |                               |
+  |<-- { success: true, ---------|
+  |     state: CANCELLED }       |
+  v                               v
 ```
+
+---
 
 ## Error Handling
 
@@ -738,7 +809,9 @@ Client                          Server
 | Runtime error | `INTERNAL` | Uncaught exception during execution |
 | Already cancelled | `FAILED_PRECONDITION` | Execution already in terminal state |
 
-## Environment Variables
+---
+
+## Configuration
 
 ### Transport Configuration
 
@@ -769,29 +842,7 @@ Client                          Server
 | `PROMETHEUS_URL` | (none) | Prometheus server URL |
 | `KUBECONFIG` | `~/.kube/config` | Kubernetes config path |
 
-## Testing
-
-Tests start a real gRPC server with a test-specific socket:
-
-```typescript
-beforeAll(async () => {
-  process.env.SANDBOX_SOCKET_PATH = '/tmp/prodisco-sandbox-test.sock';
-  grpcServer = await startServer({ socketPath: TEST_SOCKET_PATH });
-
-  const client = getSandboxClient({ socketPath: TEST_SOCKET_PATH });
-  await client.waitForHealthy(5000);
-});
-
-afterAll(() => {
-  closeSandboxClient();
-  grpcServer.forceShutdown();
-});
-```
-
-Run tests with:
-```bash
-npm test
-```
+---
 
 ## TCP Transport
 
@@ -848,16 +899,18 @@ const client3 = new SandboxClient();
 | MCP server and sandbox on same host | Unix socket |
 | Sandbox in separate container | TCP |
 | Sandbox on remote host | TCP |
-| Production with network isolation | TCP with TLS (see Future Enhancements) |
+| Production with network isolation | TCP with TLS (see [Transport Security](#transport-security)) |
+
+---
 
 ## Container Isolation
 
 The sandbox server can run in a Kubernetes cluster for stronger isolation. This is the recommended deployment model for production.
 
-### Files
+**Files:**
 
-- **Dockerfile**: [`packages/sandbox-server/Dockerfile`](../packages/sandbox-server/Dockerfile) - Multi-stage build that produces a minimal production image
-- **Kubernetes manifests**: [`packages/sandbox-server/k8s/deployment.yaml`](../packages/sandbox-server/k8s/deployment.yaml) - Namespace, ServiceAccount, RBAC, Deployment, and Service
+- **Dockerfile**: `packages/sandbox-server/Dockerfile` - Multi-stage build that produces a minimal production image
+- **Kubernetes manifests**: `packages/sandbox-server/k8s/deployment.yaml` - Namespace, ServiceAccount, RBAC, Deployment, and Service
 
 ### Building and Deploying
 
@@ -895,6 +948,8 @@ const client = new SandboxClient({
 });
 ```
 
+---
+
 ## Transport Security
 
 The sandbox server supports three transport security modes for different deployment scenarios.
@@ -907,23 +962,9 @@ The sandbox server supports three transport security modes for different deploym
 | `tls` | Server-side TLS | Production with server authentication |
 | `mtls` | Mutual TLS | High-security production deployments |
 
-### Configuration
+### TLS Configuration
 
-Transport security is configured via environment variables or programmatic options:
-
-**Environment Variables:**
-
-| Variable | Values | Description |
-|----------|--------|-------------|
-| `SANDBOX_TRANSPORT_MODE` | `insecure`, `tls`, `mtls` | Transport security mode (default: `insecure`) |
-| `SANDBOX_TLS_CERT_PATH` | path | Server certificate path |
-| `SANDBOX_TLS_KEY_PATH` | path | Server private key path |
-| `SANDBOX_TLS_CA_PATH` | path | CA certificate for verification |
-| `SANDBOX_TLS_CLIENT_CERT_PATH` | path | Client certificate (mTLS, client-side) |
-| `SANDBOX_TLS_CLIENT_KEY_PATH` | path | Client private key (mTLS, client-side) |
-| `SANDBOX_TLS_SERVER_NAME` | hostname | Override server name for TLS verification |
-
-### Server Configuration
+**Server Configuration:**
 
 ```typescript
 import { startServer } from '@prodisco/sandbox-server';
@@ -950,7 +991,7 @@ await startServer({
 });
 ```
 
-### Client Configuration
+**Client Configuration:**
 
 ```typescript
 import { SandboxClient } from '@prodisco/sandbox-server';
@@ -985,12 +1026,14 @@ const mtlsClient = new SandboxClient({
 For Kubernetes deployments, use cert-manager to automatically issue and renew TLS certificates.
 
 **Prerequisites:**
+
 ```bash
 # Install cert-manager
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.0/cert-manager.yaml
 ```
 
 **Apply cert-manager resources:**
+
 ```bash
 # Apply the issuer and certificates
 kubectl apply -f packages/sandbox-server/k8s/cert-manager/issuer.yaml
@@ -999,6 +1042,7 @@ kubectl apply -f packages/sandbox-server/k8s/cert-manager/client-certificate.yam
 ```
 
 **cert-manager creates these secrets:**
+
 - `sandbox-ca-secret` - Root CA certificate
 - `sandbox-server-tls` - Server certificate (mounted in sandbox-server pod)
 - `sandbox-client-tls` - Client certificate for mTLS (mounted in MCP server pod)
@@ -1027,7 +1071,7 @@ volumes:
       secretName: sandbox-server-tls
 ```
 
-### Security Mode Selection
+**Security Mode Selection:**
 
 | Deployment | Recommended Mode |
 |------------|------------------|
@@ -1037,10 +1081,43 @@ volumes:
 | Kubernetes (high security) | `mtls` |
 | Cross-cluster communication | `mtls` |
 
+---
+
+## Testing
+
+Tests start a real gRPC server with a test-specific socket:
+
+```typescript
+beforeAll(async () => {
+  process.env.SANDBOX_SOCKET_PATH = '/tmp/prodisco-sandbox-test.sock';
+  grpcServer = await startServer({ socketPath: TEST_SOCKET_PATH });
+
+  const client = getSandboxClient({ socketPath: TEST_SOCKET_PATH });
+  await client.waitForHealthy(5000);
+});
+
+afterAll(() => {
+  closeSandboxClient();
+  grpcServer.forceShutdown();
+});
+```
+
+Run tests with:
+
+```bash
+npm test
+```
+
+For integration tests, see [integration-testing.md](integration-testing.md).
+
+---
+
 ## Future Enhancements
 
 ### Resource Limits
+
 Per-execution resource constraints (not yet implemented):
+
 ```protobuf
 message ResourceLimits {
   int64 max_memory_bytes = 1;
@@ -1050,7 +1127,9 @@ message ResourceLimits {
 ```
 
 ### Execution Queuing
+
 Queue executions when at capacity:
+
 ```protobuf
 message ExecuteAsyncResponse {
   string execution_id = 1;

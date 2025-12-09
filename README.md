@@ -2,33 +2,44 @@
 
 ProDisco gives AI agents **Kubernetes access + Prometheus metrics analysis** through two unified tools. It follows Anthropic's [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes search tools which surface API methods, agents discover them to write code, execute it in a sandbox, and only the final console output returns to the agent.
 
-**Two tools:**
-- **kubernetes.searchTools** - Discover API methods, type definitions, cached scripts, and Prometheus methods
-- **kubernetes.runSandbox** - Execute TypeScript code in a sandboxed VM environment
+[![Watch the demo](https://img.youtube.com/vi/W-DyrsGRJeQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=W-DyrsGRJeQ)
 
-## Why Progressive Disclosure Matters
+---
+
+## Table of Contents
+
+- [Why Progressive Disclosure?](#why-progressive-disclosure)
+- [Quick Start](#quick-start)
+  - [Add to Claude Code](#add-to-claude-code)
+  - [Environment Variables](#environment-variables)
+  - [Development Setup](#development-setup)
+- [Available Tools](#available-tools)
+  - [kubernetes.searchTools](#kubernetessearchtools)
+  - [kubernetes.runSandbox](#kubernetesrunsandbox)
+- [Advanced Deployment](#advanced-deployment)
+  - [Container Isolation](#container-isolation)
+  - [Transport Security (TLS/mTLS)](#transport-security-tlsmtls)
+- [Testing](#testing)
+- [Additional Documentation](#additional-documentation)
+- [License](#license)
+
+---
+
+## Why Progressive Disclosure?
 
 Anthropic's latest guidance explains why MCP servers should progressively reveal capabilities instead of dumping every tool definition into the model context. When agents explore a filesystem of TypeScript modules, they only load what they need and process data inside the execution environment, then return a concise result to the chat. This keeps token usage low, improves latency, and avoids copying large intermediate payloads through the model ([source](https://www.anthropic.com/engineering/code-execution-with-mcp)).
 
 ProDisco goes a step further: instead of exposing custom TypeScript modules, it provides a structured parameter search tool that dynamically extracts methods from upstream libraries using TypeScript AST parsing. This means:
+
 - **Zero maintenance** - Methods are extracted directly from library `.d.ts` files
 - **Always current** - Upgrading a dependency automatically exposes new methods
 - **Type-safe** - Full parameter types and return types included
-
-
----
-
-## Demo
-
-[![Watch the demo](https://img.youtube.com/vi/W-DyrsGRJeQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=W-DyrsGRJeQ)
 
 ---
 
 ## Quick Start
 
 ### Add to Claude Code
-
-Add ProDisco to Claude Code:
 
 ```bash
 # Set environment variables first (--env flag may not work reliably)
@@ -39,18 +50,21 @@ claude mcp add ProDisco -- npx -y @prodisco/k8s-mcp
 ```
 
 **With Prometheus (optional):**
+
 ```bash
 export KUBECONFIG="${HOME}/.kube/config"
 export PROMETHEUS_URL="http://localhost:9090"
 claude mcp add ProDisco -- npx -y @prodisco/k8s-mcp
 ```
 
-Remove if needed:
+**Remove if needed:**
+
 ```bash
 claude mcp remove ProDisco
 ```
 
-**Environment variables:**
+### Environment Variables
+
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `KUBECONFIG` | No | Path to kubeconfig (defaults to `~/.kube/config`) |
@@ -65,65 +79,6 @@ claude mcp remove ProDisco
 > ```
 > Then set `PROMETHEUS_URL="http://localhost:9090"`
 
-### Container Isolation (Advanced)
-
-For stronger isolation, you can run the sandbox server in a Kubernetes cluster and connect to it via TCP instead of using the local subprocess.
-
-**1. Deploy the sandbox server to your cluster:**
-```bash
-# Build and load the image (for kind clusters)
-docker build -f packages/sandbox-server/Dockerfile -t prodisco/sandbox-server:latest .
-kind load docker-image prodisco/sandbox-server:latest
-
-# Deploy
-kubectl apply -f packages/sandbox-server/k8s/deployment.yaml
-
-# Port-forward to access locally
-kubectl -n prodisco port-forward service/sandbox-server 50051:50051
-```
-
-**2. Configure the MCP server to use TCP transport:**
-```bash
-export KUBECONFIG="${HOME}/.kube/config"
-export SANDBOX_USE_TCP=true
-export SANDBOX_TCP_HOST=localhost
-export SANDBOX_TCP_PORT=50051
-claude mcp add ProDisco -- npx -y @prodisco/k8s-mcp
-```
-
-**Sandbox transport environment variables:**
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SANDBOX_USE_TCP` | `false` | Use TCP instead of local subprocess |
-| `SANDBOX_TCP_HOST` | `localhost` | Sandbox server host |
-| `SANDBOX_TCP_PORT` | `50051` | Sandbox server port |
-
-**Transport Security (TLS/mTLS):**
-
-For production deployments, the sandbox server supports TLS and mutual TLS (mTLS) for encrypted and authenticated communication:
-
-| Mode | Description |
-|------|-------------|
-| `insecure` | No encryption (default, for local development) |
-| `tls` | Server-side TLS (client verifies server identity) |
-| `mtls` | Mutual TLS (both client and server authenticate) |
-
-Configure via environment variables:
-```bash
-# Server-side TLS
-export SANDBOX_TRANSPORT_MODE=tls
-export SANDBOX_TLS_CERT_PATH=/path/to/server.crt
-export SANDBOX_TLS_KEY_PATH=/path/to/server.key
-
-# Client-side (MCP server)
-export SANDBOX_TRANSPORT_MODE=tls
-export SANDBOX_TLS_CA_PATH=/path/to/ca.crt
-```
-
-For Kubernetes deployments, use cert-manager to automate certificate management. See the [k8s/cert-manager](packages/sandbox-server/k8s/cert-manager) directory for ready-to-use manifests.
-
-See [docs/grpc-sandbox-architecture.md](docs/grpc-sandbox-architecture.md) for full architecture and security details.
-
 ### Development Setup
 
 For local development:
@@ -137,13 +92,12 @@ claude mcp add --transport stdio prodisco -- node dist/server.js
 claude mcp remove prodisco # remove when you're done
 ```
 
-### Startup Options
+**Startup Options:**
 
 | Flag | Description |
 |------|-------------|
 | `--clear-cache` | Clear the scripts cache before starting |
 
-Example:
 ```bash
 node dist/server.js --clear-cache
 ```
@@ -154,45 +108,55 @@ node dist/server.js --clear-cache
 
 ProDisco exposes two tools:
 
+### kubernetes.searchTools
+
+A unified search interface for discovering Kubernetes API methods, type definitions, cached scripts, and Prometheus methods.
+
+| Mode | Purpose | Example |
+|------|---------|---------|
+| `methods` | Find Kubernetes API methods | `{ resourceType: "Pod", action: "list" }` |
+| `types` | Get TypeScript type definitions | `{ mode: "types", types: ["V1Pod.spec"] }` |
+| `scripts` | Search cached scripts | `{ mode: "scripts", searchTerm: "logs" }` |
+| `prometheus` | Find Prometheus API methods | `{ mode: "prometheus", category: "query" }` |
+
+**Examples:**
+
+```typescript
+// Find Pod list methods
+{ resourceType: "Pod", action: "list", scope: "namespaced" }
+
+// Get type definitions with path navigation
+{ mode: "types", types: ["V1Deployment.spec.template.spec"] }
+
+// Search cached scripts
+{ mode: "scripts", searchTerm: "pod" }
+
+// Find Prometheus query methods
+{ mode: "prometheus", category: "query" }
+
+// Discover cluster metrics
+{ mode: "prometheus", category: "metrics", methodPattern: "gpu" }
+```
+
+For comprehensive documentation, see [docs/search-tools.md](docs/search-tools.md).
+
 ### kubernetes.runSandbox
 
-Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus operations. Supports multiple execution modes for different use cases.
+Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus operations.
 
 **Execution Modes:**
 
 | Mode | Purpose | Key Parameters |
 |------|---------|----------------|
-| `execute` (default) | Blocking execution, waits for completion | `code` or `cached`, `timeout` |
+| `execute` (default) | Blocking execution | `code` or `cached`, `timeout` |
 | `stream` | Real-time output streaming | `code` or `cached`, `timeout` |
-| `async` | Start execution, return immediately | `code` or `cached`, `timeout` |
-| `status` | Get status/output of async execution | `executionId`, `wait`, `outputOffset` |
-| `cancel` | Cancel a running execution | `executionId` |
-| `list` | List active and recent executions | `states`, `limit`, `includeCompletedWithinMs` |
-
-**Input:**
-```typescript
-{
-  // Mode selection (default: 'execute')
-  mode?: 'execute' | 'stream' | 'async' | 'status' | 'cancel' | 'list';
-
-  // Execute/Stream/Async mode parameters
-  code?: string;     // TypeScript code to execute directly
-  cached?: string;   // Name of a cached script to run (from searchTools results)
-  timeout?: number;  // Execution timeout in ms (default: 30000, max: 120000)
-
-  // Status/Cancel mode parameters
-  executionId?: string;   // ID from async mode response
-  wait?: boolean;         // Long-poll until completion (status mode)
-  outputOffset?: number;  // Offset for incremental reads (status mode)
-
-  // List mode parameters
-  states?: ('pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timeout')[];
-  limit?: number;                  // Max results (default: 10)
-  includeCompletedWithinMs?: number;  // Include recent completions
-}
-```
+| `async` | Background execution | `code` or `cached`, `timeout` |
+| `status` | Check async execution | `executionId`, `wait`, `outputOffset` |
+| `cancel` | Cancel running execution | `executionId` |
+| `list` | List active executions | `states`, `limit` |
 
 **Sandbox Environment:**
+
 - `k8s` - Full `@kubernetes/client-node` library
 - `kc` - Pre-configured KubeConfig instance
 - `console` - Captured output (log, error, warn, info)
@@ -200,8 +164,9 @@ Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus
 - `process.env` - Environment variables (PROMETHEUS_URL, etc.)
 
 **Examples:**
+
 ```typescript
-// Execute mode (default) - blocking execution
+// Execute code (default mode)
 {
   code: `
     const api = kc.makeApiClient(k8s.CoreV1Api);
@@ -218,147 +183,109 @@ Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus
 
 // Async mode - start long-running task
 { mode: "async", code: "longRunningTask()" }
-// Returns: { executionId: "abc-123", state: "running", ... }
 
-// Status mode - check async execution progress
+// Check async execution status
 { mode: "status", executionId: "abc-123", wait: true }
 
-// Cancel mode - stop a running execution
+// Cancel a running execution
 { mode: "cancel", executionId: "abc-123" }
-
-// List mode - show running executions
-{ mode: "list", states: ["running"], limit: 5 }
 ```
 
-### kubernetes.searchTools
-
-A unified search interface with four modes:
-
-| Mode | Purpose | Example |
-|------|---------|---------|
-| `methods` | Find Kubernetes API methods | `{ resourceType: "Pod", action: "list" }` |
-| `types` | Get TypeScript type definitions | `{ mode: "types", types: ["V1Pod.spec"] }` |
-| `scripts` | Search cached scripts | `{ mode: "scripts", searchTerm: "logs" }` |
-| `prometheus` | Find Prometheus API methods | `{ mode: "prometheus", category: "query" }` |
-
-For comprehensive documentation including architecture details and example workflows, see [docs/search-tools.md](docs/search-tools.md).
-
-**Input:**
-```typescript
-{
-  // Mode selection
-  mode?: 'methods' | 'types' | 'scripts' | 'prometheus';  // default: 'methods'
-
-  // Methods mode - Kubernetes API discovery
-  resourceType?: string;  // e.g., "Pod", "Deployment", "Service"
-  action?: string;        // e.g., "list", "read", "create", "delete", "patch"
-  scope?: 'namespaced' | 'cluster' | 'all';
-  exclude?: { actions?: string[]; apiClasses?: string[] };
-
-  // Types mode - TypeScript definitions
-  types?: string[];       // e.g., ["V1Pod", "V1Deployment.spec"]
-  depth?: number;         // Nested type depth (1-2)
-
-  // Scripts mode - Cached script discovery
-  searchTerm?: string;    // Search term (omit to list all)
-
-  // Prometheus mode - Prometheus API discovery and metrics
-  category?: 'query' | 'metadata' | 'alerts' | 'metrics' | 'all';
-  methodPattern?: string; // e.g., "query", "labels", "pod", "gpu"
-
-  // Shared parameters
-  limit?: number;         // Max results (default: 10)
-  offset?: number;        // Pagination offset
-}
-```
-
-**Methods Mode Examples:**
-```typescript
-// List all Pod-related methods
-{ resourceType: "Pod" }
-
-// List namespaced Pods
-{ resourceType: "Pod", action: "list", scope: "namespaced" }
-
-// Create Deployment
-{ resourceType: "Deployment", action: "create" }
-
-// Pod methods excluding delete actions
-{ resourceType: "Pod", exclude: { actions: ["delete"] } }
-
-// Pod methods excluding CoreV1Api (shows only PolicyV1Api, AutoscalingV1Api, etc.)
-{ resourceType: "Pod", exclude: { apiClasses: ["CoreV1Api"] } }
-```
-
-**Types Mode Examples:**
-```typescript
-// Get V1Pod type definition
-{ mode: "types", types: ["V1Pod"] }
-
-// Get multiple types
-{ mode: "types", types: ["V1Pod", "V1Deployment", "V1Service"] }
-
-// Navigate to nested types using dot notation
-{ mode: "types", types: ["V1Deployment.spec"] }  // Returns V1DeploymentSpec
-{ mode: "types", types: ["V1Pod.spec.containers"] }  // Returns V1Container (array element)
-{ mode: "types", types: ["V1Pod.status.conditions"] }  // Returns V1PodCondition
-
-// Include nested types at depth 2
-{ mode: "types", types: ["V1Pod"], depth: 2 }
-```
-
-**Scripts Mode Examples:**
-```typescript
-// List all cached scripts
-{ mode: "scripts" }
-
-// Search for pod-related scripts
-{ mode: "scripts", searchTerm: "pod" }
-```
-
-**Prometheus Mode Examples:**
-```typescript
-// List all available methods
-{ mode: "prometheus" }
-
-// Find PromQL query methods
-{ mode: "prometheus", category: "query" }
-
-// Find metadata methods (labels, series, targets)
-{ mode: "prometheus", category: "metadata" }
-
-// Search for specific methods
-{ mode: "prometheus", methodPattern: "query" }
-
-// Discover actual metrics from your cluster
-{ mode: "prometheus", category: "metrics", methodPattern: "pod" }
-
-// Find GPU metrics
-{ mode: "prometheus", category: "metrics", methodPattern: "gpu" }
-```
-
-**Available Categories (Prometheus Mode):**
-
-| Category | Methods | Use Case |
-|----------|---------|----------|
-| `query` | `instantQuery`, `rangeQuery` | Execute PromQL queries |
-| `metadata` | `series`, `labelNames`, `labelValues`, `targets` | Explore metrics metadata |
-| `alerts` | `rules`, `alerts`, `alertmanagers` | Access alerting information |
-| `metrics` | (dynamic from cluster) | Discover actual metrics with descriptions |
+For architecture details, see [docs/grpc-sandbox-architecture.md](docs/grpc-sandbox-architecture.md).
 
 ---
 
-## Integration Tests
+## Advanced Deployment
 
-End-to-end testing instructions (KIND cluster + Claude Agent SDK driver) now live in `docs/integration-testing.md`. The workflow is manual-only for now and assumes your Anthropic credentials are already configured. Run it locally with:
+### Container Isolation
+
+For stronger isolation, run the sandbox server in a Kubernetes cluster and connect via TCP.
+
+**1. Deploy the sandbox server:**
+
+```bash
+# Build and load the image (for kind clusters)
+docker build -f packages/sandbox-server/Dockerfile -t prodisco/sandbox-server:latest .
+kind load docker-image prodisco/sandbox-server:latest
+
+# Deploy
+kubectl apply -f packages/sandbox-server/k8s/deployment.yaml
+
+# Port-forward to access locally
+kubectl -n prodisco port-forward service/sandbox-server 50051:50051
+```
+
+**2. Configure the MCP server to use TCP:**
+
+```bash
+export KUBECONFIG="${HOME}/.kube/config"
+export SANDBOX_USE_TCP=true
+export SANDBOX_TCP_HOST=localhost
+export SANDBOX_TCP_PORT=50051
+claude mcp add ProDisco -- npx -y @prodisco/k8s-mcp
+```
+
+**Transport Environment Variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SANDBOX_USE_TCP` | `false` | Use TCP instead of local subprocess |
+| `SANDBOX_TCP_HOST` | `localhost` | Sandbox server host |
+| `SANDBOX_TCP_PORT` | `50051` | Sandbox server port |
+
+### Transport Security (TLS/mTLS)
+
+For production deployments, the sandbox server supports TLS and mutual TLS (mTLS):
+
+| Mode | Description |
+|------|-------------|
+| `insecure` | No encryption (default, for local development) |
+| `tls` | Server-side TLS (client verifies server identity) |
+| `mtls` | Mutual TLS (both client and server authenticate) |
+
+**Configuration:**
+
+```bash
+# Server-side TLS
+export SANDBOX_TRANSPORT_MODE=tls
+export SANDBOX_TLS_CERT_PATH=/path/to/server.crt
+export SANDBOX_TLS_KEY_PATH=/path/to/server.key
+
+# Client-side (MCP server)
+export SANDBOX_TRANSPORT_MODE=tls
+export SANDBOX_TLS_CA_PATH=/path/to/ca.crt
+```
+
+For Kubernetes deployments, use cert-manager to automate certificate management. See the [k8s/cert-manager](packages/sandbox-server/k8s/cert-manager) directory for ready-to-use manifests.
+
+For full architecture and security details, see [docs/grpc-sandbox-architecture.md](docs/grpc-sandbox-architecture.md).
+
+---
+
+## Testing
+
+### Integration Tests
+
+End-to-end testing with KIND cluster + Claude Agent SDK:
 
 ```bash
 npm run test:integration
 ```
+
+For detailed testing instructions, see [docs/integration-testing.md](docs/integration-testing.md).
+
+---
+
+## Additional Documentation
+
+| Document | Description |
+|----------|-------------|
+| [docs/search-tools.md](docs/search-tools.md) | Complete searchTools reference with examples and technical architecture |
+| [docs/grpc-sandbox-architecture.md](docs/grpc-sandbox-architecture.md) | Sandbox architecture, gRPC protocol, and security configuration |
+| [docs/integration-testing.md](docs/integration-testing.md) | Integration test workflow and container tests |
 
 ---
 
 ## License
 
 MIT
-
