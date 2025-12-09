@@ -28,6 +28,11 @@ function verifyOpenSslAvailable(): void {
 }
 
 // Fail fast if OpenSSL is not available
+
+// Port counter to ensure unique ports across test suites within this file
+// Using process.pid ensures .ts and .js versions get different ports
+let portCounter = 0;
+const getUniquePort = () => 53000 + (process.pid % 1000) + (portCounter++ * 10);
 verifyOpenSslAvailable();
 
 /**
@@ -153,7 +158,7 @@ describe('TransportMode Configuration - Server', () => {
 
       // Create a server with no transport mode specified
       // It should default to insecure (which doesn't require TLS config)
-      const testPort = 50800 + Math.floor(Math.random() * 100);
+      const testPort = getUniquePort();
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -1415,8 +1420,7 @@ describe('Default Values', () => {
   it('server defaults to 0.0.0.0 for TCP host', async () => {
     const { startServer } = await import('../server/index.js');
 
-    // Use a unique port range (51000-51099) to avoid conflicts with other tests using 50800-50899
-    const testPort = 51000 + Math.floor(Math.random() * 100);
+    const testPort = getUniquePort();
     process.env.SANDBOX_USE_TCP = 'true';
     process.env.SANDBOX_TCP_PORT = String(testPort);
     // No TCP_HOST set

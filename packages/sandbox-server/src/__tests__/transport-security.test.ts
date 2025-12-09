@@ -20,6 +20,11 @@ import { SandboxClient, type TransportMode as ClientTransportMode } from '../cli
 // Helper to generate unique IDs for test isolation
 const uniqueId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+// Port counter to ensure unique ports across test suites within this file
+// Using process.pid ensures .ts and .js versions get different ports
+let portCounter = 0;
+const getUniquePort = () => 52000 + (process.pid % 1000) + (portCounter++ * 10);
+
 /**
  * Generate self-signed certificates for testing.
  * Creates CA, server, and client certificates.
@@ -123,7 +128,7 @@ verifyOpenSslAvailable();
 
 describe('Transport Security - Insecure Mode', () => {
   const testId = uniqueId();
-  const testPort = 50100 + Math.floor(Math.random() * 100);
+  const testPort = getUniquePort();
   const testHost = '127.0.0.1';
   const testCacheDir = `/tmp/prodisco-cache-insecure-${testId}`;
   let server: grpc.Server;
@@ -232,7 +237,7 @@ describe('Transport Security - Insecure Mode', () => {
 
 describe('Transport Security - TLS Mode', () => {
   const testId = uniqueId();
-  const testPort = 50200 + Math.floor(Math.random() * 100);
+  const testPort = getUniquePort();
   const testHost = '127.0.0.1';
   const testCacheDir = `/tmp/prodisco-cache-tls-${testId}`;
   const certDir = `/tmp/prodisco-certs-tls-${testId}`;
@@ -403,7 +408,7 @@ describe('Transport Security - TLS Mode', () => {
 
 describe('Transport Security - TLS Certificate Validation', () => {
   const testId = uniqueId();
-  const testPort = 50300 + Math.floor(Math.random() * 100);
+  const testPort = getUniquePort();
   const testHost = '127.0.0.1';
   const testCacheDir = `/tmp/prodisco-cache-tls-validation-${testId}`;
   const certDir = `/tmp/prodisco-certs-tls-validation-${testId}`;
@@ -499,7 +504,7 @@ describe('Transport Security - TLS Certificate Validation', () => {
 
 describe('Transport Security - mTLS Mode', () => {
   const testId = uniqueId();
-  const testPort = 50400 + Math.floor(Math.random() * 100);
+  const testPort = getUniquePort();
   const testHost = '127.0.0.1';
   const testCacheDir = `/tmp/prodisco-cache-mtls-${testId}`;
   const certDir = `/tmp/prodisco-certs-mtls-${testId}`;
@@ -662,7 +667,7 @@ describe('Transport Security - mTLS Mode', () => {
 
 describe('Transport Security - mTLS Client Certificate Validation', () => {
   const testId = uniqueId();
-  const testPort = 50500 + Math.floor(Math.random() * 100);
+  const testPort = getUniquePort();
   const testHost = '127.0.0.1';
   const testCacheDir = `/tmp/prodisco-cache-mtls-validation-${testId}`;
   const certDir = `/tmp/prodisco-certs-mtls-validation-${testId}`;
@@ -782,7 +787,7 @@ describe('Transport Security - mTLS Client Certificate Validation', () => {
 
 describe('Transport Security - Environment Variable Configuration', () => {
   const testId = uniqueId();
-  const testPort = 50600 + Math.floor(Math.random() * 100);
+  const testPort = getUniquePort();
   const testHost = '127.0.0.1';
   const testCacheDir = `/tmp/prodisco-cache-env-${testId}`;
   const certDir = `/tmp/prodisco-certs-env-${testId}`;
@@ -1044,7 +1049,7 @@ describe('Transport Security - Mode Transitions', () => {
   });
 
   it('can run multiple servers with different security modes', async () => {
-    const insecurePort = 50700 + Math.floor(Math.random() * 100);
+    const insecurePort = getUniquePort();
     const tlsPort = insecurePort + 1;
     const mtlsPort = insecurePort + 2;
     const testHost = '127.0.0.1';
