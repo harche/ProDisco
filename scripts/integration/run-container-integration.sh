@@ -81,7 +81,14 @@ sed "s|prodisco/sandbox-server:latest|${IMAGE_NAME}|g" \
 
 # Step 6: Wait for deployment to be ready
 log "Waiting for sandbox-server deployment to be ready"
-"$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=available deployment/sandbox-server --timeout=120s
+if ! "$KUBECTL_BIN" -n "$NAMESPACE" wait --for=condition=available deployment/sandbox-server --timeout=120s; then
+  log "ERROR: Deployment failed to become ready. Collecting diagnostics..."
+  "$KUBECTL_BIN" -n "$NAMESPACE" get pods -o wide
+  "$KUBECTL_BIN" -n "$NAMESPACE" describe deployment/sandbox-server
+  "$KUBECTL_BIN" -n "$NAMESPACE" describe pods -l app=sandbox-server
+  "$KUBECTL_BIN" -n "$NAMESPACE" logs -l app=sandbox-server --tail=50 || true
+  exit 1
+fi
 
 # Verify pod is running
 "$KUBECTL_BIN" -n "$NAMESPACE" get pods -l app=sandbox-server

@@ -112,11 +112,12 @@ function startPortForward(service: string, namespace: string, localPort: number,
   return portForward;
 }
 
-// Get path to project root
+// Get path to project root (packages/sandbox-server)
 function getProjectRoot(): string {
   const currentDir = new URL('.', import.meta.url).pathname;
-  // Navigate from src/__tests__ to packages/sandbox-server
-  return currentDir.replace('/src/__tests__/', '');
+  // Navigate from src/__tests__ or dist/__tests__ to packages/sandbox-server
+  // The k8s directory is only in the source, not in dist
+  return currentDir.replace(/\/(src|dist)\/__tests__\/?$/, '');
 }
 
 const kindAvailable = isKindClusterAvailable();
@@ -169,9 +170,21 @@ describe.skipIf(!shouldRun)('Kind Cluster TLS Integration Tests', () => {
       throw new Error('Server certificate not ready');
     }
 
-    // Apply deployment
-    console.log('Applying deployment...');
-    applyManifests([manifests.deployment]);
+    // Check if deployment already exists (CI may have already deployed)
+    let deploymentExists = false;
+    try {
+      execSync('kubectl get deployment sandbox-server -n prodisco', { stdio: 'pipe' });
+      deploymentExists = true;
+      console.log('Deployment already exists, skipping apply...');
+    } catch {
+      deploymentExists = false;
+    }
+
+    if (!deploymentExists) {
+      // Apply deployment only if it doesn't exist
+      console.log('Applying deployment...');
+      applyManifests([manifests.deployment]);
+    }
 
     // Wait for deployment
     console.log('Waiting for deployment...');
@@ -302,6 +315,222 @@ describe.skipIf(!shouldRun)('Kind Cluster TLS Integration Tests', () => {
       expect(status.state).toBe(3); // COMPLETED
       expect(status.output).toContain('async over TLS');
     });
+  });
+});
+
+// =============================================================================
+// mTLS Mode Test (Mutual TLS with Client Certificates)
+// =============================================================================
+
+describe.skipIf(!shouldRun)('Kind Cluster mTLS Mode Tests', () => {
+  let portForward: ChildProcess | null = null;
+  let client: SandboxClient | null = null;
+  const localPort = 50903;
+  const deploymentName = 'sandbox-server-mtls';
+  const namespace = 'prodisco';
+
+  beforeAll(async () => {
+    // Create mTLS deployment
+    const mtlsDeployment = `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${deploymentName}
+  namespace: ${namespace}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ${deploymentName}
+  template:
+    metadata:
+      labels:
+        app: ${deploymentName}
+    spec:
+      serviceAccountName: sandbox-server
+      containers:
+        - name: sandbox
+          image: prodisco/sandbox-server:test
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 50051
+          env:
+            - name: SANDBOX_USE_TCP
+              value: "true"
+            - name: SANDBOX_TRANSPORT_MODE
+              value: "mtls"
+            - name: SANDBOX_TLS_CERT_PATH
+              value: "/etc/sandbox-tls/tls.crt"
+            - name: SANDBOX_TLS_KEY_PATH
+              value: "/etc/sandbox-tls/tls.key"
+            - name: SANDBOX_TLS_CA_PATH
+              value: "/etc/sandbox-tls/ca.crt"
+            - name: SCRIPTS_CACHE_DIR
+              value: "/tmp/prodisco-scripts"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "kill -0 1"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /etc/sandbox-tls
+              readOnly: true
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: sandbox-server-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${deploymentName}
+  namespace: ${namespace}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 50051
+      targetPort: 50051
+  selector:
+    app: ${deploymentName}
+`;
+
+    // Apply deployment
+    execSync(`echo '${mtlsDeployment}' | kubectl apply -f -`, { stdio: 'pipe' });
+
+    // Wait for deployment
+    await waitForDeployment(deploymentName, namespace, 120000);
+
+    // Start port-forward
+    portForward = startPortForward(deploymentName, namespace, localPort, 50051);
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Extract certificates from secrets
+    const caData = execSync(
+      'kubectl get secret sandbox-server-tls -n prodisco -o jsonpath="{.data.ca\\.crt}" | base64 -d',
+      { stdio: 'pipe' }
+    ).toString();
+
+    const clientCertData = execSync(
+      'kubectl get secret sandbox-client-tls -n prodisco -o jsonpath="{.data.tls\\.crt}" | base64 -d',
+      { stdio: 'pipe' }
+    ).toString();
+
+    const clientKeyData = execSync(
+      'kubectl get secret sandbox-client-tls -n prodisco -o jsonpath="{.data.tls\\.key}" | base64 -d',
+      { stdio: 'pipe' }
+    ).toString();
+
+    // Write certs to temp files
+    const fs = require('node:fs');
+    fs.writeFileSync('/tmp/prodisco-mtls-ca.crt', caData);
+    fs.writeFileSync('/tmp/prodisco-mtls-client.crt', clientCertData);
+    fs.writeFileSync('/tmp/prodisco-mtls-client.key', clientKeyData);
+
+    // Create mTLS client
+    client = new SandboxClient({
+      useTcp: true,
+      tcpHost: 'localhost',
+      tcpPort: localPort,
+      transportMode: 'mtls',
+      tls: {
+        caPath: '/tmp/prodisco-mtls-ca.crt',
+        certPath: '/tmp/prodisco-mtls-client.crt',
+        keyPath: '/tmp/prodisco-mtls-client.key',
+        serverName: 'sandbox-server.prodisco.svc.cluster.local',
+      },
+    });
+  }, 180000);
+
+  afterAll(async () => {
+    if (client) {
+      client.close();
+    }
+    if (portForward) {
+      portForward.kill();
+    }
+
+    // Cleanup
+    try {
+      execSync(`kubectl delete deployment ${deploymentName} -n ${namespace} --ignore-not-found`, { stdio: 'pipe' });
+      execSync(`kubectl delete service ${deploymentName} -n ${namespace} --ignore-not-found`, { stdio: 'pipe' });
+    } catch {
+      // Ignore cleanup errors
+    }
+  });
+
+  it('connects with mTLS (mutual TLS)', async () => {
+    const healthy = await client!.waitForHealthy(30000);
+    expect(healthy).toBe(true);
+  });
+
+  it('executes code over mTLS connection', async () => {
+    const result = await client!.execute({
+      code: 'console.log("mTLS mode in kind cluster")',
+      timeoutMs: 30000,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe('mTLS mode in kind cluster');
+  });
+
+  it('accesses Kubernetes API over mTLS', async () => {
+    const result = await client!.execute({
+      code: `
+        const api = kc.makeApiClient(k8s.CoreV1Api);
+        const response = await api.listNamespace();
+        console.log(response.items.length > 0 ? 'success' : 'fail');
+      `,
+      timeoutMs: 30000,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe('success');
+  });
+
+  it('mTLS server rejects connections without client certificate', async () => {
+    // Try to connect with TLS only (no client cert)
+    const tlsOnlyClient = new SandboxClient({
+      useTcp: true,
+      tcpHost: 'localhost',
+      tcpPort: localPort,
+      transportMode: 'tls',
+      tls: {
+        caPath: '/tmp/prodisco-mtls-ca.crt',
+        serverName: 'sandbox-server.prodisco.svc.cluster.local',
+      },
+    });
+
+    // Should fail to connect - server requires client cert
+    const healthy = await tlsOnlyClient.waitForHealthy(5000, 500);
+    expect(healthy).toBe(false);
+
+    tlsOnlyClient.close();
+  });
+
+  it('mTLS server rejects insecure connections', async () => {
+    const insecureClient = new SandboxClient({
+      useTcp: true,
+      tcpHost: 'localhost',
+      tcpPort: localPort,
+      transportMode: 'insecure',
+    });
+
+    // Should fail to connect
+    const healthy = await insecureClient.waitForHealthy(5000, 500);
+    expect(healthy).toBe(false);
+
+    insecureClient.close();
   });
 });
 
@@ -485,7 +714,7 @@ describe.skipIf(!shouldRun)('Kind Cluster Security Verification', () => {
   });
 
   it('deployment has correct security settings', async () => {
-    // Verify deployment environment variables
+    // Verify deployment environment variables - the CI deploys to 'prodisco' namespace
     const envVars = execSync(
       'kubectl get deployment sandbox-server -n prodisco -o jsonpath="{.spec.template.spec.containers[0].env}"',
       { stdio: 'pipe' }

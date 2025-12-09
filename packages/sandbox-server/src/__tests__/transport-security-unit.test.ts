@@ -29,10 +29,9 @@ function verifyOpenSslAvailable(): void {
 
 // Fail fast if OpenSSL is not available
 
-// Port counter to ensure unique ports across test suites within this file
-// Using process.pid ensures .ts and .js versions get different ports
-let portCounter = 0;
-const getUniquePort = () => 53000 + (process.pid % 1000) + (portCounter++ * 10);
+// Hardcoded ports for each test suite - src uses 55xxx, dist uses 57xxx
+const isDistBuild = import.meta.url.includes('/dist/');
+const PORT_BASE = isDistBuild ? 57000 : 55000;
 verifyOpenSslAvailable();
 
 /**
@@ -158,7 +157,7 @@ describe('TransportMode Configuration - Server', () => {
 
       // Create a server with no transport mode specified
       // It should default to insecure (which doesn't require TLS config)
-      const testPort = getUniquePort();
+      const testPort = PORT_BASE + 1;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -180,7 +179,7 @@ describe('TransportMode Configuration - Server', () => {
       process.env.SANDBOX_TRANSPORT_MODE = 'insecure';
 
       // When tls mode is specified without certs, it should throw
-      const testPort = 50801 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 101;
       await expect(
         startServer({
           useTcp: true,
@@ -198,7 +197,7 @@ describe('TransportMode Configuration - Server', () => {
       process.env.SANDBOX_TRANSPORT_MODE = 'tls';
 
       // Should fail because TLS mode requires certs
-      const testPort = 50802 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 102;
       await expect(
         startServer({
           useTcp: true,
@@ -215,7 +214,7 @@ describe('TransportMode Configuration - Server', () => {
       process.env.SANDBOX_TRANSPORT_MODE = 'invalid_mode';
 
       // Should default to insecure when env var is invalid
-      const testPort = 50803 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 103;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -346,7 +345,8 @@ describe('TransportMode Configuration - Client', () => {
 // =============================================================================
 
 describe('TLS Configuration - Server', () => {
-  const testDir = `/tmp/prodisco-unit-test-server-${Date.now()}`;
+  // Use different temp directories for src (.ts) vs dist (.js) to avoid collisions when both run in parallel
+  const testDir = `/tmp/prodisco-unit-test-server-${isDistBuild ? 'dist' : 'src'}-${Date.now()}`;
   let certs: ReturnType<typeof generateTestCertificates>;
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -386,7 +386,7 @@ describe('TLS Configuration - Server', () => {
     it('uses tls config from options when provided', async () => {
       const { startServer } = await import('../server/index.js');
 
-      const testPort = 50810 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 110;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -411,7 +411,7 @@ describe('TLS Configuration - Server', () => {
       process.env.SANDBOX_TLS_CERT_PATH = certs.certPath;
       process.env.SANDBOX_TLS_KEY_PATH = certs.keyPath;
 
-      const testPort = 50811 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 111;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -430,7 +430,7 @@ describe('TLS Configuration - Server', () => {
     it('throws when TLS mode specified without cert paths', async () => {
       const { startServer } = await import('../server/index.js');
 
-      const testPort = 50812 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 112;
       await expect(
         startServer({
           useTcp: true,
@@ -445,7 +445,7 @@ describe('TLS Configuration - Server', () => {
     it('throws when mTLS mode specified without CA path', async () => {
       const { startServer } = await import('../server/index.js');
 
-      const testPort = 50813 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 113;
       // Note: mTLS requires caPath for client verification, but the server
       // will still start - it just won't verify clients properly
       // The actual behavior depends on gRPC implementation
@@ -471,7 +471,7 @@ describe('TLS Configuration - Server', () => {
     it('throws when cert file does not exist', async () => {
       const { startServer } = await import('../server/index.js');
 
-      const testPort = 50814 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 114;
       await expect(
         startServer({
           useTcp: true,
@@ -489,7 +489,7 @@ describe('TLS Configuration - Server', () => {
     it('throws when key file does not exist', async () => {
       const { startServer } = await import('../server/index.js');
 
-      const testPort = 50815 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 115;
       await expect(
         startServer({
           useTcp: true,
@@ -507,7 +507,8 @@ describe('TLS Configuration - Server', () => {
 });
 
 describe('TLS Configuration - Client', () => {
-  const testDir = `/tmp/prodisco-unit-test-client-${Date.now()}`;
+  // Use different temp directories for src (.ts) vs dist (.js) to avoid collisions when both run in parallel
+  const testDir = `/tmp/prodisco-unit-test-client-${isDistBuild ? 'dist' : 'src'}-${Date.now()}`;
   let certs: ReturnType<typeof generateTestCertificates>;
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -783,7 +784,7 @@ describe('Transport Type Selection - Server', () => {
   it('uses TCP when useTcp is true', async () => {
     const { startServer } = await import('../server/index.js');
 
-    const testPort = 50820 + Math.floor(Math.random() * 100);
+    const testPort = PORT_BASE + 120;
     const server = await startServer({
       useTcp: true,
       tcpHost: '127.0.0.1',
@@ -832,7 +833,7 @@ describe('Transport Type Selection - Server', () => {
   it('uses TCP when tcpHost is specified', async () => {
     const { startServer } = await import('../server/index.js');
 
-    const testPort = 50823 + Math.floor(Math.random() * 100);
+    const testPort = PORT_BASE + 123;
     const server = await startServer({
       tcpHost: '127.0.0.1',
       tcpPort: testPort,
@@ -849,7 +850,7 @@ describe('Transport Type Selection - Server', () => {
   it('uses TCP when tcpPort is specified', async () => {
     const { startServer } = await import('../server/index.js');
 
-    const testPort = 50824 + Math.floor(Math.random() * 100);
+    const testPort = PORT_BASE + 124;
     const server = await startServer({
       tcpPort: testPort,
       // useTcp not specified, but tcpPort implies TCP
@@ -998,7 +999,8 @@ describe('Transport Type Selection - Client', () => {
 // =============================================================================
 
 describe('Credential Creation', () => {
-  const testDir = `/tmp/prodisco-cred-test-${Date.now()}`;
+  // Use different temp directories for src (.ts) vs dist (.js) to avoid collisions when both run in parallel
+  const testDir = `/tmp/prodisco-cred-test-${isDistBuild ? 'dist' : 'src'}-${Date.now()}`;
   let certs: ReturnType<typeof generateTestCertificates>;
 
   beforeEach(() => {
@@ -1015,7 +1017,7 @@ describe('Credential Creation', () => {
     it('creates insecure credentials for insecure mode', async () => {
       const { startServer } = await import('../server/index.js');
 
-      const testPort = 50830 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 130;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -1033,7 +1035,7 @@ describe('Credential Creation', () => {
     it('creates SSL credentials for TLS mode', async () => {
       const { startServer } = await import('../server/index.js');
 
-      const testPort = 50831 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 131;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -1055,7 +1057,7 @@ describe('Credential Creation', () => {
     it('creates SSL credentials with client verification for mTLS mode', async () => {
       const { startServer } = await import('../server/index.js');
 
-      const testPort = 50832 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 132;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -1184,7 +1186,8 @@ describe('Type Definitions', () => {
 // =============================================================================
 
 describe('Edge Cases and Error Handling', () => {
-  const testDir = `/tmp/prodisco-edge-test-${Date.now()}`;
+  // Use different temp directories for src (.ts) vs dist (.js) to avoid collisions when both run in parallel
+  const testDir = `/tmp/prodisco-edge-test-${isDistBuild ? 'dist' : 'src'}-${Date.now()}`;
   let certs: ReturnType<typeof generateTestCertificates>;
   const originalEnv: Record<string, string | undefined> = {};
 
@@ -1229,7 +1232,7 @@ describe('Edge Cases and Error Handling', () => {
 
       process.env.SANDBOX_TRANSPORT_MODE = '';
 
-      const testPort = 50840 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 140;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -1248,7 +1251,7 @@ describe('Edge Cases and Error Handling', () => {
 
       process.env.SANDBOX_TRANSPORT_MODE = '   ';
 
-      const testPort = 50841 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 141;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -1348,7 +1351,7 @@ describe('Edge Cases and Error Handling', () => {
       process.env.SANDBOX_TLS_KEY_PATH = '/nonexistent/env-key.key';
 
       // Config with valid paths should work
-      const testPort = 50842 + Math.floor(Math.random() * 100);
+      const testPort = PORT_BASE + 142;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -1420,7 +1423,7 @@ describe('Default Values', () => {
   it('server defaults to 0.0.0.0 for TCP host', async () => {
     const { startServer } = await import('../server/index.js');
 
-    const testPort = getUniquePort();
+    const testPort = PORT_BASE + 10;
     process.env.SANDBOX_USE_TCP = 'true';
     process.env.SANDBOX_TCP_PORT = String(testPort);
     // No TCP_HOST set

@@ -2,8 +2,6 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    testTimeout: 60000, // 60 seconds per test
-    hookTimeout: 30000, // 30 seconds for beforeAll/afterAll
     reporters: ['verbose'], // Print each test name as it runs
 
     // Only run tests from src/ - not from dist/
@@ -12,7 +10,7 @@ export default defineConfig({
     // - Running the same tests from both src and dist is redundant
     // - It doubles test time and creates port collision issues
     // - Source tests are sufficient to verify functionality
-    include: ['src/**/*.test.ts'],
+    exclude: ['**/node_modules/**', '**/dist/**'],
 
     // Run tests sequentially within each file to avoid port collisions
     // Tests that start gRPC servers need previous servers fully shut down
