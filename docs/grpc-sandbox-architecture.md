@@ -740,12 +740,31 @@ Client                          Server
 
 ## Environment Variables
 
+### Transport Configuration
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SANDBOX_SOCKET_PATH` | `/tmp/prodisco-sandbox.sock` | Unix socket path |
 | `SANDBOX_USE_TCP` | `false` | Use TCP transport instead of Unix socket (`true` or `1`) |
 | `SANDBOX_TCP_HOST` | `0.0.0.0` (server) / `localhost` (client) | TCP host to bind/connect to |
 | `SANDBOX_TCP_PORT` | `50051` | TCP port to bind/connect to |
+
+### Security Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SANDBOX_TRANSPORT_MODE` | `insecure` | Transport security mode: `insecure`, `tls`, or `mtls` |
+| `SANDBOX_TLS_CERT_PATH` | (none) | Server certificate path |
+| `SANDBOX_TLS_KEY_PATH` | (none) | Server private key path |
+| `SANDBOX_TLS_CA_PATH` | (none) | CA certificate for verification |
+| `SANDBOX_TLS_CLIENT_CERT_PATH` | (none) | Client certificate (mTLS, client-side only) |
+| `SANDBOX_TLS_CLIENT_KEY_PATH` | (none) | Client private key (mTLS, client-side only) |
+| `SANDBOX_TLS_SERVER_NAME` | (none) | Override server name for TLS verification |
+
+### Application Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `SCRIPTS_CACHE_DIR` | `/tmp/prodisco-scripts` | Directory for cached scripts |
 | `PROMETHEUS_URL` | (none) | Prometheus server URL |
 | `KUBECONFIG` | `~/.kube/config` | Kubernetes config path |
@@ -876,20 +895,152 @@ const client = new SandboxClient({
 });
 ```
 
-## Future Enhancements
+## Transport Security
 
-### TLS/mTLS
-Secure communication for production deployments:
+The sandbox server supports three transport security modes for different deployment scenarios.
+
+### Security Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `insecure` | No encryption (default) | Local development, Unix socket |
+| `tls` | Server-side TLS | Production with server authentication |
+| `mtls` | Mutual TLS | High-security production deployments |
+
+### Configuration
+
+Transport security is configured via environment variables or programmatic options:
+
+**Environment Variables:**
+
+| Variable | Values | Description |
+|----------|--------|-------------|
+| `SANDBOX_TRANSPORT_MODE` | `insecure`, `tls`, `mtls` | Transport security mode (default: `insecure`) |
+| `SANDBOX_TLS_CERT_PATH` | path | Server certificate path |
+| `SANDBOX_TLS_KEY_PATH` | path | Server private key path |
+| `SANDBOX_TLS_CA_PATH` | path | CA certificate for verification |
+| `SANDBOX_TLS_CLIENT_CERT_PATH` | path | Client certificate (mTLS, client-side) |
+| `SANDBOX_TLS_CLIENT_KEY_PATH` | path | Client private key (mTLS, client-side) |
+| `SANDBOX_TLS_SERVER_NAME` | hostname | Override server name for TLS verification |
+
+### Server Configuration
+
 ```typescript
-const credentials = grpc.credentials.createSsl(
-  fs.readFileSync('ca.pem'),
-  fs.readFileSync('client-key.pem'),
-  fs.readFileSync('client-cert.pem')
-);
+import { startServer } from '@prodisco/sandbox-server';
+
+// TLS mode (server-side TLS)
+await startServer({
+  useTcp: true,
+  transportMode: 'tls',
+  tls: {
+    certPath: '/etc/sandbox-tls/tls.crt',
+    keyPath: '/etc/sandbox-tls/tls.key',
+  },
+});
+
+// mTLS mode (mutual TLS)
+await startServer({
+  useTcp: true,
+  transportMode: 'mtls',
+  tls: {
+    certPath: '/etc/sandbox-tls/tls.crt',
+    keyPath: '/etc/sandbox-tls/tls.key',
+    caPath: '/etc/sandbox-tls/ca.crt',  // CA to verify client certs
+  },
+});
 ```
 
+### Client Configuration
+
+```typescript
+import { SandboxClient } from '@prodisco/sandbox-server';
+
+// TLS mode
+const client = new SandboxClient({
+  useTcp: true,
+  tcpHost: 'sandbox-server.prodisco.svc.cluster.local',
+  tcpPort: 50051,
+  transportMode: 'tls',
+  tls: {
+    caPath: '/etc/sandbox-tls/ca.crt',  // CA to verify server
+  },
+});
+
+// mTLS mode
+const mtlsClient = new SandboxClient({
+  useTcp: true,
+  tcpHost: 'sandbox-server.prodisco.svc.cluster.local',
+  tcpPort: 50051,
+  transportMode: 'mtls',
+  tls: {
+    caPath: '/etc/sandbox-tls/ca.crt',
+    certPath: '/etc/sandbox-tls/tls.crt',
+    keyPath: '/etc/sandbox-tls/tls.key',
+  },
+});
+```
+
+### Certificate Management with cert-manager
+
+For Kubernetes deployments, use cert-manager to automatically issue and renew TLS certificates.
+
+**Prerequisites:**
+```bash
+# Install cert-manager
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.0/cert-manager.yaml
+```
+
+**Apply cert-manager resources:**
+```bash
+# Apply the issuer and certificates
+kubectl apply -f packages/sandbox-server/k8s/cert-manager/issuer.yaml
+kubectl apply -f packages/sandbox-server/k8s/cert-manager/server-certificate.yaml
+kubectl apply -f packages/sandbox-server/k8s/cert-manager/client-certificate.yaml  # For mTLS
+```
+
+**cert-manager creates these secrets:**
+- `sandbox-ca-secret` - Root CA certificate
+- `sandbox-server-tls` - Server certificate (mounted in sandbox-server pod)
+- `sandbox-client-tls` - Client certificate for mTLS (mounted in MCP server pod)
+
+### Kubernetes Deployment with TLS
+
+The deployment manifest at `packages/sandbox-server/k8s/deployment.yaml` is pre-configured for TLS:
+
+```yaml
+env:
+  - name: SANDBOX_TRANSPORT_MODE
+    value: "tls"  # Change to "mtls" for mutual TLS
+  - name: SANDBOX_TLS_CERT_PATH
+    value: "/etc/sandbox-tls/tls.crt"
+  - name: SANDBOX_TLS_KEY_PATH
+    value: "/etc/sandbox-tls/tls.key"
+  - name: SANDBOX_TLS_CA_PATH
+    value: "/etc/sandbox-tls/ca.crt"
+volumeMounts:
+  - name: tls-certs
+    mountPath: /etc/sandbox-tls
+    readOnly: true
+volumes:
+  - name: tls-certs
+    secret:
+      secretName: sandbox-server-tls
+```
+
+### Security Mode Selection
+
+| Deployment | Recommended Mode |
+|------------|------------------|
+| Local development (Unix socket) | `insecure` |
+| Local development (TCP) | `insecure` |
+| Kubernetes (internal cluster) | `tls` |
+| Kubernetes (high security) | `mtls` |
+| Cross-cluster communication | `mtls` |
+
+## Future Enhancements
+
 ### Resource Limits
-Per-execution resource constraints:
+Per-execution resource constraints (not yet implemented):
 ```protobuf
 message ResourceLimits {
   int64 max_memory_bytes = 1;

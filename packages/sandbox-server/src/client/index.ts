@@ -1,5 +1,6 @@
 import * as grpc from '@grpc/grpc-js';
 import type { ClientReadableStream } from '@grpc/grpc-js';
+import { readFileSync } from 'node:fs';
 import {
   SandboxServiceClient,
   type ExecuteRequest,
@@ -21,6 +22,26 @@ const DEFAULT_SOCKET_PATH = '/tmp/prodisco-sandbox.sock';
 const DEFAULT_TCP_HOST = 'localhost';
 const DEFAULT_TCP_PORT = 50051;
 
+/**
+ * Transport security modes for gRPC communication.
+ *
+ * - `insecure`: No encryption (Unix socket or TCP, for local development)
+ * - `tls`: Server-side TLS (client verifies server identity)
+ * - `mtls`: Mutual TLS (both client and server authenticate each other)
+ */
+export type TransportMode = 'insecure' | 'tls' | 'mtls';
+
+export interface TlsConfig {
+  /** Path to CA certificate for verifying the server */
+  caPath?: string;
+  /** Path to client certificate (required for mTLS) */
+  certPath?: string;
+  /** Path to client private key (required for mTLS) */
+  keyPath?: string;
+  /** Override server name for TLS verification */
+  serverName?: string;
+}
+
 export interface SandboxClientOptions {
   /** Unix socket path for local connections */
   socketPath?: string;
@@ -28,8 +49,12 @@ export interface SandboxClientOptions {
   tcpHost?: string;
   /** TCP port to connect to */
   tcpPort?: number;
-  /** Use TCP transport instead of Unix socket */
+  /** Use TCP transport instead of Unix socket (legacy, prefer transportMode) */
   useTcp?: boolean;
+  /** Transport security mode */
+  transportMode?: TransportMode;
+  /** TLS configuration (required for 'tls' and 'mtls' modes) */
+  tls?: TlsConfig;
 }
 
 export interface ExecuteOptions {
@@ -84,65 +109,162 @@ export interface ExecutionSummary {
   cachedName?: string;
 }
 
+const VALID_TRANSPORT_MODES: TransportMode[] = ['insecure', 'tls', 'mtls'];
+
 /**
- * Determine if TCP transport should be used based on options and environment.
+ * Get the transport mode from options or environment.
+ * Defaults to 'insecure' for backward compatibility.
  */
-function shouldUseTcp(options: SandboxClientOptions): boolean {
-  if (options.useTcp !== undefined) {
-    return options.useTcp;
+function getTransportMode(options: SandboxClientOptions): TransportMode {
+  // Options take precedence
+  if (options.transportMode) {
+    return options.transportMode;
   }
+
+  // Check environment variable
+  const envMode = process.env.SANDBOX_TRANSPORT_MODE;
+  if (envMode && VALID_TRANSPORT_MODES.includes(envMode as TransportMode)) {
+    return envMode as TransportMode;
+  }
+
+  return 'insecure';
+}
+
+/**
+ * Get TLS configuration from options or environment.
+ */
+function getTlsConfig(options: SandboxClientOptions): TlsConfig | undefined {
+  if (options.tls) {
+    return options.tls;
+  }
+
+  const caPath = process.env.SANDBOX_TLS_CA_PATH;
+  const certPath = process.env.SANDBOX_TLS_CLIENT_CERT_PATH;
+  const keyPath = process.env.SANDBOX_TLS_CLIENT_KEY_PATH;
+  const serverName = process.env.SANDBOX_TLS_SERVER_NAME;
+
+  if (caPath || certPath || keyPath || serverName) {
+    return { caPath, certPath, keyPath, serverName };
+  }
+
+  return undefined;
+}
+
+/**
+ * Create client credentials based on transport mode.
+ */
+function createClientCredentials(mode: TransportMode, tls?: TlsConfig): grpc.ChannelCredentials {
+  if (mode === 'insecure') {
+    return grpc.credentials.createInsecure();
+  }
+
+  // For TLS/mTLS, load CA certificate if provided
+  const rootCerts = tls?.caPath ? readFileSync(tls.caPath) : null;
+
+  if (mode === 'mtls') {
+    if (!tls?.certPath || !tls?.keyPath) {
+      throw new Error('Client certificate and key required for mTLS mode');
+    }
+    const privateKey = readFileSync(tls.keyPath);
+    const certChain = readFileSync(tls.certPath);
+    return grpc.credentials.createSsl(rootCerts, privateKey, certChain);
+  }
+
+  // TLS mode - server auth only
+  return grpc.credentials.createSsl(rootCerts);
+}
+
+/**
+ * Determine if Unix socket should be used based on options and environment.
+ */
+function shouldUseUnixSocket(options: SandboxClientOptions): boolean {
+  // Explicit useTcp takes precedence
+  if (options.useTcp !== undefined) {
+    return !options.useTcp;
+  }
+
   // Check environment variable
   const envUseTcp = process.env.SANDBOX_USE_TCP;
-  if (envUseTcp !== undefined) {
-    return envUseTcp === 'true' || envUseTcp === '1';
+  if (envUseTcp === 'true' || envUseTcp === '1') {
+    return false;
   }
+
   // Check if TCP host or port is specified
   if (options.tcpHost || options.tcpPort || process.env.SANDBOX_TCP_HOST || process.env.SANDBOX_TCP_PORT) {
+    return false;
+  }
+
+  // Check if socket path is specified
+  if (options.socketPath || process.env.SANDBOX_SOCKET_PATH) {
     return true;
   }
-  return false;
+
+  // Default to Unix socket for local development
+  return true;
 }
 
 /**
  * Get the connection address based on options.
  */
 function getConnectionAddress(options: SandboxClientOptions): string {
-  if (shouldUseTcp(options)) {
-    const host = options.tcpHost || process.env.SANDBOX_TCP_HOST || DEFAULT_TCP_HOST;
-    const port = options.tcpPort || parseInt(process.env.SANDBOX_TCP_PORT || '', 10) || DEFAULT_TCP_PORT;
-    return `${host}:${port}`;
+  if (shouldUseUnixSocket(options)) {
+    const socketPath = options.socketPath || process.env.SANDBOX_SOCKET_PATH || DEFAULT_SOCKET_PATH;
+    return `unix://${socketPath}`;
   }
 
-  const socketPath = options.socketPath || process.env.SANDBOX_SOCKET_PATH || DEFAULT_SOCKET_PATH;
-  return `unix://${socketPath}`;
+  const host = options.tcpHost || process.env.SANDBOX_TCP_HOST || DEFAULT_TCP_HOST;
+  const port = options.tcpPort || parseInt(process.env.SANDBOX_TCP_PORT || '', 10) || DEFAULT_TCP_PORT;
+  return `${host}:${port}`;
 }
 
 /**
  * SandboxClient provides a high-level interface to the gRPC sandbox server.
  *
- * Supports both Unix socket (default) and TCP transport.
+ * Supports Unix socket (default) or TCP transport, with configurable security modes.
  *
- * Unix socket (default):
+ * Unix socket (default, insecure):
  *   new SandboxClient({ socketPath: '/tmp/sandbox.sock' })
  *
- * TCP transport:
+ * TCP (insecure):
  *   new SandboxClient({ useTcp: true, tcpHost: 'localhost', tcpPort: 50051 })
- *   new SandboxClient({ tcpHost: 'sandbox.example.com', tcpPort: 50051 })
+ *
+ * TCP with TLS (server-side TLS):
+ *   new SandboxClient({
+ *     useTcp: true,
+ *     transportMode: 'tls',
+ *     tls: { caPath: '/path/to/ca.crt' }
+ *   })
+ *
+ * TCP with mTLS (mutual TLS):
+ *   new SandboxClient({
+ *     useTcp: true,
+ *     transportMode: 'mtls',
+ *     tls: { caPath: '/path/to/ca.crt', certPath: '/path/to/tls.crt', keyPath: '/path/to/tls.key' }
+ *   })
  */
 export class SandboxClient {
   private client: SandboxServiceClient;
 
   constructor(options: SandboxClientOptions = {}) {
+    const transportMode = getTransportMode(options);
+    const tlsConfig = getTlsConfig(options);
     const address = getConnectionAddress(options);
 
-    this.client = new SandboxServiceClient(
-      address,
-      grpc.credentials.createInsecure(),
-      {
-        'grpc.keepalive_time_ms': 10000,
-        'grpc.keepalive_timeout_ms': 5000,
-      }
-    );
+    // Create credentials based on transport mode
+    const credentials = createClientCredentials(transportMode, tlsConfig);
+
+    // Configure channel options
+    const channelOptions: grpc.ChannelOptions = {
+      'grpc.keepalive_time_ms': 10000,
+      'grpc.keepalive_timeout_ms': 5000,
+    };
+
+    // Override server name for TLS verification if specified
+    if (tlsConfig?.serverName && (transportMode === 'tls' || transportMode === 'mtls')) {
+      channelOptions['grpc.ssl_target_name_override'] = tlsConfig.serverName;
+    }
+
+    this.client = new SandboxServiceClient(address, credentials, channelOptions);
   }
 
   /**

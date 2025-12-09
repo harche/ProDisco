@@ -23,6 +23,12 @@
     "start": "node dist/server/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:security": "vitest run transport-security",
+    "test:security:unit": "vitest run transport-security-unit",
+    "test:security:integration": "vitest run -t 'Transport Security'",
+    "test:e2e": "SANDBOX_E2E_TESTS=true vitest run -t 'Kind Cluster'",
+    "test:e2e:setup": "./scripts/setup-kind-tls-test.sh",
+    "test:e2e:teardown": "./scripts/teardown-kind-tls-test.sh",
     "proto:generate": "buf generate",
     "proto:lint": "buf lint"
   },

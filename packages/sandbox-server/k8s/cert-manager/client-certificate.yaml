@@ -1,0 +1,27 @@
+# Client TLS certificate for mTLS authentication
+# This certificate is used by the MCP server (gRPC client) when SANDBOX_TRANSPORT_MODE is 'mtls'
+# Mount this in the MCP server pod to authenticate to the sandbox-server
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: sandbox-client-tls
+  namespace: prodisco
+spec:
+  secretName: sandbox-client-tls
+  duration: 8760h # 1 year
+  renewBefore: 720h # 30 days before expiry
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - client auth
+    - digital signature
+    - key encipherment
+  dnsNames:
+    - mcp-server
+    - mcp-server.prodisco
+    - mcp-server.prodisco.svc
+    - mcp-server.prodisco.svc.cluster.local
+  issuerRef:
+    name: sandbox-ca-issuer
+    kind: Issuer

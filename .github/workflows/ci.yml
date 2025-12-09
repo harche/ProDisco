@@ -28,6 +28,8 @@ jobs:
       - run: npm run build -w @prodisco/sandbox-server
       - run: npm run build
       - run: npm run test
+      - name: Run transport security tests
+        run: npm run test:security -w @prodisco/sandbox-server
 
   container-integration:
     runs-on: ubuntu-latest
@@ -180,4 +182,184 @@ jobs:
         with:
           name: cluster-integration-artifacts
           path: artifacts/cluster-integration/
+          retention-days: 7
+
+  tls-integration:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build packages
+        run: |
+          npm run proto:generate -w @prodisco/sandbox-server
+          npm run build -w @prodisco/sandbox-server
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: prodisco-test
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Wait for cluster to be ready
+        run: |
+          kubectl wait --for=condition=Ready nodes --all --timeout=120s
+          kubectl cluster-info
+
+      - name: Install cert-manager
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.0/cert-manager.yaml
+          kubectl wait --for=condition=Available --timeout=120s deployment/cert-manager -n cert-manager
+          kubectl wait --for=condition=Available --timeout=120s deployment/cert-manager-webhook -n cert-manager
+          kubectl wait --for=condition=Available --timeout=120s deployment/cert-manager-cainjector -n cert-manager
+
+      - name: Build and load Docker image
+        run: |
+          docker build -f packages/sandbox-server/Dockerfile -t prodisco/sandbox-server:test .
+          kind load docker-image prodisco/sandbox-server:test --name prodisco-test
+
+      - name: Create namespace
+        run: kubectl create namespace prodisco
+
+      - name: Apply cert-manager resources
+        run: |
+          kubectl apply -f packages/sandbox-server/k8s/cert-manager/issuer.yaml
+          # Wait for CA secret to be created
+          for i in {1..30}; do
+            if kubectl get secret sandbox-ca-secret -n prodisco &>/dev/null; then
+              echo "CA secret created"
+              break
+            fi
+            echo "Waiting for CA secret... ($i/30)"
+            sleep 2
+          done
+          kubectl apply -f packages/sandbox-server/k8s/cert-manager/server-certificate.yaml
+          kubectl apply -f packages/sandbox-server/k8s/cert-manager/client-certificate.yaml
+
+      - name: Wait for certificates
+        run: |
+          for cert in sandbox-server-tls sandbox-client-tls; do
+            for i in {1..30}; do
+              STATUS=$(kubectl get certificate $cert -n prodisco -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+              if [ "$STATUS" = "True" ]; then
+                echo "$cert is ready"
+                break
+              fi
+              echo "Waiting for $cert... ($i/30)"
+              sleep 2
+            done
+          done
+
+      - name: Deploy sandbox-server with TLS
+        run: |
+          # Apply deployment with TLS configuration
+          cat <<EOF | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: sandbox-server
+            namespace: prodisco
+            labels:
+              app: sandbox-server
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: sandbox-server
+            template:
+              metadata:
+                labels:
+                  app: sandbox-server
+              spec:
+                serviceAccountName: sandbox-server
+                containers:
+                  - name: sandbox
+                    image: prodisco/sandbox-server:test
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - containerPort: 50051
+                        name: grpc
+                        protocol: TCP
+                    env:
+                      - name: SANDBOX_USE_TCP
+                        value: "true"
+                      - name: SANDBOX_TCP_HOST
+                        value: "0.0.0.0"
+                      - name: SANDBOX_TCP_PORT
+                        value: "50051"
+                      - name: SCRIPTS_CACHE_DIR
+                        value: "/tmp/prodisco-scripts"
+                      - name: SANDBOX_TRANSPORT_MODE
+                        value: "tls"
+                      - name: SANDBOX_TLS_CERT_PATH
+                        value: "/etc/sandbox-tls/tls.crt"
+                      - name: SANDBOX_TLS_KEY_PATH
+                        value: "/etc/sandbox-tls/tls.key"
+                      - name: SANDBOX_TLS_CA_PATH
+                        value: "/etc/sandbox-tls/ca.crt"
+                    resources:
+                      requests:
+                        memory: "128Mi"
+                        cpu: "100m"
+                      limits:
+                        memory: "512Mi"
+                        cpu: "500m"
+                    readinessProbe:
+                      grpc:
+                        port: 50051
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                    livenessProbe:
+                      grpc:
+                        port: 50051
+                      initialDelaySeconds: 10
+                      periodSeconds: 30
+                    volumeMounts:
+                      - name: scripts-cache
+                        mountPath: /tmp/prodisco-scripts
+                      - name: tls-certs
+                        mountPath: /etc/sandbox-tls
+                        readOnly: true
+                volumes:
+                  - name: scripts-cache
+                    emptyDir: {}
+                  - name: tls-certs
+                    secret:
+                      secretName: sandbox-server-tls
+          EOF
+          kubectl apply -f packages/sandbox-server/k8s/deployment.yaml
+
+      - name: Wait for deployment
+        run: kubectl wait --for=condition=Available --timeout=120s deployment/sandbox-server -n prodisco
+
+      - name: Run TLS integration tests
+        timeout-minutes: 10
+        run: SANDBOX_E2E_TESTS=true npm run test:e2e -w @prodisco/sandbox-server
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          mkdir -p artifacts/tls-integration
+          kubectl get pods -A > artifacts/tls-integration/pods.txt
+          kubectl -n prodisco logs -l app=sandbox-server --tail=100 > artifacts/tls-integration/sandbox-server.log 2>&1 || true
+          kubectl get certificates -n prodisco -o yaml > artifacts/tls-integration/certificates.yaml 2>&1 || true
+          kubectl get secrets -n prodisco > artifacts/tls-integration/secrets.txt 2>&1 || true
+          kubectl cluster-info dump > artifacts/tls-integration/cluster-dump.txt 2>&1 || true
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tls-integration-artifacts
+          path: artifacts/tls-integration/
           retention-days: 7

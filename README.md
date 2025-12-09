@@ -98,7 +98,31 @@ claude mcp add ProDisco -- npx -y @prodisco/k8s-mcp
 | `SANDBOX_TCP_HOST` | `localhost` | Sandbox server host |
 | `SANDBOX_TCP_PORT` | `50051` | Sandbox server port |
 
-See [docs/grpc-sandbox-architecture.md](docs/grpc-sandbox-architecture.md) for full architecture details.
+**Transport Security (TLS/mTLS):**
+
+For production deployments, the sandbox server supports TLS and mutual TLS (mTLS) for encrypted and authenticated communication:
+
+| Mode | Description |
+|------|-------------|
+| `insecure` | No encryption (default, for local development) |
+| `tls` | Server-side TLS (client verifies server identity) |
+| `mtls` | Mutual TLS (both client and server authenticate) |
+
+Configure via environment variables:
+```bash
+# Server-side TLS
+export SANDBOX_TRANSPORT_MODE=tls
+export SANDBOX_TLS_CERT_PATH=/path/to/server.crt
+export SANDBOX_TLS_KEY_PATH=/path/to/server.key
+
+# Client-side (MCP server)
+export SANDBOX_TRANSPORT_MODE=tls
+export SANDBOX_TLS_CA_PATH=/path/to/ca.crt
+```
+
+For Kubernetes deployments, use cert-manager to automate certificate management. See the [k8s/cert-manager](packages/sandbox-server/k8s/cert-manager) directory for ready-to-use manifests.
+
+See [docs/grpc-sandbox-architecture.md](docs/grpc-sandbox-architecture.md) for full architecture and security details.
 
 ### Development Setup
 

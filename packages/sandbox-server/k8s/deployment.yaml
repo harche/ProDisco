@@ -108,6 +108,16 @@ spec:
               value: "50051"
             - name: SCRIPTS_CACHE_DIR
               value: "/tmp/prodisco-scripts"
+            # Transport security mode: insecure, tls, or mtls
+            - name: SANDBOX_TRANSPORT_MODE
+              value: "tls"
+            # TLS certificate paths (used when SANDBOX_TRANSPORT_MODE is tls or mtls)
+            - name: SANDBOX_TLS_CERT_PATH
+              value: "/etc/sandbox-tls/tls.crt"
+            - name: SANDBOX_TLS_KEY_PATH
+              value: "/etc/sandbox-tls/tls.key"
+            - name: SANDBOX_TLS_CA_PATH
+              value: "/etc/sandbox-tls/ca.crt"
           resources:
             requests:
               memory: "128Mi"
@@ -115,34 +125,29 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
+          # Native gRPC probes (Kubernetes 1.24+)
           readinessProbe:
-            exec:
-              command:
-                - node
-                - -e
-                - |
-                  const grpc = require('@grpc/grpc-js');
-                  const client = new grpc.Client('localhost:50051', grpc.credentials.createInsecure());
-                  client.waitForReady(Date.now() + 1000, (err) => process.exit(err ? 1 : 0));
+            grpc:
+              port: 50051
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
-            exec:
-              command:
-                - node
-                - -e
-                - |
-                  const grpc = require('@grpc/grpc-js');
-                  const client = new grpc.Client('localhost:50051', grpc.credentials.createInsecure());
-                  client.waitForReady(Date.now() + 1000, (err) => process.exit(err ? 1 : 0));
+            grpc:
+              port: 50051
             initialDelaySeconds: 10
             periodSeconds: 30
           volumeMounts:
             - name: scripts-cache
               mountPath: /tmp/prodisco-scripts
+            - name: tls-certs
+              mountPath: /etc/sandbox-tls
+              readOnly: true
       volumes:
         - name: scripts-cache
           emptyDir: {}
+        - name: tls-certs
+          secret:
+            secretName: sandbox-server-tls
 ---
 apiVersion: v1
 kind: Service

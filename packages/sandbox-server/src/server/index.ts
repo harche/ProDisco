@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import * as grpc from '@grpc/grpc-js';
-import { unlinkSync, existsSync } from 'node:fs';
+import { unlinkSync, existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { SandboxServiceService } from '../generated/sandbox.js';
 import { createSandboxService } from './sandbox-service.js';
@@ -9,6 +9,24 @@ const DEFAULT_SOCKET_PATH = '/tmp/prodisco-sandbox.sock';
 const DEFAULT_TCP_HOST = '0.0.0.0';
 const DEFAULT_TCP_PORT = 50051;
 
+/**
+ * Transport security modes for gRPC communication.
+ *
+ * - `insecure`: No encryption (Unix socket or TCP, for local development)
+ * - `tls`: Server-side TLS (client verifies server identity)
+ * - `mtls`: Mutual TLS (both client and server authenticate each other)
+ */
+export type TransportMode = 'insecure' | 'tls' | 'mtls';
+
+export interface TlsConfig {
+  /** Path to the server certificate file */
+  certPath: string;
+  /** Path to the server private key file */
+  keyPath: string;
+  /** Path to the CA certificate for verifying client certs (required for mTLS) */
+  caPath?: string;
+}
+
 export interface ServerConfig {
   /** Unix socket path for local connections */
   socketPath?: string;
@@ -16,8 +34,12 @@ export interface ServerConfig {
   tcpHost?: string;
   /** TCP port to bind to */
   tcpPort?: number;
-  /** Use TCP transport instead of Unix socket */
+  /** Use TCP transport instead of Unix socket (legacy, prefer transportMode) */
   useTcp?: boolean;
+  /** Transport security mode */
+  transportMode?: TransportMode;
+  /** TLS configuration (required for 'tls' and 'mtls' modes) */
+  tls?: TlsConfig;
   prometheusUrl?: string;
   cacheDir?: string;
 }
@@ -38,51 +60,142 @@ function cleanupSocket(socketPath: string): void {
   }
 }
 
+const VALID_TRANSPORT_MODES: TransportMode[] = ['insecure', 'tls', 'mtls'];
+
 /**
- * Determine if TCP transport should be used based on config and environment.
+ * Get the transport mode from config or environment.
+ * Defaults to 'insecure' for backward compatibility.
  */
-function shouldUseTcp(config: ServerConfig): boolean {
-  if (config.useTcp !== undefined) {
-    return config.useTcp;
+function getTransportMode(config: ServerConfig): TransportMode {
+  // Config takes precedence
+  if (config.transportMode) {
+    return config.transportMode;
   }
+
+  // Check environment variable
+  const envMode = process.env.SANDBOX_TRANSPORT_MODE;
+  if (envMode && VALID_TRANSPORT_MODES.includes(envMode as TransportMode)) {
+    return envMode as TransportMode;
+  }
+
+  return 'insecure';
+}
+
+/**
+ * Get TLS configuration from config or environment.
+ */
+function getTlsConfig(config: ServerConfig): TlsConfig | undefined {
+  if (config.tls) {
+    return config.tls;
+  }
+
+  const certPath = process.env.SANDBOX_TLS_CERT_PATH;
+  const keyPath = process.env.SANDBOX_TLS_KEY_PATH;
+  const caPath = process.env.SANDBOX_TLS_CA_PATH;
+
+  if (certPath && keyPath) {
+    return { certPath, keyPath, caPath };
+  }
+
+  return undefined;
+}
+
+/**
+ * Create server credentials based on transport mode.
+ */
+function createServerCredentials(mode: TransportMode, tls?: TlsConfig): grpc.ServerCredentials {
+  if (mode === 'insecure') {
+    return grpc.ServerCredentials.createInsecure();
+  }
+
+  if (!tls) {
+    throw new Error(`TLS configuration required for transport mode: ${mode}`);
+  }
+
+  const certChain = readFileSync(tls.certPath);
+  const privateKey = readFileSync(tls.keyPath);
+
+  // For mTLS, load CA to verify client certificates
+  const rootCerts = mode === 'mtls' && tls.caPath ? readFileSync(tls.caPath) : null;
+
+  return grpc.ServerCredentials.createSsl(
+    rootCerts,
+    [{ cert_chain: certChain, private_key: privateKey }],
+    mode === 'mtls' // checkClientCertificate
+  );
+}
+
+/**
+ * Determine if Unix socket should be used based on config and environment.
+ */
+function shouldUseUnixSocket(config: ServerConfig): boolean {
+  // Explicit useTcp takes precedence
+  if (config.useTcp !== undefined) {
+    return !config.useTcp;
+  }
+
   // Check environment variable
   const envUseTcp = process.env.SANDBOX_USE_TCP;
-  if (envUseTcp !== undefined) {
-    return envUseTcp === 'true' || envUseTcp === '1';
+  if (envUseTcp === 'true' || envUseTcp === '1') {
+    return false;
   }
+
   // Check if TCP host or port is specified
   if (config.tcpHost || config.tcpPort || process.env.SANDBOX_TCP_HOST || process.env.SANDBOX_TCP_PORT) {
+    return false;
+  }
+
+  // Check if socket path is specified
+  if (config.socketPath || process.env.SANDBOX_SOCKET_PATH) {
     return true;
   }
-  return false;
+
+  // Default to Unix socket for local development
+  return true;
 }
 
 /**
  * Get the binding address based on configuration.
  */
 function getBindAddress(config: ServerConfig): { address: string; isUnixSocket: boolean } {
-  if (shouldUseTcp(config)) {
-    const host = config.tcpHost || process.env.SANDBOX_TCP_HOST || DEFAULT_TCP_HOST;
-    const port = config.tcpPort || parseInt(process.env.SANDBOX_TCP_PORT || '', 10) || DEFAULT_TCP_PORT;
-    return { address: `${host}:${port}`, isUnixSocket: false };
+  if (shouldUseUnixSocket(config)) {
+    const socketPath = config.socketPath || process.env.SANDBOX_SOCKET_PATH || DEFAULT_SOCKET_PATH;
+    return { address: `unix://${socketPath}`, isUnixSocket: true };
   }
 
-  const socketPath = config.socketPath || process.env.SANDBOX_SOCKET_PATH || DEFAULT_SOCKET_PATH;
-  return { address: `unix://${socketPath}`, isUnixSocket: true };
+  const host = config.tcpHost || process.env.SANDBOX_TCP_HOST || DEFAULT_TCP_HOST;
+  const port = config.tcpPort || parseInt(process.env.SANDBOX_TCP_PORT || '', 10) || DEFAULT_TCP_PORT;
+  return { address: `${host}:${port}`, isUnixSocket: false };
 }
 
 /**
  * Start the gRPC sandbox server.
  *
- * Supports both Unix socket (default) and TCP transport.
+ * Supports Unix socket (default) or TCP transport, with configurable security modes.
  *
- * Unix socket (default):
+ * Unix socket (default, insecure):
  *   startServer({ socketPath: '/tmp/sandbox.sock' })
  *
- * TCP transport:
+ * TCP (insecure):
  *   startServer({ useTcp: true, tcpHost: '0.0.0.0', tcpPort: 50051 })
+ *
+ * TCP with TLS (server-side TLS):
+ *   startServer({
+ *     useTcp: true,
+ *     transportMode: 'tls',
+ *     tls: { certPath: '/path/to/tls.crt', keyPath: '/path/to/tls.key' }
+ *   })
+ *
+ * TCP with mTLS (mutual TLS):
+ *   startServer({
+ *     useTcp: true,
+ *     transportMode: 'mtls',
+ *     tls: { certPath: '/path/to/tls.crt', keyPath: '/path/to/tls.key', caPath: '/path/to/ca.crt' }
+ *   })
  */
 export async function startServer(config: ServerConfig = {}): Promise<grpc.Server> {
+  const transportMode = getTransportMode(config);
+  const tlsConfig = getTlsConfig(config);
   const { address, isUnixSocket } = getBindAddress(config);
 
   // Clean up existing socket file if using Unix socket
@@ -101,19 +214,24 @@ export async function startServer(config: ServerConfig = {}): Promise<grpc.Serve
 
   server.addService(SandboxServiceService, sandboxService);
 
+  // Create credentials based on transport mode
+  const credentials = createServerCredentials(transportMode, tlsConfig);
+
   return new Promise((resolve, reject) => {
-    server.bindAsync(
-      address,
-      grpc.ServerCredentials.createInsecure(),
-      (error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        console.log(`Sandbox gRPC server listening on ${address}`);
-        resolve(server);
+    server.bindAsync(address, credentials, (error) => {
+      if (error) {
+        reject(error);
+        return;
       }
-    );
+      const securityInfo =
+        transportMode === 'insecure'
+          ? '(insecure)'
+          : transportMode === 'mtls'
+            ? '(mTLS)'
+            : '(TLS)';
+      console.log(`Sandbox gRPC server listening on ${address} ${securityInfo}`);
+      resolve(server);
+    });
   });
 }
 
@@ -155,7 +273,8 @@ function setupShutdown(server: grpc.Server, socketPath: string | null): void {
 }
 
 // CLI entry point
-const isMainModule = process.argv[1] === fileURLToPath(import.meta.url) ||
+const isMainModule =
+  process.argv[1] === fileURLToPath(import.meta.url) ||
   process.argv[1]?.endsWith('/sandbox-server/dist/server/index.js');
 
 if (isMainModule) {

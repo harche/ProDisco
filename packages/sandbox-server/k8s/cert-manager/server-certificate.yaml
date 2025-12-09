@@ -1,0 +1,26 @@
+# Server TLS certificate for the sandbox-server gRPC endpoint
+# This certificate is used when SANDBOX_TRANSPORT_MODE is 'tls' or 'mtls'
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: sandbox-server-tls
+  namespace: prodisco
+spec:
+  secretName: sandbox-server-tls
+  duration: 8760h # 1 year
+  renewBefore: 720h # 30 days before expiry
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+  dnsNames:
+    - sandbox-server
+    - sandbox-server.prodisco
+    - sandbox-server.prodisco.svc
+    - sandbox-server.prodisco.svc.cluster.local
+  issuerRef:
+    name: sandbox-ca-issuer
+    kind: Issuer
