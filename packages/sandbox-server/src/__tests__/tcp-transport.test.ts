@@ -7,8 +7,12 @@ import { SandboxClient } from '../client/index.js';
 // Helper to generate unique IDs for test isolation
 const uniqueId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
+// Hardcoded ports - src uses 51xxx, dist uses 51500+
+const isDistBuild = import.meta.url.includes('/dist/');
+const PORT_BASE = isDistBuild ? 51500 : 51000;
+
 describe('TCP Transport', () => {
-  const testPort = 50052 + Math.floor(Math.random() * 1000);
+  const testPort = PORT_BASE + 1;
   const testHost = '127.0.0.1';
   const testCacheDir = `/tmp/prodisco-cache-tcp-${uniqueId()}`;
   let server: grpc.Server;
@@ -140,7 +144,7 @@ describe('TCP Transport', () => {
 });
 
 describe('TCP Transport with Environment Variables', () => {
-  const testPort = 50053 + Math.floor(Math.random() * 1000);
+  const testPort = PORT_BASE + 2;
   const testHost = '127.0.0.1';
   const testCacheDir = `/tmp/prodisco-cache-tcp-env-${uniqueId()}`;
   let server: grpc.Server;
@@ -261,7 +265,7 @@ describe('SandboxClient TCP Options', () => {
 });
 
 describe('TCP Transport - Script Caching', () => {
-  const testPort = 50054 + Math.floor(Math.random() * 1000);
+  const testPort = PORT_BASE + 3;
   const testHost = '127.0.0.1';
   const testCacheDir = `/tmp/prodisco-cache-tcp-caching-${uniqueId()}`;
   let server: grpc.Server;
@@ -338,7 +342,7 @@ describe('TCP Transport - Script Caching', () => {
 
 describe('TCP Transport - Server Binding Options', () => {
   it('binds to localhost', async () => {
-    const testPort = 50055 + Math.floor(Math.random() * 1000);
+    const testPort = PORT_BASE + 4;
     const testCacheDir = `/tmp/prodisco-cache-tcp-localhost-${uniqueId()}`;
 
     const server = await startServer({
@@ -375,7 +379,7 @@ describe('TCP Transport - Server Binding Options', () => {
   });
 
   it('binds to 0.0.0.0', async () => {
-    const testPort = 50056 + Math.floor(Math.random() * 1000);
+    const testPort = PORT_BASE + 5;
     const testCacheDir = `/tmp/prodisco-cache-tcp-allif-${uniqueId()}`;
 
     const server = await startServer({
@@ -458,7 +462,7 @@ describe('TCP Transport - Environment Variable Priority', () => {
   });
 
   it('explicit useTcp=false overrides env vars', async () => {
-    const testPort = 50057 + Math.floor(Math.random() * 1000);
+    const testPort = PORT_BASE + 6;
     const id = uniqueId();
     const testSocketPath = `/tmp/prodisco-test-priority-${id}.sock`;
     const testCacheDir = `/tmp/prodisco-cache-priority-${id}`;
@@ -501,7 +505,7 @@ describe('TCP Transport - Environment Variable Priority', () => {
   });
 
   it('SANDBOX_USE_TCP=1 enables TCP', async () => {
-    const testPort = 50058 + Math.floor(Math.random() * 1000);
+    const testPort = PORT_BASE + 7;
     const testCacheDir = `/tmp/prodisco-cache-usetcp1-${uniqueId()}`;
 
     process.env.SANDBOX_USE_TCP = '1';
@@ -531,7 +535,7 @@ describe('TCP Transport - Environment Variable Priority', () => {
   });
 
   it('setting only SANDBOX_TCP_HOST implies TCP', async () => {
-    const testPort = 50059 + Math.floor(Math.random() * 1000);
+    const testPort = PORT_BASE + 8;
     const testCacheDir = `/tmp/prodisco-cache-hostimplies-${uniqueId()}`;
 
     // Only set host, not USE_TCP
@@ -558,7 +562,7 @@ describe('TCP Transport - Environment Variable Priority', () => {
   });
 
   it('setting only SANDBOX_TCP_PORT implies TCP', async () => {
-    const testPort = 50060 + Math.floor(Math.random() * 1000);
+    const testPort = PORT_BASE + 9;
     const testCacheDir = `/tmp/prodisco-cache-portimplies-${uniqueId()}`;
 
     // Only set port, not USE_TCP or HOST
@@ -587,7 +591,7 @@ describe('TCP Transport - Environment Variable Priority', () => {
 });
 
 describe('TCP Transport - Multiple Clients', () => {
-  const testPort = 50061 + Math.floor(Math.random() * 1000);
+  const testPort = PORT_BASE + 10;
   const testHost = '127.0.0.1';
   const testCacheDir = `/tmp/prodisco-cache-tcp-multiclient-${uniqueId()}`;
   let server: grpc.Server;

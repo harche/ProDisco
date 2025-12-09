@@ -5,12 +5,15 @@ import { SandboxServiceService, ExecutionState } from '../generated/sandbox.js';
 import { SandboxClient } from '../client/index.js';
 import { existsSync, rmSync } from 'node:fs';
 
+// Hardcoded ports - src uses 58xxx, dist uses 58500+
+const isDistBuild = import.meta.url.includes('/dist/');
+const PORT_BASE = isDistBuild ? 58500 : 58000;
+
 describe('Async Execution API', () => {
   const testCacheDir = '/tmp/prodisco-async-test-' + Date.now();
   let server: grpc.Server;
   let client: SandboxClient;
-  // Use unique port range (51100-51199) to avoid conflicts with transport-security.test.ts
-  const port = 51100 + Math.floor(Math.random() * 100);
+  const port = PORT_BASE + 1;
 
   beforeAll(async () => {
     // Start server
