@@ -9,7 +9,8 @@ describe('Async Execution API', () => {
   const testCacheDir = '/tmp/prodisco-async-test-' + Date.now();
   let server: grpc.Server;
   let client: SandboxClient;
-  const port = 50300 + Math.floor(Math.random() * 100);
+  // Use unique port range (51100-51199) to avoid conflicts with transport-security.test.ts
+  const port = 51100 + Math.floor(Math.random() * 100);
 
   beforeAll(async () => {
     // Start server

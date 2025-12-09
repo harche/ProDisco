@@ -1415,7 +1415,8 @@ describe('Default Values', () => {
   it('server defaults to 0.0.0.0 for TCP host', async () => {
     const { startServer } = await import('../server/index.js');
 
-    const testPort = 50850;
+    // Use a unique port range (51000-51099) to avoid conflicts with other tests using 50800-50899
+    const testPort = 51000 + Math.floor(Math.random() * 100);
     process.env.SANDBOX_USE_TCP = 'true';
     process.env.SANDBOX_TCP_PORT = String(testPort);
     // No TCP_HOST set

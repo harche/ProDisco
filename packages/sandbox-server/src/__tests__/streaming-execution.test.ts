@@ -9,7 +9,8 @@ describe('Streaming Execution API', () => {
   const testCacheDir = '/tmp/prodisco-stream-test-' + Date.now();
   let server: grpc.Server;
   let client: SandboxClient;
-  const port = 50200 + Math.floor(Math.random() * 100);
+  // Use unique port range (51200-51299) to avoid conflicts with transport-security.test.ts
+  const port = 51200 + Math.floor(Math.random() * 100);
 
   beforeAll(async () => {
     // Start server
