@@ -21,6 +21,14 @@ import { SandboxClient, type TransportMode as ClientTransportMode } from '../cli
 const uniqueId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 // Hardcoded ports for each test suite - src uses 52xxx, dist uses 54xxx
+// Port allocation within this file:
+//   - Insecure Mode: PORT_BASE + 1
+//   - TLS Mode: PORT_BASE + 2
+//   - TLS Validation: PORT_BASE + 3
+//   - mTLS Mode: PORT_BASE + 4
+//   - mTLS Validation: PORT_BASE + 5
+//   - Env Var Config: PORT_BASE + 100-109
+//   - Mode Transitions: PORT_BASE + 200-209
 const isDistBuild = import.meta.url.includes('/dist/');
 const PORT_BASE = isDistBuild ? 54000 : 52000;
 
@@ -786,7 +794,8 @@ describe('Transport Security - mTLS Client Certificate Validation', () => {
 
 describe('Transport Security - Environment Variable Configuration', () => {
   const testId = uniqueId();
-  const testPort = PORT_BASE + 10;
+  // Use ports 100-109 to avoid collision with other test suites
+  const testPort = PORT_BASE + 100;
   const testHost = '127.0.0.1';
   const testCacheDir = `/tmp/prodisco-cache-env-${testId}`;
   const certDir = `/tmp/prodisco-certs-env-${testId}`;
@@ -1048,9 +1057,10 @@ describe('Transport Security - Mode Transitions', () => {
   });
 
   it('can run multiple servers with different security modes', async () => {
-    const insecurePort = PORT_BASE + 20;
-    const tlsPort = PORT_BASE + 21;
-    const mtlsPort = PORT_BASE + 22;
+    // Use ports 200-209 for multi-mode tests
+    const insecurePort = PORT_BASE + 200;
+    const tlsPort = PORT_BASE + 201;
+    const mtlsPort = PORT_BASE + 202;
     const testHost = '127.0.0.1';
 
     const insecureCacheDir = `/tmp/prodisco-cache-multi-insecure-${testId}`;
