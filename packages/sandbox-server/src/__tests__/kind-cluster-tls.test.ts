@@ -437,8 +437,23 @@ spec:
     // Apply deployment
     execSync(`echo '${mtlsDeployment}' | kubectl apply -f -`, { stdio: 'pipe' });
 
-    // Wait for deployment
+    // Wait for deployment to be available
     await waitForDeployment(deploymentName, namespace, 120000);
+
+    // Also wait for pod to be ready (deployment Available doesn't guarantee pod is ready)
+    const waitForPodReady = async (name: string, ns: string, timeoutMs: number): Promise<boolean> => {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        try {
+          execSync(`kubectl wait --for=condition=Ready pod -l app=${name} -n ${ns} --timeout=5s`, { stdio: 'pipe' });
+          return true;
+        } catch {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      return false;
+    };
+    await waitForPodReady(deploymentName, namespace, 60000);
 
     // Start port-forward
     portForward = startPortForward(deploymentName, namespace, localPort, 50051);
@@ -618,6 +633,14 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "kill -0 1"
+            initialDelaySeconds: 5
+            periodSeconds: 5
 ---
 apiVersion: v1
 kind: Service
@@ -636,8 +659,23 @@ spec:
     // Apply deployment
     execSync(`echo '${insecureDeployment}' | kubectl apply -f -`, { stdio: 'pipe' });
 
-    // Wait for deployment
-    await waitForDeployment(deploymentName, namespace, 60000);
+    // Wait for deployment to be available
+    await waitForDeployment(deploymentName, namespace, 90000);
+
+    // Also wait for pod to be ready (deployment Available doesn't guarantee pod is ready)
+    const waitForPodReady = async (name: string, ns: string, timeoutMs: number): Promise<boolean> => {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        try {
+          execSync(`kubectl wait --for=condition=Ready pod -l app=${name} -n ${ns} --timeout=5s`, { stdio: 'pipe' });
+          return true;
+        } catch {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      return false;
+    };
+    await waitForPodReady(deploymentName, namespace, 60000);
 
     // Start port-forward
     portForward = startPortForward(deploymentName, namespace, localPort, 50051);
@@ -658,7 +696,7 @@ spec:
       tcpPort: localPort,
       transportMode: 'insecure',
     });
-  }, 120000);
+  }, 180000); // 3 minute timeout for deployment + pod readiness
 
   afterAll(async () => {
     if (client) {
@@ -678,7 +716,7 @@ spec:
   });
 
   it('connects in insecure mode', async () => {
-    const healthy = await client!.waitForHealthy(30000);
+    const healthy = await client!.waitForHealthy(60000);
     expect(healthy).toBe(true);
   });
 
