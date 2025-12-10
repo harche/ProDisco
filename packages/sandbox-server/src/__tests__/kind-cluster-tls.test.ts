@@ -112,6 +112,32 @@ function startPortForward(service: string, namespace: string, localPort: number,
   return portForward;
 }
 
+// Wait for port-forward to be ready by checking if we can connect
+async function waitForPortForward(host: string, port: number, timeoutMs: number = 30000): Promise<boolean> {
+  const net = require('node:net');
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const socket = net.createConnection({ host, port }, () => {
+          socket.destroy();
+          resolve();
+        });
+        socket.on('error', reject);
+        socket.setTimeout(1000, () => {
+          socket.destroy();
+          reject(new Error('timeout'));
+        });
+      });
+      return true;
+    } catch {
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  return false;
+}
+
 // Get path to project root (packages/sandbox-server)
 function getProjectRoot(): string {
   const currentDir = new URL('.', import.meta.url).pathname;
@@ -217,7 +243,10 @@ describe.skipIf(!shouldRun)('Kind Cluster TLS Integration Tests', () => {
       portForward = startPortForward('sandbox-server', 'prodisco', localPort, 50051);
 
       // Wait for port-forward to be ready
-      await new Promise(r => setTimeout(r, 2000));
+      const portForwardReady = await waitForPortForward('localhost', localPort, 30000);
+      if (!portForwardReady) {
+        throw new Error(`Port-forward to localhost:${localPort} failed to become ready`);
+      }
 
       // Extract CA certificate from secret
       const caData = execSync(
@@ -413,7 +442,12 @@ spec:
 
     // Start port-forward
     portForward = startPortForward(deploymentName, namespace, localPort, 50051);
-    await new Promise(r => setTimeout(r, 2000));
+
+    // Wait for port-forward to be ready
+    const portForwardReady = await waitForPortForward('localhost', localPort, 30000);
+    if (!portForwardReady) {
+      throw new Error(`Port-forward to localhost:${localPort} failed to become ready`);
+    }
 
     // Extract certificates from secrets
     const caData = execSync(
@@ -607,7 +641,12 @@ spec:
 
     // Start port-forward
     portForward = startPortForward(deploymentName, namespace, localPort, 50051);
-    await new Promise(r => setTimeout(r, 2000));
+
+    // Wait for port-forward to be ready
+    const portForwardReady = await waitForPortForward('localhost', localPort, 30000);
+    if (!portForwardReady) {
+      throw new Error(`Port-forward to localhost:${localPort} failed to become ready`);
+    }
 
     // Create insecure client
     client = new SandboxClient({
@@ -692,7 +731,13 @@ describe.skipIf(!shouldRun)('Kind Cluster Security Verification', () => {
 
     // Start port-forward to TLS server
     const portForward = startPortForward('sandbox-server', 'prodisco', localPort, 50051);
-    await new Promise(r => setTimeout(r, 2000));
+
+    // Wait for port-forward to be ready
+    const portForwardReady = await waitForPortForward('localhost', localPort, 30000);
+    if (!portForwardReady) {
+      portForward.kill();
+      throw new Error(`Port-forward to localhost:${localPort} failed to become ready`);
+    }
 
     try {
       // Try to connect without TLS
