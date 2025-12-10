@@ -243,9 +243,9 @@ describe.skipIf(!shouldRun)('Kind Cluster TLS Integration Tests', () => {
       portForward = startPortForward('sandbox-server', 'prodisco', localPort, 50051);
 
       // Wait for port-forward to be ready
-      const portForwardReady = await waitForPortForward('localhost', localPort, 30000);
+      const portForwardReady = await waitForPortForward('127.0.0.1', localPort, 30000);
       if (!portForwardReady) {
-        throw new Error(`Port-forward to localhost:${localPort} failed to become ready`);
+        throw new Error(`Port-forward to 127.0.0.1:${localPort} failed to become ready`);
       }
 
       // Extract CA certificate from secret
@@ -261,7 +261,7 @@ describe.skipIf(!shouldRun)('Kind Cluster TLS Integration Tests', () => {
       // Create client with TLS
       client = new SandboxClient({
         useTcp: true,
-        tcpHost: 'localhost',
+        tcpHost: '127.0.0.1',
         tcpPort: localPort,
         transportMode: 'tls',
         tls: {
@@ -444,9 +444,9 @@ spec:
     portForward = startPortForward(deploymentName, namespace, localPort, 50051);
 
     // Wait for port-forward to be ready
-    const portForwardReady = await waitForPortForward('localhost', localPort, 30000);
+    const portForwardReady = await waitForPortForward('127.0.0.1', localPort, 30000);
     if (!portForwardReady) {
-      throw new Error(`Port-forward to localhost:${localPort} failed to become ready`);
+      throw new Error(`Port-forward to 127.0.0.1:${localPort} failed to become ready`);
     }
 
     // Extract certificates from secrets
@@ -474,7 +474,7 @@ spec:
     // Create mTLS client
     client = new SandboxClient({
       useTcp: true,
-      tcpHost: 'localhost',
+      tcpHost: '127.0.0.1',
       tcpPort: localPort,
       transportMode: 'mtls',
       tls: {
@@ -536,7 +536,7 @@ spec:
     // Try to connect with TLS only (no client cert)
     const tlsOnlyClient = new SandboxClient({
       useTcp: true,
-      tcpHost: 'localhost',
+      tcpHost: '127.0.0.1',
       tcpPort: localPort,
       transportMode: 'tls',
       tls: {
@@ -555,7 +555,7 @@ spec:
   it('mTLS server rejects insecure connections', async () => {
     const insecureClient = new SandboxClient({
       useTcp: true,
-      tcpHost: 'localhost',
+      tcpHost: '127.0.0.1',
       tcpPort: localPort,
       transportMode: 'insecure',
     });
@@ -643,15 +643,18 @@ spec:
     portForward = startPortForward(deploymentName, namespace, localPort, 50051);
 
     // Wait for port-forward to be ready
-    const portForwardReady = await waitForPortForward('localhost', localPort, 30000);
+    // Use 127.0.0.1 explicitly to avoid IPv6 resolution issues on CI
+    const portForwardReady = await waitForPortForward('127.0.0.1', localPort, 30000);
     if (!portForwardReady) {
-      throw new Error(`Port-forward to localhost:${localPort} failed to become ready`);
+      throw new Error(`Port-forward to 127.0.0.1:${localPort} failed to become ready`);
     }
 
     // Create insecure client
+    // Use 127.0.0.1 explicitly - gRPC may resolve 'localhost' to IPv6 ::1
+    // but kubectl port-forward binds to IPv4 127.0.0.1 by default
     client = new SandboxClient({
       useTcp: true,
-      tcpHost: 'localhost',
+      tcpHost: '127.0.0.1',
       tcpPort: localPort,
       transportMode: 'insecure',
     });
@@ -733,17 +736,17 @@ describe.skipIf(!shouldRun)('Kind Cluster Security Verification', () => {
     const portForward = startPortForward('sandbox-server', 'prodisco', localPort, 50051);
 
     // Wait for port-forward to be ready
-    const portForwardReady = await waitForPortForward('localhost', localPort, 30000);
+    const portForwardReady = await waitForPortForward('127.0.0.1', localPort, 30000);
     if (!portForwardReady) {
       portForward.kill();
-      throw new Error(`Port-forward to localhost:${localPort} failed to become ready`);
+      throw new Error(`Port-forward to 127.0.0.1:${localPort} failed to become ready`);
     }
 
     try {
       // Try to connect without TLS
       const insecureClient = new SandboxClient({
         useTcp: true,
-        tcpHost: 'localhost',
+        tcpHost: '127.0.0.1',
         tcpPort: localPort,
         transportMode: 'insecure',
       });
