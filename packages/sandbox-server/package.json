@@ -37,7 +37,11 @@
     "@grpc/grpc-js": "^1.12.5",
     "@kubernetes/client-node": "^1.4.0",
     "esbuild": "^0.27.1",
-    "prometheus-query": "^3.3.2"
+    "fft-js": "^0.0.12",
+    "mathjs": "^14.5.2",
+    "ml-regression": "^5.0.0",
+    "prometheus-query": "^3.3.2",
+    "simple-statistics": "^7.8.8"
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.47.2",

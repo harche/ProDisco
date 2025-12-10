@@ -2,6 +2,11 @@ import vm from 'node:vm';
 import { transform } from 'esbuild';
 import * as k8s from '@kubernetes/client-node';
 import * as prometheusQuery from 'prometheus-query';
+// Analytics libraries for advanced data analysis
+import * as simpleStatistics from 'simple-statistics';
+import * as mlRegression from 'ml-regression';
+import * as mathjs from 'mathjs';
+import fftJsDefault from 'fft-js';
 
 export interface ExecutionResult {
   success: boolean;
@@ -84,10 +89,25 @@ export class Executor {
         k8s,                           // Full @kubernetes/client-node library
         kc: this.kc,                   // Pre-configured KubeConfig
 
-        // Module loading (for all libraries including prometheus-query)
+        // Module loading (for all libraries including prometheus-query and analytics)
         require: (mod: string) => {
           if (mod === '@kubernetes/client-node') return k8s;
           if (mod === 'prometheus-query') return prometheusQuery;
+          // Analytics libraries
+          if (mod === 'simple-statistics') return simpleStatistics;
+          if (mod === 'ml-regression') return mlRegression;
+          if (mod === 'mathjs') return mathjs;
+          if (mod === 'fft-js') {
+            // Use default export and spread nested util to ensure all properties cross VM boundary
+            return {
+              fft: fftJsDefault.fft,
+              ifft: fftJsDefault.ifft,
+              util: {
+                fftMag: fftJsDefault.util.fftMag,
+                fftFreq: fftJsDefault.util.fftFreq,
+              },
+            };
+          }
           throw new Error(`Module '${mod}' not available in sandbox`);
         },
 
@@ -228,6 +248,21 @@ export class Executor {
         require: (mod: string) => {
           if (mod === '@kubernetes/client-node') return k8s;
           if (mod === 'prometheus-query') return prometheusQuery;
+          // Analytics libraries
+          if (mod === 'simple-statistics') return simpleStatistics;
+          if (mod === 'ml-regression') return mlRegression;
+          if (mod === 'mathjs') return mathjs;
+          if (mod === 'fft-js') {
+            // Use default export and spread nested util to ensure all properties cross VM boundary
+            return {
+              fft: fftJsDefault.fft,
+              ifft: fftJsDefault.ifft,
+              util: {
+                fftMag: fftJsDefault.util.fftMag,
+                fftFreq: fftJsDefault.util.fftFreq,
+              },
+            };
+          }
           throw new Error(`Module '${mod}' not available in sandbox`);
         },
         process: { env: process.env },
