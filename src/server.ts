@@ -176,6 +176,20 @@ server.registerTool(
         ],
         structuredContent: result,
       };
+    } else if (result.mode === 'analytics') {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: result.summary,
+          },
+          {
+            type: 'text',
+            text: JSON.stringify(result.functions, null, 2),
+          },
+        ],
+        structuredContent: result,
+      };
     } else {
       // mode === 'methods'
       return {

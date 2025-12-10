@@ -1,6 +1,14 @@
 # ProDisco (Progressive Disclosure Kubernetes MCP Server)
 
-ProDisco gives AI agents **Kubernetes access + Prometheus metrics analysis** through two unified tools. It follows Anthropic's [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes search tools which surface API methods, agents discover them to write code, execute it in a sandbox, and only the final console output returns to the agent.
+ProDisco gives AI agents **Kubernetes access + Prometheus metrics + advanced analytics** through two unified tools. It follows Anthropic's [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes search tools which surface API methods, agents discover them to write code, execute it in a sandbox, and only the final console output returns to the agent.
+
+**Beyond simple resource fetching** - ProDisco includes statistical analysis, machine learning, and signal processing libraries for in-depth cluster observability:
+
+- **Anomaly Detection** - Find outliers using z-scores and standard deviations
+- **Trend Forecasting** - Predict resource exhaustion with polynomial regression
+- **Correlation Analysis** - Discover relationships between metrics with Pearson correlation
+- **Periodic Pattern Detection** - Identify scheduled jobs using FFT frequency analysis
+- **Capacity Planning** - Forecast when you'll hit resource limits
 
 [![Watch the demo](https://img.youtube.com/vi/W-DyrsGRJeQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=W-DyrsGRJeQ)
 
@@ -16,6 +24,7 @@ ProDisco gives AI agents **Kubernetes access + Prometheus metrics analysis** thr
 - [Available Tools](#available-tools)
   - [kubernetes.searchTools](#kubernetessearchtools)
   - [kubernetes.runSandbox](#kubernetesrunsandbox)
+- [Advanced Analytics](#advanced-analytics)
 - [Advanced Deployment](#advanced-deployment)
   - [Container Isolation](#container-isolation)
   - [Transport Security (TLS/mTLS)](#transport-security-tlsmtls)
@@ -118,6 +127,7 @@ A unified search interface for discovering Kubernetes API methods, type definiti
 | `types` | Get TypeScript type definitions | `{ mode: "types", types: ["V1Pod.spec"] }` |
 | `scripts` | Search cached scripts | `{ mode: "scripts", searchTerm: "logs" }` |
 | `prometheus` | Find Prometheus API methods | `{ mode: "prometheus", category: "query" }` |
+| `analytics` | Search statistics/ML libraries | `{ mode: "analytics", library: "simple-statistics" }` |
 
 **Examples:**
 
@@ -136,6 +146,10 @@ A unified search interface for discovering Kubernetes API methods, type definiti
 
 // Discover cluster metrics
 { mode: "prometheus", category: "metrics", methodPattern: "gpu" }
+
+// Find analytics functions for statistical analysis
+{ mode: "analytics", library: "simple-statistics" }
+{ mode: "analytics", functionPattern: "regression" }
 ```
 
 For comprehensive documentation, see [docs/search-tools.md](docs/search-tools.md).
@@ -160,7 +174,13 @@ Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus
 - `k8s` - Full `@kubernetes/client-node` library
 - `kc` - Pre-configured KubeConfig instance
 - `console` - Captured output (log, error, warn, info)
-- `require()` - Whitelisted modules: `@kubernetes/client-node`, `prometheus-query`
+- `require()` - Whitelisted modules:
+  - `@kubernetes/client-node` - Kubernetes API client
+  - `prometheus-query` - Prometheus PromQL queries
+  - `simple-statistics` - Descriptive stats, z-scores, regression
+  - `ml-regression` - Polynomial, exponential, power regression
+  - `mathjs` - Matrix operations, linear algebra
+  - `fft-js` - Fast Fourier Transform for signal analysis
 - `process.env` - Environment variables (PROMETHEUS_URL, etc.)
 
 **Examples:**
@@ -192,6 +212,34 @@ Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus
 ```
 
 For architecture details, see [docs/grpc-sandbox-architecture.md](docs/grpc-sandbox-architecture.md).
+
+---
+
+## Advanced Analytics
+
+ProDisco goes beyond simple resource fetching - it provides **statistical analysis, machine learning, and signal processing** capabilities for deep cluster observability.
+
+**Available Libraries:**
+
+| Library | Purpose |
+|---------|---------|
+| `simple-statistics` | Mean, median, std dev, z-scores, percentiles, linear regression, correlation |
+| `ml-regression` | Polynomial, exponential, and power regression for trend forecasting |
+| `mathjs` | Matrix operations, linear algebra, symbolic math |
+| `fft-js` | Fast Fourier Transform for detecting periodic patterns |
+
+**Example Prompts:**
+
+| Use Case | Prompt |
+|----------|--------|
+| **Cluster Health** | "Analyze CPU and memory usage across all pods. Calculate mean, median, standard deviation, and identify outliers using z-scores. Show pods above the 95th percentile." |
+| **Memory Leaks** | "Check for memory leaks. Fetch memory usage over 2 hours and use linear regression to identify pods with increasing memory." |
+| **Anomaly Detection** | "Analyze network traffic and detect anomalies. Find receive/transmit rates more than 2 standard deviations from normal." |
+| **Correlation** | "Find correlations between CPU and memory usage. Tell me if high CPU correlates with high memory." |
+| **Periodic Patterns** | "Use FFT analysis on node CPU to detect periodic patterns. Are there dominant frequencies suggesting scheduled jobs?" |
+| **Capacity Planning** | "Analyze resource trends and use polynomial regression to forecast when we might hit resource limits." |
+
+For detailed examples with code and output, see [docs/analytics.md](docs/analytics.md).
 
 ---
 
@@ -280,6 +328,7 @@ For detailed testing instructions, see [docs/integration-testing.md](docs/integr
 
 | Document | Description |
 |----------|-------------|
+| [docs/analytics.md](docs/analytics.md) | **Advanced analytics guide** - anomaly detection, forecasting, correlation, FFT analysis |
 | [docs/search-tools.md](docs/search-tools.md) | Complete searchTools reference with examples and technical architecture |
 | [docs/grpc-sandbox-architecture.md](docs/grpc-sandbox-architecture.md) | Sandbox architecture, gRPC protocol, and security configuration |
 | [docs/integration-testing.md](docs/integration-testing.md) | Integration test workflow and container tests |

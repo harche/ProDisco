@@ -34,10 +34,10 @@ const DEFAULT_MAX_TYPE_PROPERTIES = 20;
 const SearchToolsInputSchema = z.object({
   // Mode selection - determines which operation to perform
   mode: z
-    .enum(['methods', 'types', 'scripts', 'prometheus'])
+    .enum(['methods', 'types', 'scripts', 'prometheus', 'analytics'])
     .default('methods')
     .optional()
-    .describe('Search mode: "methods" for K8s API, "types" for type defs, "scripts" for cached scripts, "prometheus" for metrics/analytics libraries'),
+    .describe('Search mode: "methods" for K8s API, "types" for type defs, "scripts" for cached scripts, "prometheus" for metrics/analytics libraries, "analytics" for math/stats/ML libraries'),
 
   // === Method mode parameters (mode: 'methods') ===
   resourceType: z
@@ -97,6 +97,17 @@ const SearchToolsInputSchema = z.object({
     .string()
     .optional()
     .describe('(prometheus mode) Search pattern for method names (e.g., "mean", "query", "percentile")'),
+
+  // === Analytics mode parameters (mode: 'analytics') ===
+  library: z
+    .enum(['simple-statistics', 'ml-regression', 'mathjs', 'fft-js', 'all'])
+    .optional()
+    .default('all')
+    .describe('(analytics mode) Filter by library: "simple-statistics" (descriptive stats), "ml-regression" (curve fitting), "mathjs" (matrix ops), "fft-js" (frequency analysis)'),
+  functionPattern: z
+    .string()
+    .optional()
+    .describe('(analytics mode) Search pattern for function names (e.g., "mean", "regression", "matrix")'),
 
   // === Shared parameters ===
   limit: z
@@ -309,8 +320,55 @@ type MetricsModeResult = {
   };
 };
 
+// Analytics mode types
+type AnalyticsLibrary = 'simple-statistics' | 'ml-regression' | 'mathjs' | 'fft-js';
+type AnalyticsCategory = 'descriptive' | 'regression' | 'distribution' | 'matrix' | 'signal' | 'utility';
+
+type AnalyticsFunction = {
+  library: AnalyticsLibrary;
+  functionName: string;
+  category: AnalyticsCategory;
+  description: string;
+  signature: string;
+  parameters: Array<{
+    name: string;
+    type: string;
+    optional: boolean;
+    description?: string;
+  }>;
+  returnType: string;
+  example: string;
+};
+
+// Result type for analytics mode
+type AnalyticsModeResult = {
+  mode: 'analytics';
+  summary: string;
+  functions: AnalyticsFunction[];
+  totalMatches: number;
+  libraries: {
+    'simple-statistics': { installed: boolean; version: string; description: string };
+    'ml-regression': { installed: boolean; version: string; description: string };
+    'mathjs': { installed: boolean; version: string; description: string };
+    'fft-js': { installed: boolean; version: string; description: string };
+  };
+  usage: string;
+  paths: {
+    scriptsDirectory: string;
+  };
+  facets: {
+    library: Record<string, number>;
+    category: Record<string, number>;
+  };
+  pagination: {
+    offset: number;
+    limit: number;
+    hasMore: boolean;
+  };
+};
+
 // Union type for all modes
-type SearchToolsResult = MethodModeResult | TypeModeResult | ScriptModeResult | PrometheusModeResult | PrometheusErrorResult | MetricsModeResult;
+type SearchToolsResult = MethodModeResult | TypeModeResult | ScriptModeResult | PrometheusModeResult | PrometheusErrorResult | MetricsModeResult | AnalyticsModeResult;
 
 // ============================================================================
 // Type Definition Helper Types and Functions (from typeDefinitions.ts)
@@ -798,6 +856,7 @@ class SearchToolsService {
     this.initialized = false;
     // Clear module-level caches
     clearPrometheusMethodsCache();
+    clearAnalyticsMethodsCache();
   }
 
   /**
@@ -1749,6 +1808,414 @@ function getPrometheusMethods(): PrometheusMethod[] {
  */
 function clearPrometheusMethodsCache(): void {
   prometheusMethodsCache = null;
+}
+
+// ============================================================================
+// Analytics Library Functions (Dynamic Extraction from .d.ts files)
+// ============================================================================
+
+/**
+ * Analytics functions cache
+ */
+let analyticsMethodsCache: AnalyticsFunction[] | null = null;
+
+/**
+ * Categorize an analytics function based on its name
+ */
+function categorizeAnalyticsFunction(functionName: string, library: AnalyticsLibrary): AnalyticsCategory {
+  const lowerName = functionName.toLowerCase();
+
+  // Signal processing (fft-js)
+  if (library === 'fft-js' || lowerName.includes('fft') || lowerName.includes('ifft') || lowerName.includes('freq') || lowerName.includes('mag')) {
+    return 'signal';
+  }
+
+  // Regression
+  if (lowerName.includes('regression') || lowerName.includes('rsquared') || lowerName.includes('r_squared') ||
+      lowerName.includes('polynomial') || lowerName.includes('exponential') || lowerName.includes('power')) {
+    return 'regression';
+  }
+
+  // Matrix operations
+  if (lowerName.includes('matrix') || lowerName.includes('transpose') || lowerName.includes('inv') ||
+      lowerName.includes('det') || lowerName.includes('eig') || lowerName.includes('multiply') && library === 'mathjs') {
+    return 'matrix';
+  }
+
+  // Distribution
+  if (lowerName.includes('distribution') || lowerName.includes('probability') || lowerName.includes('poisson') ||
+      lowerName.includes('bernoulli') || lowerName.includes('binomial') || lowerName.includes('gamma') ||
+      lowerName.includes('probit') || lowerName.includes('logit') || lowerName.includes('erf')) {
+    return 'distribution';
+  }
+
+  // Default to descriptive statistics
+  return 'descriptive';
+}
+
+/**
+ * Generate example code for an analytics function
+ */
+function generateAnalyticsExample(functionName: string, library: AnalyticsLibrary, _params: Array<{ name: string; type: string; optional: boolean }>): string {
+  const requireStatement = library === 'simple-statistics'
+    ? `const ss = require('simple-statistics');`
+    : library === 'ml-regression'
+      ? `const { ${functionName} } = require('ml-regression');`
+      : library === 'mathjs'
+        ? `const math = require('mathjs');`
+        : `const fft = require('fft-js');`;
+
+  const exampleData = '[45, 52, 48, 55, 50]';
+  const callPrefix = library === 'simple-statistics' ? 'ss' : library === 'mathjs' ? 'math' : library === 'fft-js' ? 'fft' : '';
+
+  if (library === 'ml-regression') {
+    return `${requireStatement}
+const x = [0, 1, 2, 3, 4, 5];
+const y = [10, 20, 35, 45, 60, 70];
+const regression = new ${functionName}(x, y);
+console.log('Prediction at x=6:', regression.predict(6));`;
+  }
+
+  return `${requireStatement}
+const data = ${exampleData};
+const result = ${callPrefix}.${functionName}(data);
+console.log('Result:', result);`;
+}
+
+/**
+ * Extract functions from simple-statistics library .d.ts files
+ */
+function extractSimpleStatisticsFunctions(): AnalyticsFunction[] {
+  const functions: AnalyticsFunction[] = [];
+
+  try {
+    const indexPath = join(process.cwd(), 'node_modules', 'simple-statistics', 'index.d.ts');
+    if (!existsSync(indexPath)) {
+      logger.debug('simple-statistics index.d.ts not found');
+      return functions;
+    }
+
+    const sourceCode = readFileSync(indexPath, 'utf-8');
+    const sourceFile = ts.createSourceFile(indexPath, sourceCode, ts.ScriptTarget.Latest, true);
+
+    // Parse export declarations to get function names
+    function visit(node: ts.Node) {
+      if (ts.isExportDeclaration(node) && node.exportClause && ts.isNamedExports(node.exportClause)) {
+        for (const element of node.exportClause.elements) {
+          const exportName = element.name.getText(sourceFile);
+          const localName = element.propertyName?.getText(sourceFile) || exportName;
+
+          // Skip aliases (like 'iqr' for 'interquartileRange')
+          if (localName === 'default' && exportName !== localName) {
+            continue;
+          }
+
+          // Try to read the individual .d.ts file for this function
+          const funcDtsPath = join(process.cwd(), 'node_modules', 'simple-statistics', 'src', `${toSnakeCase(exportName)}.d.ts`);
+
+          let description = `${exportName} function from simple-statistics`;
+          let signature = `${exportName}(...args): any`;
+          let returnType = 'number';
+          const params: Array<{ name: string; type: string; optional: boolean; description?: string }> = [];
+
+          if (existsSync(funcDtsPath)) {
+            try {
+              const funcSource = readFileSync(funcDtsPath, 'utf-8');
+              const funcFile = ts.createSourceFile(funcDtsPath, funcSource, ts.ScriptTarget.Latest, true);
+
+              funcFile.forEachChild((funcNode) => {
+                if (ts.isFunctionDeclaration(funcNode) && funcNode.name) {
+                  // Extract JSDoc comment
+                  const jsDocComment = extractJSDocComment(funcNode, funcFile);
+                  if (jsDocComment) {
+                    description = jsDocComment;
+                  }
+
+                  // Extract parameters
+                  for (const param of funcNode.parameters) {
+                    const paramName = param.name.getText(funcFile);
+                    const paramType = param.type?.getText(funcFile) || 'any';
+                    const isOptional = !!param.questionToken;
+                    params.push({ name: paramName, type: paramType, optional: isOptional });
+                  }
+
+                  // Extract return type
+                  if (funcNode.type) {
+                    returnType = funcNode.type.getText(funcFile);
+                  }
+
+                  // Build signature
+                  const paramStr = params.map(p => `${p.name}${p.optional ? '?' : ''}: ${p.type}`).join(', ');
+                  signature = `${exportName}(${paramStr}): ${returnType}`;
+                }
+              });
+            } catch {
+              // Ignore individual file errors
+            }
+          }
+
+          const category = categorizeAnalyticsFunction(exportName, 'simple-statistics');
+          const example = generateAnalyticsExample(exportName, 'simple-statistics', params);
+
+          functions.push({
+            library: 'simple-statistics',
+            functionName: exportName,
+            category,
+            description,
+            signature,
+            parameters: params.length > 0 ? params : [{ name: 'data', type: 'number[]', optional: false }],
+            returnType,
+            example,
+          });
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+
+    visit(sourceFile);
+    logger.debug(`Extracted ${functions.length} functions from simple-statistics`);
+  } catch (error) {
+    logger.debug(`Failed to extract simple-statistics functions: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return functions;
+}
+
+/**
+ * Convert camelCase to snake_case
+ */
+function toSnakeCase(str: string): string {
+  return str.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '');
+}
+
+/**
+ * Extract functions from mathjs library .d.ts files
+ */
+function extractMathjsFunctions(): AnalyticsFunction[] {
+  const functions: AnalyticsFunction[] = [];
+
+  try {
+    const indexPath = join(process.cwd(), 'node_modules', 'mathjs', 'types', 'index.d.ts');
+    if (!existsSync(indexPath)) {
+      logger.debug('mathjs types/index.d.ts not found');
+      return functions;
+    }
+
+    const sourceCode = readFileSync(indexPath, 'utf-8');
+    const sourceFile = ts.createSourceFile(indexPath, sourceCode, ts.ScriptTarget.Latest, true);
+
+    // Track which functions we've already added (to avoid duplicates from overloads)
+    const seenFunctions = new Set<string>();
+
+    // Key math functions we want to expose (mathjs has hundreds, we focus on useful ones)
+    const targetFunctions = new Set([
+      'mean', 'median', 'mode', 'std', 'variance', 'sum', 'min', 'max',
+      'matrix', 'multiply', 'transpose', 'inv', 'det', 'eigs', 'dot', 'cross',
+      'add', 'subtract', 'divide', 'pow', 'sqrt', 'abs', 'round', 'floor', 'ceil',
+      'log', 'log10', 'exp', 'sin', 'cos', 'tan',
+      'zeros', 'ones', 'identity', 'diag', 'range',
+      'quantileSeq', 'mad', 'prod',
+    ]);
+
+    function visit(node: ts.Node) {
+      // Look for interface declarations that contain math functions
+      if (ts.isInterfaceDeclaration(node)) {
+        const interfaceName = node.name.getText(sourceFile);
+
+        // MathJsInstance contains the main math functions
+        if (interfaceName === 'MathJsInstance') {
+          for (const member of node.members) {
+            if (ts.isMethodSignature(member) && member.name) {
+              const methodName = member.name.getText(sourceFile);
+
+              // Only extract targeted functions and skip duplicates
+              if (!targetFunctions.has(methodName) || seenFunctions.has(methodName)) {
+                continue;
+              }
+              seenFunctions.add(methodName);
+
+              const description = extractJSDocComment(member, sourceFile) ||
+                `${methodName} function from mathjs`;
+
+              const params: Array<{ name: string; type: string; optional: boolean }> = [];
+              for (const param of member.parameters) {
+                const paramName = param.name.getText(sourceFile);
+                const paramType = param.type?.getText(sourceFile) || 'any';
+                const isOptional = !!param.questionToken;
+                params.push({ name: paramName, type: paramType, optional: isOptional });
+              }
+
+              const returnType = member.type?.getText(sourceFile) || 'any';
+              const paramStr = params.map(p => `${p.name}${p.optional ? '?' : ''}: ${p.type}`).join(', ');
+              const signature = `${methodName}(${paramStr}): ${returnType}`;
+
+              const category = categorizeAnalyticsFunction(methodName, 'mathjs');
+              const example = generateAnalyticsExample(methodName, 'mathjs', params);
+
+              functions.push({
+                library: 'mathjs',
+                functionName: methodName,
+                category,
+                description,
+                signature,
+                parameters: params,
+                returnType,
+                example,
+              });
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+
+    visit(sourceFile);
+    logger.debug(`Extracted ${functions.length} functions from mathjs`);
+  } catch (error) {
+    logger.debug(`Failed to extract mathjs functions: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  return functions;
+}
+
+/**
+ * Extract classes from ml-regression library (no .d.ts, so use known exports)
+ */
+function extractMlRegressionFunctions(): AnalyticsFunction[] {
+  // ml-regression doesn't have .d.ts files, define known exports
+  const regressionClasses = [
+    { name: 'SimpleLinearRegression', description: 'Simple linear regression (y = mx + b)' },
+    { name: 'PolynomialRegression', description: 'Polynomial regression for non-linear trends' },
+    { name: 'ExponentialRegression', description: 'Exponential regression for growth/decay patterns' },
+    { name: 'PowerRegression', description: 'Power regression (y = a * x^b)' },
+    { name: 'MultivariateLinearRegression', description: 'Multivariate linear regression' },
+    { name: 'TheilSenRegression', description: 'Robust linear regression using Theil-Sen estimator' },
+    { name: 'RobustPolynomialRegression', description: 'Robust polynomial regression' },
+  ];
+
+  return regressionClasses.map(cls => ({
+    library: 'ml-regression' as AnalyticsLibrary,
+    functionName: cls.name,
+    category: 'regression' as AnalyticsCategory,
+    description: cls.description,
+    signature: `new ${cls.name}(x: number[], y: number[])`,
+    parameters: [
+      { name: 'x', type: 'number[]', optional: false, description: 'Independent variable values' },
+      { name: 'y', type: 'number[]', optional: false, description: 'Dependent variable values' },
+    ],
+    returnType: cls.name,
+    example: `const { ${cls.name} } = require('ml-regression');
+const x = [0, 1, 2, 3, 4, 5];
+const y = [10, 20, 35, 45, 60, 70];
+const regression = new ${cls.name}(x, y);
+console.log('Slope:', regression.slope);
+console.log('Prediction at x=6:', regression.predict(6));`,
+  }));
+}
+
+/**
+ * Extract functions from fft-js library (no .d.ts, so use known exports)
+ */
+function extractFftJsFunctions(): AnalyticsFunction[] {
+  // fft-js doesn't have .d.ts files, define known exports
+  const fftFunctions: AnalyticsFunction[] = [
+    {
+      library: 'fft-js',
+      functionName: 'fft',
+      category: 'signal',
+      description: 'Compute Fast Fourier Transform to find periodic patterns in time-series data',
+      signature: 'fft(signal: number[]): [number[], number[]]',
+      parameters: [{ name: 'signal', type: 'number[]', optional: false, description: 'Time-domain signal (length should be power of 2)' }],
+      returnType: '[number[], number[]]',
+      example: `const fft = require('fft-js').fft;
+const signal = [1, 0, 1, 0, 1, 0, 1, 0];
+const phasors = fft(signal);
+console.log('Phasors:', phasors);`,
+    },
+    {
+      library: 'fft-js',
+      functionName: 'ifft',
+      category: 'signal',
+      description: 'Compute Inverse FFT to reconstruct signal from frequency domain',
+      signature: 'ifft(phasors: [number[], number[]]): number[]',
+      parameters: [{ name: 'phasors', type: '[number[], number[]]', optional: false, description: 'Frequency-domain phasors from fft()' }],
+      returnType: 'number[]',
+      example: `const { fft, ifft } = require('fft-js');
+const signal = [1, 0, 1, 0, 1, 0, 1, 0];
+const phasors = fft(signal);
+const reconstructed = ifft(phasors);
+console.log('Reconstructed:', reconstructed);`,
+    },
+    {
+      library: 'fft-js',
+      functionName: 'util.fftMag',
+      category: 'signal',
+      description: 'Calculate magnitude spectrum from FFT phasors',
+      signature: 'util.fftMag(phasors: [number[], number[]]): number[]',
+      parameters: [{ name: 'phasors', type: '[number[], number[]]', optional: false, description: 'Phasors from fft()' }],
+      returnType: 'number[]',
+      example: `const { fft, util } = require('fft-js');
+const signal = [1, 2, 1, 2, 1, 2, 1, 2];
+const phasors = fft(signal);
+const magnitudes = util.fftMag(phasors);
+console.log('Magnitudes:', magnitudes);`,
+    },
+    {
+      library: 'fft-js',
+      functionName: 'util.fftFreq',
+      category: 'signal',
+      description: 'Get frequency values corresponding to FFT bins',
+      signature: 'util.fftFreq(phasors: [number[], number[]], sampleRate: number): number[]',
+      parameters: [
+        { name: 'phasors', type: '[number[], number[]]', optional: false, description: 'Phasors from fft()' },
+        { name: 'sampleRate', type: 'number', optional: false, description: 'Samples per unit time' },
+      ],
+      returnType: 'number[]',
+      example: `const { fft, util } = require('fft-js');
+const signal = new Array(64).fill(0).map((_, i) => Math.sin(2 * Math.PI * i / 24));
+const phasors = fft(signal);
+const frequencies = util.fftFreq(phasors, 1);
+console.log('Frequencies:', frequencies.slice(0, 5));`,
+    },
+  ];
+
+  return fftFunctions;
+}
+
+/**
+ * Get all analytics library functions (dynamically extracted from .d.ts files where available)
+ */
+function getAllAnalyticsFunctions(): AnalyticsFunction[] {
+  const startTime = Date.now();
+
+  const functions: AnalyticsFunction[] = [
+    ...extractSimpleStatisticsFunctions(),
+    ...extractMathjsFunctions(),
+    ...extractMlRegressionFunctions(),
+    ...extractFftJsFunctions(),
+  ];
+
+  const elapsed = Date.now() - startTime;
+  logger.info(`Dynamically extracted ${functions.length} analytics functions in ${elapsed}ms`);
+
+  return functions;
+}
+
+/**
+ * Get cached analytics functions
+ */
+function getAnalyticsFunctions(): AnalyticsFunction[] {
+  if (!analyticsMethodsCache) {
+    analyticsMethodsCache = getAllAnalyticsFunctions();
+  }
+  return analyticsMethodsCache;
+}
+
+/**
+ * Clear the analytics methods cache (used during shutdown/reset)
+ */
+function clearAnalyticsMethodsCache(): void {
+  analyticsMethodsCache = null;
 }
 
 // ============================================================================
@@ -3002,6 +3469,9 @@ async function executePrometheusMode(input: z.infer<typeof SearchToolsInputSchem
     summary += `   Example: { mode: "prometheus", category: "metrics", methodPattern: "pod" }\n`;
   }
 
+  // Add tip about analytics libraries for advanced analysis
+  summary += `\n📊 ANALYTICS: Use { mode: "analytics" } for stats, regression, FFT libraries to analyze Prometheus data.\n`;
+
   const usage =
     'USAGE:\n' +
     '- New code: runSandbox({ code: "..." })\n' +
@@ -3029,6 +3499,106 @@ async function executePrometheusMode(input: z.infer<typeof SearchToolsInputSchem
     mode: 'prometheus',
     summary,
     methods: paginatedMethods,
+    totalMatches,
+    libraries,
+    usage,
+    paths: { scriptsDirectory },
+    facets,
+    pagination: { offset, limit, hasMore },
+  };
+}
+
+// ============================================================================
+// Analytics Mode Execution
+// ============================================================================
+
+/**
+ * Execute analytics mode - search and display analytics library functions
+ */
+async function executeAnalyticsMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<AnalyticsModeResult> {
+  const scriptsDirectory = SCRIPTS_CACHE_DIR;
+  const library = input.library || 'all';
+  const functionPattern = input.functionPattern;
+  const limit = input.limit ?? 10;
+  const offset = input.offset ?? 0;
+
+  // Get all analytics functions
+  let allFunctions = getAnalyticsFunctions();
+
+  // Filter by library
+  if (library !== 'all') {
+    allFunctions = allFunctions.filter(f => f.library === library);
+  }
+
+  // Filter by function pattern
+  if (functionPattern) {
+    const pattern = functionPattern.toLowerCase();
+    allFunctions = allFunctions.filter(f =>
+      f.functionName.toLowerCase().includes(pattern) ||
+      f.description.toLowerCase().includes(pattern)
+    );
+  }
+
+  const totalMatches = allFunctions.length;
+
+  // Paginate
+  const paginatedFunctions = allFunctions.slice(offset, offset + limit);
+  const hasMore = offset + limit < totalMatches;
+
+  // Build facets
+  const facets: { library: Record<string, number>; category: Record<string, number> } = {
+    library: {},
+    category: {},
+  };
+
+  for (const func of allFunctions) {
+    facets.library[func.library] = (facets.library[func.library] || 0) + 1;
+    facets.category[func.category] = (facets.category[func.category] || 0) + 1;
+  }
+
+  // Build libraries info
+  const libraries = {
+    'simple-statistics': { installed: true, version: '7.8.8', description: 'Descriptive statistics, regression, distributions' },
+    'ml-regression': { installed: true, version: '5.0.0', description: 'Advanced regression models (polynomial, exponential, power)' },
+    'mathjs': { installed: true, version: '14.5.2', description: 'Matrix operations, linear algebra, symbolic math' },
+    'fft-js': { installed: true, version: '0.0.12', description: 'Fast Fourier Transform for frequency analysis' },
+  };
+
+  // Build summary
+  let summary = `ANALYTICS LIBRARIES (${totalMatches} functions available)\n`;
+  summary += `=========================================\n\n`;
+
+  if (paginatedFunctions.length === 0) {
+    summary += `No functions found matching your criteria.\n`;
+    summary += `Try: { mode: "analytics" } to see all, or { mode: "analytics", library: "simple-statistics" }\n`;
+  }
+
+  paginatedFunctions.forEach((func, idx) => {
+    summary += `${offset + idx + 1}. ${func.library}.${func.functionName}\n`;
+    summary += `   ${func.description}\n`;
+    summary += `   Signature: ${func.signature}\n`;
+    summary += `   Category: ${func.category}\n`;
+    summary += `   Returns: ${func.returnType}\n\n`;
+  });
+
+  summary += `\nEXECUTION:\n`;
+  summary += `  runSandbox({ code: '<TypeScript code using these libraries>' })\n`;
+  summary += `\nAVAILABLE LIBRARIES:\n`;
+  summary += `  - simple-statistics: Descriptive stats, regression, anomaly detection\n`;
+  summary += `  - ml-regression: Polynomial, exponential, power regression\n`;
+  summary += `  - mathjs: Matrix operations, linear algebra\n`;
+  summary += `  - fft-js: FFT for periodic pattern detection\n`;
+
+  const usage =
+    'USAGE:\n' +
+    '- Sandbox provides: require("simple-statistics"), require("ml-regression"), require("mathjs"), require("fft-js")\n' +
+    '- Example: const ss = require("simple-statistics"); const avg = ss.mean([1,2,3,4,5]);\n' +
+    '- Use with Prometheus data for anomaly detection, trend forecasting, correlation analysis';
+
+  return {
+    mode: 'analytics',
+    summary,
+    functions: paginatedFunctions,
     totalMatches,
     libraries,
     usage,
@@ -3079,6 +3649,9 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     'Params: category (query/metadata/alerts/metrics), methodPattern (optional), limit, offset. ' +
     'Example: { mode: "prometheus", category: "query" } ' +
     'Use category: "metrics" with methodPattern to discover metrics (e.g., { mode: "prometheus", category: "metrics", methodPattern: "gpu" }). ' +
+    '• analytics: Search analytics/math libraries for advanced data analysis. ' +
+    'Params: library (simple-statistics/ml-regression/mathjs/fft-js/all), functionPattern (optional), limit, offset. ' +
+    'Example: { mode: "analytics", library: "simple-statistics" } ' +
     'Actions: list, read, create, delete, patch, replace, connect, get, watch. ' +
     'Scopes: namespaced, cluster, all. ' +
     'Docs: https://github.com/harche/ProDisco/blob/main/docs/search-tools.md',
@@ -3092,6 +3665,8 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
       return executeScriptMode(input);
     } else if (mode === 'prometheus') {
       return executePrometheusMode(input);
+    } else if (mode === 'analytics') {
+      return executeAnalyticsMode(input);
     } else {
       return executeMethodMode(input);
     }

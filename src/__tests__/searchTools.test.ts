@@ -2025,3 +2025,627 @@ describe('kubernetes.searchTools - Prometheus Metrics Mode', () => {
     });
   });
 });
+
+// Helper for analytics mode - cast through unknown to work around TypeScript inference
+const searchAnalytics = searchToolsTool.execute.bind(searchToolsTool) as unknown as (input: {
+  mode: 'analytics';
+  library?: 'simple-statistics' | 'ml-regression' | 'mathjs' | 'fft-js' | 'all';
+  functionPattern?: string;
+  limit?: number;
+  offset?: number;
+}) => Promise<{
+  mode: 'analytics';
+  summary: string;
+  functions: Array<{
+    library: 'simple-statistics' | 'ml-regression' | 'mathjs' | 'fft-js';
+    functionName: string;
+    category: string;
+    description: string;
+    signature: string;
+    parameters: Array<{ name: string; type: string; optional: boolean; description?: string }>;
+    returnType: string;
+    example: string;
+  }>;
+  totalMatches: number;
+  libraries: {
+    'simple-statistics': { installed: boolean; version: string; description: string };
+    'ml-regression': { installed: boolean; version: string; description: string };
+    'mathjs': { installed: boolean; version: string; description: string };
+    'fft-js': { installed: boolean; version: string; description: string };
+  };
+  usage: string;
+  paths: { scriptsDirectory: string };
+  facets: {
+    library: Record<string, number>;
+    category: Record<string, number>;
+  };
+  pagination: { offset: number; limit: number; hasMore: boolean };
+}>;
+
+describe('kubernetes.searchTools - Analytics Mode', () => {
+  describe('Basic Analytics Mode Functionality', () => {
+    it('returns analytics mode result with correct structure', async () => {
+      const result = await searchAnalytics({ mode: 'analytics' });
+
+      expect(result.mode).toBe('analytics');
+      expect(result).toHaveProperty('summary');
+      expect(result).toHaveProperty('functions');
+      expect(result).toHaveProperty('totalMatches');
+      expect(result).toHaveProperty('libraries');
+      expect(result).toHaveProperty('usage');
+      expect(result).toHaveProperty('paths');
+      expect(result).toHaveProperty('facets');
+      expect(result).toHaveProperty('pagination');
+      expect(typeof result.summary).toBe('string');
+      expect(Array.isArray(result.functions)).toBe(true);
+    });
+
+    it('lists all analytics functions when no filters provided', async () => {
+      const result = await searchAnalytics({ mode: 'analytics', limit: 50 });
+
+      expect(result.totalMatches).toBeGreaterThan(0);
+      expect(result.functions.length).toBeGreaterThan(0);
+    });
+
+    it('includes paths.scriptsDirectory in result', async () => {
+      const result = await searchAnalytics({ mode: 'analytics' });
+
+      expect(result.paths.scriptsDirectory).toContain('.cache');
+      expect(result.paths.scriptsDirectory).toContain('scripts');
+    });
+
+    it('returns library information', async () => {
+      const result = await searchAnalytics({ mode: 'analytics' });
+
+      expect(result.libraries).toHaveProperty('simple-statistics');
+      expect(result.libraries).toHaveProperty('ml-regression');
+      expect(result.libraries).toHaveProperty('mathjs');
+      expect(result.libraries).toHaveProperty('fft-js');
+
+      expect(result.libraries['simple-statistics'].installed).toBe(true);
+      expect(result.libraries['ml-regression'].installed).toBe(true);
+      expect(result.libraries['mathjs'].installed).toBe(true);
+      expect(result.libraries['fft-js'].installed).toBe(true);
+    });
+
+    it('returns facets for library and category', async () => {
+      const result = await searchAnalytics({ mode: 'analytics', limit: 50 });
+
+      expect(result.facets).toHaveProperty('library');
+      expect(result.facets).toHaveProperty('category');
+      expect(Object.keys(result.facets.library).length).toBeGreaterThan(0);
+      expect(Object.keys(result.facets.category).length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Analytics Mode Library Filtering', () => {
+    it('filters by simple-statistics library', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'simple-statistics',
+        limit: 50,
+      });
+
+      // simple-statistics functions are dynamically extracted from .d.ts files
+      // If extraction succeeds, we get functions; otherwise we may get none
+      expect(result.functions.every(f => f.library === 'simple-statistics')).toBe(true);
+    });
+
+    it('filters by ml-regression library', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'ml-regression',
+        limit: 50,
+      });
+
+      expect(result.functions.length).toBeGreaterThan(0);
+      expect(result.functions.every(f => f.library === 'ml-regression')).toBe(true);
+    });
+
+    it('filters by mathjs library', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'mathjs',
+        limit: 50,
+      });
+
+      expect(result.functions.length).toBeGreaterThan(0);
+      expect(result.functions.every(f => f.library === 'mathjs')).toBe(true);
+    });
+
+    it('filters by fft-js library', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'fft-js',
+        limit: 50,
+      });
+
+      expect(result.functions.length).toBeGreaterThan(0);
+      expect(result.functions.every(f => f.library === 'fft-js')).toBe(true);
+    });
+
+    it('returns all libraries when library is "all"', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'all',
+        limit: 100,
+      });
+
+      const libraries = new Set(result.functions.map(f => f.library));
+      expect(libraries.size).toBeGreaterThan(1);
+    });
+  });
+
+  describe('Analytics Mode Function Pattern Filtering', () => {
+    it('filters by functionPattern', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        functionPattern: 'mean',
+      });
+
+      expect(result.functions.length).toBeGreaterThan(0);
+      // Should find mean in function name or description
+      expect(result.functions.some(f =>
+        f.functionName.toLowerCase().includes('mean') ||
+        f.description.toLowerCase().includes('mean')
+      )).toBe(true);
+    });
+
+    it('finds regression functions by pattern', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        functionPattern: 'regression',
+      });
+
+      expect(result.functions.length).toBeGreaterThan(0);
+      expect(result.functions.some(f =>
+        f.functionName.toLowerCase().includes('regression') ||
+        f.description.toLowerCase().includes('regression')
+      )).toBe(true);
+    });
+
+    it('finds matrix functions by pattern', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        functionPattern: 'matrix',
+      });
+
+      expect(result.functions.length).toBeGreaterThan(0);
+      expect(result.functions.some(f =>
+        f.functionName.toLowerCase().includes('matrix') ||
+        f.description.toLowerCase().includes('matrix')
+      )).toBe(true);
+    });
+
+    it('finds fft functions by pattern', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        functionPattern: 'fft',
+      });
+
+      expect(result.functions.length).toBeGreaterThan(0);
+      expect(result.functions.some(f =>
+        f.functionName.toLowerCase().includes('fft') ||
+        f.description.toLowerCase().includes('fft')
+      )).toBe(true);
+    });
+
+    it('combined library and functionPattern filtering', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'simple-statistics',
+        functionPattern: 'standard',
+      });
+
+      // Should only have simple-statistics functions
+      expect(result.functions.every(f => f.library === 'simple-statistics')).toBe(true);
+
+      // Should match the pattern
+      if (result.functions.length > 0) {
+        expect(result.functions.some(f =>
+          f.functionName.toLowerCase().includes('standard') ||
+          f.description.toLowerCase().includes('standard')
+        )).toBe(true);
+      }
+    });
+
+    it('returns empty results for non-matching pattern', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        functionPattern: 'xyznonexistent12345',
+      });
+
+      expect(result.functions.length).toBe(0);
+      expect(result.totalMatches).toBe(0);
+    });
+  });
+
+  describe('Analytics Mode Function Details', () => {
+    it('functions have correct structure', async () => {
+      const result = await searchAnalytics({ mode: 'analytics', limit: 1 });
+
+      expect(result.functions.length).toBeGreaterThan(0);
+      const func = result.functions[0];
+
+      expect(func).toHaveProperty('library');
+      expect(func).toHaveProperty('functionName');
+      expect(func).toHaveProperty('category');
+      expect(func).toHaveProperty('description');
+      expect(func).toHaveProperty('signature');
+      expect(func).toHaveProperty('parameters');
+      expect(func).toHaveProperty('returnType');
+      expect(func).toHaveProperty('example');
+      expect(Array.isArray(func.parameters)).toBe(true);
+    });
+
+    it('finds mean function from simple-statistics', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'simple-statistics',
+        functionPattern: 'mean',
+        limit: 50,
+      });
+
+      // The function name could be 'mean' or contain 'mean' in name/description
+      if (result.functions.length > 0) {
+        expect(result.functions.some(f =>
+          f.functionName.toLowerCase().includes('mean') ||
+          f.description.toLowerCase().includes('mean')
+        )).toBe(true);
+      }
+    });
+
+    it('finds SimpleLinearRegression from ml-regression', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'ml-regression',
+        limit: 50,
+      });
+
+      const simpleLinear = result.functions.find(f => f.functionName === 'SimpleLinearRegression');
+      expect(simpleLinear).toBeDefined();
+      expect(simpleLinear?.library).toBe('ml-regression');
+      expect(simpleLinear?.category).toBe('regression');
+    });
+
+    it('finds fft function from fft-js', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'fft-js',
+        limit: 50,
+      });
+
+      const fftFunc = result.functions.find(f => f.functionName === 'fft');
+      expect(fftFunc).toBeDefined();
+      expect(fftFunc?.library).toBe('fft-js');
+      expect(fftFunc?.category).toBe('signal');
+    });
+
+    it('functions have valid examples', async () => {
+      const result = await searchAnalytics({ mode: 'analytics', limit: 5 });
+
+      expect(result.functions.length).toBeGreaterThan(0);
+      for (const func of result.functions) {
+        expect(func.example).toBeDefined();
+        expect(typeof func.example).toBe('string');
+        expect(func.example.length).toBeGreaterThan(0);
+        // Examples should contain require statement
+        expect(func.example).toContain('require');
+      }
+    });
+
+    it('functions have valid signatures', async () => {
+      const result = await searchAnalytics({ mode: 'analytics', limit: 5 });
+
+      expect(result.functions.length).toBeGreaterThan(0);
+      for (const func of result.functions) {
+        expect(func.signature).toBeDefined();
+        expect(typeof func.signature).toBe('string');
+        // Signatures should contain the function name
+        expect(func.signature).toContain(func.functionName);
+      }
+    });
+  });
+
+  describe('Analytics Mode Pagination', () => {
+    it('respects limit parameter', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        limit: 5,
+      });
+
+      expect(result.functions.length).toBeLessThanOrEqual(5);
+    });
+
+    it('respects offset parameter', async () => {
+      const firstPage = await searchAnalytics({
+        mode: 'analytics',
+        limit: 5,
+        offset: 0,
+      });
+      const secondPage = await searchAnalytics({
+        mode: 'analytics',
+        limit: 5,
+        offset: 5,
+      });
+
+      expect(firstPage.pagination.offset).toBe(0);
+      expect(secondPage.pagination.offset).toBe(5);
+
+      // Results should be different between pages
+      if (firstPage.functions.length > 0 && secondPage.functions.length > 0) {
+        const firstPageNames = firstPage.functions.map(f => `${f.library}.${f.functionName}`);
+        const secondPageNames = secondPage.functions.map(f => `${f.library}.${f.functionName}`);
+        const overlap = firstPageNames.filter(n => secondPageNames.includes(n));
+        expect(overlap.length).toBe(0);
+      }
+    });
+
+    it('sets hasMore correctly', async () => {
+      const allFunctions = await searchAnalytics({ mode: 'analytics', limit: 100 });
+
+      if (allFunctions.totalMatches > 5) {
+        const limitedResult = await searchAnalytics({ mode: 'analytics', limit: 5 });
+        expect(limitedResult.pagination.hasMore).toBe(true);
+      }
+    });
+
+    it('pagination works with library filter', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'simple-statistics',
+        limit: 5,
+        offset: 0,
+      });
+
+      expect(result.pagination.offset).toBe(0);
+      expect(result.pagination.limit).toBe(5);
+      // All results should be from simple-statistics
+      expect(result.functions.every(f => f.library === 'simple-statistics')).toBe(true);
+    });
+
+    it('pagination works with functionPattern filter', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        functionPattern: 'regression',
+        limit: 3,
+        offset: 0,
+      });
+
+      expect(result.pagination.offset).toBe(0);
+      expect(result.pagination.limit).toBe(3);
+    });
+
+    it('returns empty results when offset exceeds total', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        limit: 5,
+        offset: 10000,
+      });
+
+      expect(result.functions.length).toBe(0);
+      expect(result.pagination.hasMore).toBe(false);
+    });
+
+    it('totalMatches reflects total filtered results, not page size', async () => {
+      const limit = 3;
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        limit,
+      });
+
+      // totalMatches should be >= the number of functions returned
+      expect(result.totalMatches).toBeGreaterThanOrEqual(result.functions.length);
+
+      // If there are more results, totalMatches should be greater than limit
+      if (result.pagination.hasMore) {
+        expect(result.totalMatches).toBeGreaterThan(limit);
+      }
+    });
+  });
+
+  describe('Analytics Mode Categories', () => {
+    it('includes descriptive category functions', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'simple-statistics',
+        limit: 50,
+      });
+
+      // If simple-statistics extraction succeeds, should have descriptive category
+      if (result.functions.length > 0) {
+        const categories = new Set(result.functions.map(f => f.category));
+        expect(categories.has('descriptive')).toBe(true);
+      }
+    });
+
+    it('includes regression category functions', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'ml-regression',
+        limit: 50,
+      });
+
+      expect(result.functions.every(f => f.category === 'regression')).toBe(true);
+    });
+
+    it('includes signal category functions', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'fft-js',
+        limit: 50,
+      });
+
+      expect(result.functions.every(f => f.category === 'signal')).toBe(true);
+    });
+
+    it('includes matrix category functions', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'mathjs',
+        limit: 50,
+      });
+
+      const categories = new Set(result.functions.map(f => f.category));
+      expect(categories.has('matrix')).toBe(true);
+    });
+
+    it('facets include category counts', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        limit: 100,
+      });
+
+      expect(Object.keys(result.facets.category).length).toBeGreaterThan(0);
+
+      // Each facet value should be a number > 0
+      for (const count of Object.values(result.facets.category)) {
+        expect(typeof count).toBe('number');
+        expect(count).toBeGreaterThan(0);
+      }
+    });
+  });
+
+  describe('Analytics Mode Summary Content', () => {
+    it('summary includes function count', async () => {
+      const result = await searchAnalytics({ mode: 'analytics', limit: 5 });
+
+      expect(result.summary).toContain('function');
+    });
+
+    it('summary includes library names', async () => {
+      const result = await searchAnalytics({ mode: 'analytics' });
+
+      expect(result.summary.toLowerCase()).toContain('simple-statistics');
+    });
+
+    it('usage contains helpful instructions', async () => {
+      const result = await searchAnalytics({ mode: 'analytics' });
+
+      expect(result.usage).toContain('USAGE');
+      expect(result.usage).toContain('require');
+    });
+
+    it('usage mentions runSandbox', async () => {
+      const result = await searchAnalytics({ mode: 'analytics' });
+
+      expect(result.usage.toLowerCase()).toContain('sandbox');
+    });
+  });
+
+  describe('Analytics Mode - Specific Functions', () => {
+    it('searches for variance-related functions from simple-statistics', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'simple-statistics',
+        functionPattern: 'variance',
+        limit: 50,
+      });
+
+      // If found, should match variance pattern
+      if (result.functions.length > 0) {
+        expect(result.functions.some(f =>
+          f.functionName.toLowerCase().includes('variance') ||
+          f.description.toLowerCase().includes('variance')
+        )).toBe(true);
+      }
+    });
+
+    it('searches for standardDeviation-related functions from simple-statistics', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'simple-statistics',
+        functionPattern: 'standard',
+        limit: 100,
+      });
+
+      // If found, should match standard deviation pattern
+      if (result.functions.length > 0) {
+        expect(result.functions.some(f =>
+          f.functionName.toLowerCase().includes('standard') ||
+          f.description.toLowerCase().includes('standard')
+        )).toBe(true);
+      }
+    });
+
+    it('includes PolynomialRegression from ml-regression', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'ml-regression',
+        limit: 50,
+      });
+
+      expect(result.functions.some(f => f.functionName === 'PolynomialRegression')).toBe(true);
+    });
+
+    it('includes ExponentialRegression from ml-regression', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'ml-regression',
+        limit: 50,
+      });
+
+      expect(result.functions.some(f => f.functionName === 'ExponentialRegression')).toBe(true);
+    });
+
+    it('includes ifft function from fft-js', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'fft-js',
+        limit: 50,
+      });
+
+      expect(result.functions.some(f => f.functionName === 'ifft')).toBe(true);
+    });
+
+    it('includes util.fftMag function from fft-js', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        library: 'fft-js',
+        limit: 50,
+      });
+
+      expect(result.functions.some(f => f.functionName === 'util.fftMag')).toBe(true);
+    });
+  });
+
+  describe('Analytics Mode Edge Cases', () => {
+    it('handles case-insensitive pattern search', async () => {
+      const lowerResult = await searchAnalytics({
+        mode: 'analytics',
+        functionPattern: 'mean',
+      });
+      const upperResult = await searchAnalytics({
+        mode: 'analytics',
+        functionPattern: 'MEAN',
+      });
+
+      expect(lowerResult.totalMatches).toBe(upperResult.totalMatches);
+    });
+
+    it('handles partial pattern matches', async () => {
+      const result = await searchAnalytics({
+        mode: 'analytics',
+        functionPattern: 'regr',
+      });
+
+      // Should find regression-related functions
+      expect(result.functions.length).toBeGreaterThan(0);
+    });
+
+    it('handles empty library filter with pattern', async () => {
+      const withAll = await searchAnalytics({
+        mode: 'analytics',
+        library: 'all',
+        functionPattern: 'mean',
+      });
+
+      const withoutLibrary = await searchAnalytics({
+        mode: 'analytics',
+        functionPattern: 'mean',
+      });
+
+      expect(withAll.totalMatches).toBe(withoutLibrary.totalMatches);
+    });
+  });
+});

@@ -14,6 +14,7 @@ Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8
   - [Types Mode](#types-mode)
   - [Scripts Mode](#scripts-mode)
   - [Prometheus Mode](#prometheus-mode)
+  - [Analytics Mode](#analytics-mode)
 - [Example Workflows](#example-workflows)
   - [List Pods in a Namespace](#workflow-1-list-pods-in-a-namespace)
   - [Create a Deployment](#workflow-2-create-a-deployment)
@@ -36,6 +37,7 @@ Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8
 | `types` | Get type definitions | `types` | `{ mode: "types", types: ["V1Pod"] }` |
 | `scripts` | Search cached scripts | (none) | `{ mode: "scripts", searchTerm: "logs" }` |
 | `prometheus` | Search Prometheus/stats methods | (none) | `{ mode: "prometheus", methodPattern: "mean" }` |
+| `analytics` | Search statistics/ML libraries | (none) | `{ mode: "analytics", library: "simple-statistics" }` |
 
 ---
 
@@ -319,6 +321,89 @@ claude mcp add ProDisco \
 If `PROMETHEUS_URL` is not set:
 - Prometheus methods are still discoverable
 - The response includes a warning that execution requires configuration
+
+---
+
+### Analytics Mode
+
+Search for statistical, machine learning, and signal processing functions. Use these libraries to analyze Prometheus data for anomaly detection, trend forecasting, correlation analysis, and periodic pattern detection.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `library` | enum | No | Filter by library: `simple-statistics`, `ml-regression`, `mathjs`, `fft-js`, or `all` (default) |
+| `functionPattern` | string | No | Search pattern for function names (e.g., "mean", "regression", "matrix") |
+| `limit` | number | No | Max results (default: 10, max: 50) |
+| `offset` | number | No | Skip N results for pagination |
+
+**Available Libraries:**
+
+| Library | Version | Purpose |
+|---------|---------|---------|
+| `simple-statistics` | 7.8.8 | Descriptive stats, z-scores, percentiles, linear regression, correlation |
+| `ml-regression` | 5.0.0 | Polynomial, exponential, and power regression for trend forecasting |
+| `mathjs` | 14.5.2 | Matrix operations, linear algebra, symbolic math |
+| `fft-js` | 0.0.12 | Fast Fourier Transform for detecting periodic patterns |
+
+**Examples:**
+
+```typescript
+// List all analytics functions
+{ mode: "analytics" }
+
+// Filter by library
+{ mode: "analytics", library: "simple-statistics" }
+
+// Search for regression functions
+{ mode: "analytics", functionPattern: "regression" }
+
+// Find correlation functions
+{ mode: "analytics", functionPattern: "correlation" }
+
+// Find FFT functions for signal analysis
+{ mode: "analytics", library: "fft-js" }
+```
+
+**Response Structure:**
+
+```typescript
+{
+  mode: "analytics",
+  summary: string,
+  functions: [{
+    library: string,         // e.g., "simple-statistics"
+    functionName: string,    // e.g., "mean", "sampleCorrelation"
+    category: string,        // e.g., "descriptive", "regression", "signal"
+    description: string,
+    parameters: [...],
+    returnType: string,
+    example: string,         // Sandbox-compatible usage example
+  }],
+  totalMatches: number,
+  libraries: {
+    "simple-statistics": { installed: true, version: "7.8.8", description: "..." },
+    "ml-regression": { installed: true, version: "5.0.0", description: "..." },
+    // ...
+  },
+  usage: string,
+  pagination: { offset, limit, hasMore }
+}
+```
+
+**Common Use Cases:**
+
+| Use Case | Library | Key Functions |
+|----------|---------|---------------|
+| Anomaly detection | simple-statistics | `mean`, `standardDeviation`, `zScore` |
+| Outlier identification | simple-statistics | `quantile`, `interquartileRange` |
+| Trend analysis | simple-statistics | `linearRegression`, `linearRegressionLine` |
+| Correlation | simple-statistics | `sampleCorrelation`, `sampleCovariance` |
+| Capacity forecasting | ml-regression | `PolynomialRegression`, `ExponentialRegression` |
+| Periodic pattern detection | fft-js | `fft`, `util.fftMag`, `util.fftFreq` |
+| Matrix operations | mathjs | `matrix`, `multiply`, `inv`, `eigs` |
+
+For detailed examples with real Prometheus data, see [analytics.md](analytics.md).
 
 ---
 

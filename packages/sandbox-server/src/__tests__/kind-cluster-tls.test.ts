@@ -112,6 +112,32 @@ function startPortForward(service: string, namespace: string, localPort: number,
   return portForward;
 }
 
+// Wait for port-forward to be ready by checking if we can connect
+async function waitForPortForward(host: string, port: number, timeoutMs: number = 30000): Promise<boolean> {
+  const net = require('node:net');
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const socket = net.createConnection({ host, port }, () => {
+          socket.destroy();
+          resolve();
+        });
+        socket.on('error', reject);
+        socket.setTimeout(1000, () => {
+          socket.destroy();
+          reject(new Error('timeout'));
+        });
+      });
+      return true;
+    } catch {
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  return false;
+}
+
 // Get path to project root (packages/sandbox-server)
 function getProjectRoot(): string {
   const currentDir = new URL('.', import.meta.url).pathname;
@@ -217,7 +243,10 @@ describe.skipIf(!shouldRun)('Kind Cluster TLS Integration Tests', () => {
       portForward = startPortForward('sandbox-server', 'prodisco', localPort, 50051);
 
       // Wait for port-forward to be ready
-      await new Promise(r => setTimeout(r, 2000));
+      const portForwardReady = await waitForPortForward('127.0.0.1', localPort, 30000);
+      if (!portForwardReady) {
+        throw new Error(`Port-forward to 127.0.0.1:${localPort} failed to become ready`);
+      }
 
       // Extract CA certificate from secret
       const caData = execSync(
@@ -232,7 +261,7 @@ describe.skipIf(!shouldRun)('Kind Cluster TLS Integration Tests', () => {
       // Create client with TLS
       client = new SandboxClient({
         useTcp: true,
-        tcpHost: 'localhost',
+        tcpHost: '127.0.0.1',
         tcpPort: localPort,
         transportMode: 'tls',
         tls: {
@@ -408,12 +437,32 @@ spec:
     // Apply deployment
     execSync(`echo '${mtlsDeployment}' | kubectl apply -f -`, { stdio: 'pipe' });
 
-    // Wait for deployment
+    // Wait for deployment to be available
     await waitForDeployment(deploymentName, namespace, 120000);
+
+    // Also wait for pod to be ready (deployment Available doesn't guarantee pod is ready)
+    const waitForPodReady = async (name: string, ns: string, timeoutMs: number): Promise<boolean> => {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        try {
+          execSync(`kubectl wait --for=condition=Ready pod -l app=${name} -n ${ns} --timeout=5s`, { stdio: 'pipe' });
+          return true;
+        } catch {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      return false;
+    };
+    await waitForPodReady(deploymentName, namespace, 60000);
 
     // Start port-forward
     portForward = startPortForward(deploymentName, namespace, localPort, 50051);
-    await new Promise(r => setTimeout(r, 2000));
+
+    // Wait for port-forward to be ready
+    const portForwardReady = await waitForPortForward('127.0.0.1', localPort, 30000);
+    if (!portForwardReady) {
+      throw new Error(`Port-forward to 127.0.0.1:${localPort} failed to become ready`);
+    }
 
     // Extract certificates from secrets
     const caData = execSync(
@@ -440,7 +489,7 @@ spec:
     // Create mTLS client
     client = new SandboxClient({
       useTcp: true,
-      tcpHost: 'localhost',
+      tcpHost: '127.0.0.1',
       tcpPort: localPort,
       transportMode: 'mtls',
       tls: {
@@ -502,7 +551,7 @@ spec:
     // Try to connect with TLS only (no client cert)
     const tlsOnlyClient = new SandboxClient({
       useTcp: true,
-      tcpHost: 'localhost',
+      tcpHost: '127.0.0.1',
       tcpPort: localPort,
       transportMode: 'tls',
       tls: {
@@ -521,7 +570,7 @@ spec:
   it('mTLS server rejects insecure connections', async () => {
     const insecureClient = new SandboxClient({
       useTcp: true,
-      tcpHost: 'localhost',
+      tcpHost: '127.0.0.1',
       tcpPort: localPort,
       transportMode: 'insecure',
     });
@@ -584,6 +633,14 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "kill -0 1"
+            initialDelaySeconds: 5
+            periodSeconds: 5
 ---
 apiVersion: v1
 kind: Service
@@ -602,21 +659,44 @@ spec:
     // Apply deployment
     execSync(`echo '${insecureDeployment}' | kubectl apply -f -`, { stdio: 'pipe' });
 
-    // Wait for deployment
-    await waitForDeployment(deploymentName, namespace, 60000);
+    // Wait for deployment to be available
+    await waitForDeployment(deploymentName, namespace, 90000);
+
+    // Also wait for pod to be ready (deployment Available doesn't guarantee pod is ready)
+    const waitForPodReady = async (name: string, ns: string, timeoutMs: number): Promise<boolean> => {
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        try {
+          execSync(`kubectl wait --for=condition=Ready pod -l app=${name} -n ${ns} --timeout=5s`, { stdio: 'pipe' });
+          return true;
+        } catch {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      return false;
+    };
+    await waitForPodReady(deploymentName, namespace, 60000);
 
     // Start port-forward
     portForward = startPortForward(deploymentName, namespace, localPort, 50051);
-    await new Promise(r => setTimeout(r, 2000));
+
+    // Wait for port-forward to be ready
+    // Use 127.0.0.1 explicitly to avoid IPv6 resolution issues on CI
+    const portForwardReady = await waitForPortForward('127.0.0.1', localPort, 30000);
+    if (!portForwardReady) {
+      throw new Error(`Port-forward to 127.0.0.1:${localPort} failed to become ready`);
+    }
 
     // Create insecure client
+    // Use 127.0.0.1 explicitly - gRPC may resolve 'localhost' to IPv6 ::1
+    // but kubectl port-forward binds to IPv4 127.0.0.1 by default
     client = new SandboxClient({
       useTcp: true,
-      tcpHost: 'localhost',
+      tcpHost: '127.0.0.1',
       tcpPort: localPort,
       transportMode: 'insecure',
     });
-  }, 120000);
+  }, 180000); // 3 minute timeout for deployment + pod readiness
 
   afterAll(async () => {
     if (client) {
@@ -636,7 +716,7 @@ spec:
   });
 
   it('connects in insecure mode', async () => {
-    const healthy = await client!.waitForHealthy(30000);
+    const healthy = await client!.waitForHealthy(60000);
     expect(healthy).toBe(true);
   });
 
@@ -692,13 +772,19 @@ describe.skipIf(!shouldRun)('Kind Cluster Security Verification', () => {
 
     // Start port-forward to TLS server
     const portForward = startPortForward('sandbox-server', 'prodisco', localPort, 50051);
-    await new Promise(r => setTimeout(r, 2000));
+
+    // Wait for port-forward to be ready
+    const portForwardReady = await waitForPortForward('127.0.0.1', localPort, 30000);
+    if (!portForwardReady) {
+      portForward.kill();
+      throw new Error(`Port-forward to 127.0.0.1:${localPort} failed to become ready`);
+    }
 
     try {
       // Try to connect without TLS
       const insecureClient = new SandboxClient({
         useTcp: true,
-        tcpHost: 'localhost',
+        tcpHost: '127.0.0.1',
         tcpPort: localPort,
         transportMode: 'insecure',
       });
