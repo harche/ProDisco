@@ -184,6 +184,129 @@ jobs:
           path: artifacts/cluster-integration/
           retention-days: 7
 
+  http-transport-integration:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build packages
+        run: |
+          npm run proto:generate -w @prodisco/sandbox-server
+          npm run build -w @prodisco/sandbox-server
+          npm run build
+
+      - name: Create Kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: http-int
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Wait for cluster to be ready
+        run: |
+          kubectl wait --for=condition=Ready nodes --all --timeout=120s
+          kubectl cluster-info
+
+      - name: Build and load Docker image
+        run: |
+          docker build -t prodisco/mcp-server:test .
+          kind load docker-image prodisco/mcp-server:test --name http-int
+
+      - name: Deploy MCP server
+        run: kubectl apply -f k8s/mcp-server.yaml
+
+      - name: Wait for deployment
+        run: |
+          kubectl wait --for=condition=Available --timeout=180s deployment/mcp-server -n prodisco
+          kubectl wait --for=condition=Ready --timeout=60s pod -l app=mcp-server -n prodisco
+
+      - name: Start port-forward
+        run: |
+          kubectl port-forward -n prodisco svc/mcp-server 3000:3000 &
+          sleep 5
+
+      - name: Test health endpoint
+        run: |
+          HEALTH=$(curl -s http://localhost:3000/health)
+          echo "Health response: $HEALTH"
+          echo "$HEALTH" | grep -q '"status":"ok"'
+
+      - name: Test MCP initialize
+        run: |
+          RESPONSE=$(curl -s -i -X POST http://localhost:3000/mcp \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-test","version":"1.0.0"}}}')
+          echo "$RESPONSE"
+          # Verify we got a session ID
+          echo "$RESPONSE" | grep -i "mcp-session-id:"
+          # Verify response contains server info
+          echo "$RESPONSE" | grep -q "kubernetes-mcp"
+
+      - name: Test MCP tools/list
+        run: |
+          # Get session ID
+          INIT_RESPONSE=$(curl -s -i -X POST http://localhost:3000/mcp \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-test","version":"1.0.0"}}}')
+          SESSION_ID=$(echo "$INIT_RESPONSE" | grep -i "mcp-session-id:" | cut -d' ' -f2 | tr -d '\r')
+          echo "Session ID: $SESSION_ID"
+
+          # List tools
+          TOOLS=$(curl -s -X POST http://localhost:3000/mcp \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -H "mcp-session-id: $SESSION_ID" \
+            -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')
+          echo "$TOOLS"
+          echo "$TOOLS" | grep -q "kubernetes.searchTools"
+          echo "$TOOLS" | grep -q "kubernetes.runSandbox"
+
+      - name: Test kubernetes.searchTools
+        run: |
+          # Get session ID
+          INIT_RESPONSE=$(curl -s -i -X POST http://localhost:3000/mcp \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-test","version":"1.0.0"}}}')
+          SESSION_ID=$(echo "$INIT_RESPONSE" | grep -i "mcp-session-id:" | cut -d' ' -f2 | tr -d '\r')
+
+          # Call searchTools
+          RESULT=$(curl -s -X POST http://localhost:3000/mcp \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" \
+            -H "mcp-session-id: $SESSION_ID" \
+            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kubernetes.searchTools","arguments":{"resourceType":"Pod","action":"list","limit":3}}}')
+          echo "$RESULT"
+          echo "$RESULT" | grep -q "result"
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          mkdir -p artifacts/http-integration
+          kubectl get pods -A > artifacts/http-integration/pods.txt
+          kubectl -n prodisco logs -l app=mcp-server --tail=200 > artifacts/http-integration/mcp-server.log 2>&1 || true
+          kubectl describe pod -n prodisco -l app=mcp-server > artifacts/http-integration/pod-describe.txt 2>&1 || true
+
+      - name: Upload artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: http-integration-artifacts
+          path: artifacts/http-integration/
+          retention-days: 7
+
   tls-integration:
     runs-on: ubuntu-latest
     needs: build-and-test

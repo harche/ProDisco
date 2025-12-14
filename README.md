@@ -21,6 +21,7 @@ ProDisco gives AI agents **Kubernetes access + Prometheus metrics + advanced ana
   - [Add to Claude Code](#add-to-claude-code)
   - [Environment Variables](#environment-variables)
   - [Development Setup](#development-setup)
+  - [HTTP Transport](#http-transport)
 - [Available Tools](#available-tools)
   - [kubernetes.searchTools](#kubernetessearchtools)
   - [kubernetes.runSandbox](#kubernetesrunsandbox)
@@ -106,10 +107,66 @@ claude mcp remove prodisco # remove when you're done
 | Flag | Description |
 |------|-------------|
 | `--clear-cache` | Clear the scripts cache before starting |
+| `--transport <mode>` | Transport mode: `stdio` (default) or `http` |
+| `--host <host>` | HTTP host to bind to (default: `127.0.0.1`) |
+| `--port <port>` | HTTP port (default: `3000`, implies `--transport http`) |
 
 ```bash
 node dist/server.js --clear-cache
 ```
+
+### HTTP Transport
+
+ProDisco supports HTTP transport for network-based MCP connections, enabling remote access and containerized deployments.
+
+**Start in HTTP mode:**
+
+```bash
+# HTTP mode on default port (3000)
+node dist/server.js --transport http
+
+# HTTP mode on custom port
+node dist/server.js --port 8080
+
+# HTTP mode on all interfaces (for network access)
+node dist/server.js --host 0.0.0.0 --port 3000
+```
+
+**Environment Variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_TRANSPORT` | `stdio` | Transport mode (`stdio` or `http`) |
+| `MCP_HOST` | `127.0.0.1` | HTTP host to bind to |
+| `MCP_PORT` | `3000` | HTTP port to listen on |
+
+**HTTP Endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check, returns `{"status":"ok"}` |
+| `/mcp` | POST | MCP JSON-RPC endpoint (Streamable HTTP) |
+
+**Example: Connect with curl**
+
+```bash
+# Health check
+curl http://localhost:3000/health
+
+# Initialize MCP session
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0.0"}}}'
+
+# Use session ID from response header for subsequent requests
+curl -X POST http://localhost:3000/mcp \
+  -H "Content-Type: application/json" \
+  -H "mcp-session-id: <session-id-from-init>" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+```
+
+The HTTP transport uses the MCP SDK's `StreamableHTTPServerTransport`, which supports session management via `mcp-session-id` headers and Server-Sent Events (SSE) for streaming responses.
 
 ---
 

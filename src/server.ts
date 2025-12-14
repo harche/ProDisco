@@ -4,10 +4,13 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fs from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
+import { randomUUID } from 'node:crypto';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { logger } from './util/logger.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version?: string };
@@ -17,6 +20,9 @@ import { getSandboxClient, closeSandboxClient } from '@prodisco/sandbox-server/c
 
 // Track the sandbox server subprocess
 let sandboxProcess: ChildProcess | null = null;
+
+// Track the HTTP server (when using HTTP transport)
+let httpServer: Server | null = null;
 import {
   PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH,
   listGeneratedFiles,
@@ -385,10 +391,190 @@ function stopSandboxServer(): void {
   }
 }
 
+/**
+ * Parse command line arguments for transport configuration.
+ */
+function parseArgs(args: string[]): {
+  clearCache: boolean;
+  transport: 'stdio' | 'http';
+  host: string;
+  port: number;
+} {
+  const clearCache = args.includes('--clear-cache');
+
+  // Check for --transport flag
+  const transportIdx = args.indexOf('--transport');
+  let transport: 'stdio' | 'http' = 'stdio';
+  if (transportIdx !== -1) {
+    const value = args[transportIdx + 1];
+    if (value) {
+      const lowerValue = value.toLowerCase();
+      if (lowerValue === 'http' || lowerValue === 'sse') {
+        transport = 'http';
+      } else if (lowerValue !== 'stdio') {
+        logger.warn(`Unknown transport "${value}", defaulting to stdio`);
+      }
+    }
+  }
+
+  // Check for --port flag (implies HTTP transport)
+  const portIdx = args.indexOf('--port');
+  let port = 3000;
+  if (portIdx !== -1) {
+    const portValue = args[portIdx + 1];
+    if (portValue) {
+      port = parseInt(portValue, 10);
+      if (isNaN(port) || port < 1 || port > 65535) {
+        throw new Error(`Invalid port number: ${portValue}`);
+      }
+      transport = 'http'; // --port implies HTTP transport
+    }
+  }
+
+  // Check for --host flag
+  const hostIdx = args.indexOf('--host');
+  let host = '127.0.0.1';
+  if (hostIdx !== -1) {
+    const hostValue = args[hostIdx + 1];
+    if (hostValue) {
+      host = hostValue;
+    }
+  }
+
+  // Environment variables can also configure transport
+  if (process.env.MCP_TRANSPORT === 'http' || process.env.MCP_TRANSPORT === 'sse') {
+    transport = 'http';
+  }
+  if (process.env.MCP_PORT) {
+    port = parseInt(process.env.MCP_PORT, 10);
+    transport = 'http';
+  }
+  if (process.env.MCP_HOST) {
+    host = process.env.MCP_HOST;
+  }
+
+  return { clearCache, transport, host, port };
+}
+
+/**
+ * Start the MCP server with HTTP transport using StreamableHTTPServerTransport.
+ */
+async function startHttpTransport(host: string, port: number): Promise<void> {
+  // Track active transports by session ID
+  const transports = new Map<string, StreamableHTTPServerTransport>();
+
+  httpServer = createServer(async (req, res) => {
+    const url = new URL(req.url || '/', `http://${req.headers.host}`);
+
+    // Health check endpoint
+    if (url.pathname === '/health' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+      return;
+    }
+
+    // MCP endpoint
+    if (url.pathname === '/mcp') {
+      // Get session ID from header for existing sessions
+      const sessionId = req.headers['mcp-session-id'] as string | undefined;
+
+      if (sessionId && transports.has(sessionId)) {
+        // Reuse existing transport for this session
+        const transport = transports.get(sessionId)!;
+        await transport.handleRequest(req, res);
+      } else if (req.method === 'POST') {
+        // New session - create a new transport
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (newSessionId) => {
+            transports.set(newSessionId, transport);
+            logger.info(`New MCP session: ${newSessionId}`);
+          },
+          onsessionclosed: (closedSessionId) => {
+            transports.delete(closedSessionId);
+            logger.info(`MCP session closed: ${closedSessionId}`);
+          },
+        });
+
+        transport.onclose = () => {
+          if (transport.sessionId) {
+            transports.delete(transport.sessionId);
+          }
+        };
+
+        // Connect the transport to the MCP server
+        await server.connect(transport);
+        await transport.handleRequest(req, res);
+      } else if (req.method === 'GET') {
+        // SSE stream request without existing session - need to init first
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'Bad Request',
+          message: 'Session not initialized. Send POST request first.'
+        }));
+      } else {
+        res.writeHead(405, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Method Not Allowed' }));
+      }
+      return;
+    }
+
+    // 404 for other paths
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not Found' }));
+  });
+
+  return new Promise((resolve, reject) => {
+    httpServer!.on('error', reject);
+    httpServer!.listen(port, host, () => {
+      logger.info(`Kubernetes MCP server ready on http://${host}:${port}/mcp`);
+      resolve();
+    });
+  });
+}
+
 async function main() {
   // Parse command line arguments
   const args = process.argv.slice(2);
-  const clearCache = args.includes('--clear-cache');
+
+  // Show help
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log(`
+Kubernetes MCP Server - Progressive Disclosure
+
+Usage: prodisco-k8s [options]
+
+Transport Options:
+  --transport <mode>   Transport mode: stdio (default) or http
+  --host <host>        HTTP host to bind to (default: 127.0.0.1)
+  --port <port>        HTTP port to listen on (default: 3000, implies --transport http)
+
+Other Options:
+  --clear-cache        Clear the scripts cache on startup
+  --help, -h           Show this help message
+
+Environment Variables:
+  MCP_TRANSPORT        Transport mode (stdio or http)
+  MCP_HOST             HTTP host to bind to
+  MCP_PORT             HTTP port to listen on
+
+Examples:
+  # Stdio mode (for Claude Desktop, claude mcp add)
+  prodisco-k8s
+
+  # HTTP mode on default port
+  prodisco-k8s --transport http
+
+  # HTTP mode on custom port
+  prodisco-k8s --port 8080
+
+  # HTTP mode on all interfaces
+  prodisco-k8s --host 0.0.0.0 --port 3000
+`);
+    process.exit(0);
+  }
+
+  const { clearCache, transport, host, port } = parseArgs(args);
 
   // Handle --clear-cache flag
   if (clearCache) {
@@ -424,18 +610,32 @@ async function main() {
   // Pre-warm the Orama search index to avoid delay on first search
   await warmupSearchIndex();
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  logger.info('Kubernetes MCP server ready on stdio');
+  // Start the appropriate transport
+  if (transport === 'http') {
+    await startHttpTransport(host, port);
+  } else {
+    const stdioTransport = new StdioServerTransport();
+    await server.connect(stdioTransport);
+    logger.info('Kubernetes MCP server ready on stdio');
+  }
 }
 
 /**
  * Graceful shutdown handler.
- * Stops the sandbox server, script watcher, and cleans up resources.
+ * Stops the sandbox server, HTTP server, and cleans up resources.
  */
 async function shutdown(signal: string): Promise<void> {
   logger.info(`Received ${signal}, shutting down gracefully...`);
   try {
+    // Close HTTP server if running
+    if (httpServer) {
+      await new Promise<void>((resolve) => {
+        httpServer!.close(() => resolve());
+      });
+      httpServer = null;
+      logger.info('HTTP server stopped');
+    }
+
     stopSandboxServer();
     await shutdownSearchIndex();
     logger.info('Shutdown complete');
