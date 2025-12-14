@@ -1232,7 +1232,7 @@ describe('Edge Cases and Error Handling', () => {
 
       process.env.SANDBOX_TRANSPORT_MODE = '';
 
-      const testPort = PORT_BASE + 140;
+      const testPort = PORT_BASE + 200;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -1251,7 +1251,7 @@ describe('Edge Cases and Error Handling', () => {
 
       process.env.SANDBOX_TRANSPORT_MODE = '   ';
 
-      const testPort = PORT_BASE + 141;
+      const testPort = PORT_BASE + 201;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',
@@ -1351,7 +1351,7 @@ describe('Edge Cases and Error Handling', () => {
       process.env.SANDBOX_TLS_KEY_PATH = '/nonexistent/env-key.key';
 
       // Config with valid paths should work
-      const testPort = PORT_BASE + 142;
+      const testPort = PORT_BASE + 210;
       const server = await startServer({
         useTcp: true,
         tcpHost: '127.0.0.1',

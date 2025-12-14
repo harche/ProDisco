@@ -46,12 +46,13 @@
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.12.5",
-    "@prodisco/sandbox-server": "^0.1.1",
     "@kubernetes/client-node": "^1.4.0",
     "@modelcontextprotocol/sdk": "^1.24.3",
     "@orama/orama": "^3.1.5",
+    "@prodisco/sandbox-server": "^0.1.1",
     "chokidar": "^5.0.0",
     "esbuild": "^0.27.1",
+    "express": "^5.2.1",
     "prometheus-query": "^3.3.2",
     "typescript": "^5.9.3",
     "yaml": "^2.8.2",
@@ -60,6 +61,7 @@
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.58",
+    "@types/express": "^5.0.6",
     "@types/node": "^24.10.1",
     "@typescript-eslint/eslint-plugin": "^8.48.1",
     "@typescript-eslint/parser": "^8.48.1",

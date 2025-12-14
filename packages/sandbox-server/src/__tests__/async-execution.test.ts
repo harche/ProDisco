@@ -117,8 +117,10 @@ describe('Async Execution API', () => {
       // Should have new output
       if (status2.outputLength > offset1) {
         expect(status2.output.length).toBeGreaterThan(0);
-        // First batch's content should not be included
-        expect(status2.output).not.toContain(status1.output.slice(0, 5));
+        // First batch's content should not be included (only check if first batch had content)
+        if (status1.output.length > 0) {
+          expect(status2.output).not.toContain(status1.output.slice(0, 5));
+        }
       }
     });
 
