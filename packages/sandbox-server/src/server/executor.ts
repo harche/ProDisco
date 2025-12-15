@@ -7,6 +7,8 @@ import * as simpleStatistics from 'simple-statistics';
 import * as mlRegression from 'ml-regression';
 import * as mathjs from 'mathjs';
 import fftJsDefault from 'fft-js';
+// Loki client for log querying
+import * as lokiClient from '@prodisco/loki-client';
 
 export interface ExecutionResult {
   success: boolean;
@@ -108,6 +110,8 @@ export class Executor {
               },
             };
           }
+          // Loki client for log querying
+          if (mod === '@prodisco/loki-client' || mod === 'loki-client') return lokiClient;
           throw new Error(`Module '${mod}' not available in sandbox`);
         },
 
@@ -263,6 +267,8 @@ export class Executor {
               },
             };
           }
+          // Loki client for log querying
+          if (mod === '@prodisco/loki-client' || mod === 'loki-client') return lokiClient;
           throw new Error(`Module '${mod}' not available in sandbox`);
         },
         process: { env: process.env },

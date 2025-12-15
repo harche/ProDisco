@@ -134,70 +134,8 @@ server.registerTool(
         ],
         structuredContent: result,
       };
-    } else if (result.mode === 'scripts') {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: result.summary,
-          },
-          {
-            type: 'text',
-            text: JSON.stringify(result.scripts, null, 2),
-          },
-        ],
-        structuredContent: result,
-      };
-    } else if (result.mode === 'prometheus') {
-      // Handle metrics category (has 'metrics' array) vs methods (has 'methods' array)
-      if ('category' in result && result.category === 'metrics') {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: result.summary,
-            },
-            {
-              type: 'text',
-              text: JSON.stringify(result.metrics, null, 2),
-            },
-          ],
-          structuredContent: result,
-        };
-      }
-      // Build summary - handle both success and error cases for PrometheusModeResult | PrometheusErrorResult
-      const methodsResult = result as { summary?: string; error?: string; message?: string; example?: string; methods: unknown };
-      const summary = 'summary' in result ? result.summary :
-        `${methodsResult.error}: ${methodsResult.message}\nExample: ${methodsResult.example}`;
-      return {
-        content: [
-          {
-            type: 'text',
-            text: summary,
-          },
-          {
-            type: 'text',
-            text: JSON.stringify(methodsResult.methods, null, 2),
-          },
-        ],
-        structuredContent: result,
-      };
-    } else if (result.mode === 'analytics') {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: result.summary,
-          },
-          {
-            type: 'text',
-            text: JSON.stringify(result.functions, null, 2),
-          },
-        ],
-        structuredContent: result,
-      };
     } else {
-      // mode === 'methods'
+      // mode === 'search' - unified search results
       return {
         content: [
           {
@@ -206,7 +144,7 @@ server.registerTool(
           },
           {
             type: 'text',
-            text: JSON.stringify(result.tools, null, 2),
+            text: JSON.stringify(result.results, null, 2),
           },
         ],
         structuredContent: result,

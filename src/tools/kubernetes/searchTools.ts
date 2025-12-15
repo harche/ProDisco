@@ -7,7 +7,6 @@ import type { ToolDefinition } from '../types.js';
 import { PACKAGE_ROOT, SCRIPTS_CACHE_DIR } from '../../util/paths.js';
 import { create, insert, search, remove } from '@orama/orama';
 import type { Orama, Results, SearchParams } from '@orama/orama';
-import chokidar from 'chokidar';
 import { logger } from '../../util/logger.js';
 
 // ============================================================================
@@ -32,42 +31,57 @@ const DEFAULT_MAX_TYPE_PROPERTIES = 20;
 // ============================================================================
 
 const SearchToolsInputSchema = z.object({
-  // Mode selection - determines which operation to perform
-  mode: z
-    .enum(['methods', 'types', 'scripts', 'prometheus', 'analytics'])
-    .default('methods')
-    .optional()
-    .describe('Search mode: "methods" for K8s API, "types" for type defs, "scripts" for cached scripts, "prometheus" for metrics/analytics libraries, "analytics" for math/stats/ML libraries'),
-
-  // === Method mode parameters (mode: 'methods') ===
-  resourceType: z
+  // === Search parameters (work for all modes) ===
+  query: z
     .string()
     .optional()
-    .describe('(methods mode) Kubernetes resource type (e.g., "Pod", "Deployment", "Service", "ConfigMap")'),
+    .describe('Search term - searches method names, descriptions, and resource types'),
+
+  // === Filter parameters (work for all document types) ===
+  documentType: z
+    .enum(['method', 'prometheus', 'prometheus-metric', 'loki', 'analytics', 'script', 'all'])
+    .optional()
+    .default('all')
+    .describe('Filter by document type: "method" (K8s API), "prometheus" (Prometheus client methods), "prometheus-metric" (live Prometheus metrics - requires PROMETHEUS_URL), "loki", "analytics", "script", or "all"'),
+
   action: z
     .string()
     .optional()
-    .describe('(methods mode) API action: list, read, create, delete, patch, replace, connect, get, watch'),
+    .describe('Filter by action/category: K8s actions (list, create, read, delete, patch, replace, connect, watch) or library categories (query, metadata, alerts, descriptive, regression, etc.)'),
+
+  library: z
+    .string()
+    .optional()
+    .describe('Filter by library/API class: K8s (CoreV1Api, AppsV1Api, etc.) or libraries (prometheus-query, @prodisco/loki-client, simple-statistics, ml-regression, mathjs, fft-js)'),
+
   scope: z
     .enum(['namespaced', 'cluster', 'all'])
     .optional()
     .default('all')
-    .describe('(methods mode) Resource scope: "namespaced", "cluster", or "all"'),
+    .describe('Filter by scope: "namespaced", "cluster", or "all" (K8s methods only)'),
+
   exclude: z
     .object({
       actions: z
         .array(z.string())
         .optional()
-        .describe('Actions to exclude (e.g., ["connect", "watch"])'),
-      apiClasses: z
+        .describe('Actions/categories to exclude'),
+      libraries: z
         .array(z.string())
         .optional()
-        .describe('API classes to exclude (e.g., ["CustomObjectsApi"])'),
+        .describe('Libraries/API classes to exclude'),
     })
     .optional()
-    .describe('(methods mode) Exclusion criteria'),
+    .describe('Exclusion criteria - works for all document types'),
 
-  // === Type mode parameters (mode: 'types') ===
+  // === Special modes ===
+  mode: z
+    .enum(['search', 'types'])
+    .optional()
+    .default('search')
+    .describe('Mode: "search" (default) searches all indexed documents, "types" fetches TypeScript type definitions. For Prometheus metrics use documentType: "prometheus-metric"'),
+
+  // === Type mode parameters ===
   types: z
     .array(z.string())
     .optional()
@@ -81,35 +95,7 @@ const SearchToolsInputSchema = z.object({
     .optional()
     .describe('(types mode) Depth of nested type definitions (1-2, default: 1)'),
 
-  // === Script mode parameters (mode: 'scripts') ===
-  searchTerm: z
-    .string()
-    .optional()
-    .describe('(scripts mode) Search term to find cached scripts (e.g., "pod", "logs"). If omitted, shows all scripts.'),
-
-  // === Prometheus mode parameters (mode: 'prometheus') ===
-  category: z
-    .enum(['query', 'metadata', 'alerts', 'metrics', 'all'])
-    .optional()
-    .default('all')
-    .describe('(prometheus mode) Filter by category: "query" (PromQL), "metadata" (labels/series), "alerts", or "metrics" (discover cluster metrics)'),
-  methodPattern: z
-    .string()
-    .optional()
-    .describe('(prometheus mode) Search pattern for method names (e.g., "mean", "query", "percentile")'),
-
-  // === Analytics mode parameters (mode: 'analytics') ===
-  library: z
-    .enum(['simple-statistics', 'ml-regression', 'mathjs', 'fft-js', 'all'])
-    .optional()
-    .default('all')
-    .describe('(analytics mode) Filter by library: "simple-statistics" (descriptive stats), "ml-regression" (curve fitting), "mathjs" (matrix ops), "fft-js" (frequency analysis)'),
-  functionPattern: z
-    .string()
-    .optional()
-    .describe('(analytics mode) Search pattern for function names (e.g., "mean", "regression", "matrix")'),
-
-  // === Shared parameters ===
+  // === Pagination ===
   limit: z
     .number()
     .int()
@@ -160,31 +146,6 @@ type KubernetesApiMethod = {
   };
 };
 
-// Result type for methods mode
-type MethodModeResult = {
-  mode: 'methods';
-  summary: string;
-  tools: KubernetesApiMethod[];
-  totalMatches: number;
-  usage: string;
-  paths: {
-    scriptsDirectory: string;
-  };
-  cachedScripts: string[];
-  relevantScripts: RelevantScript[];
-  facets?: {
-    apiClass: Record<string, number>;
-    action: Record<string, number>;
-    scope: Record<string, number>;
-  };
-  searchTime?: number;
-  pagination: {
-    offset: number;
-    limit: number;
-    hasMore: boolean;
-  };
-};
-
 // Result type for types mode
 type TypeModeResult = {
   mode: 'types';
@@ -214,22 +175,6 @@ type RelevantScript = {
   apiClasses: string[];
 };
 
-// Result type for scripts mode
-type ScriptModeResult = {
-  mode: 'scripts';
-  summary: string;
-  scripts: RelevantScript[];
-  totalMatches: number;
-  paths: {
-    scriptsDirectory: string;
-  };
-  pagination: {
-    offset: number;
-    limit: number;
-    hasMore: boolean;
-  };
-};
-
 // Prometheus mode types
 type PrometheusCategory = 'query' | 'metadata' | 'alerts';
 
@@ -247,77 +192,6 @@ type PrometheusMethod = {
   }>;
   returnType: string;
   example: string;
-};
-
-// Result type for prometheus mode
-type PrometheusModeResult = {
-  mode: 'prometheus';
-  summary: string;
-  methods: PrometheusMethod[];
-  totalMatches: number;
-  libraries: {
-    'prometheus-query': { installed: boolean; version: string };
-  };
-  usage: string;
-  paths: {
-    scriptsDirectory: string;
-  };
-  facets: {
-    library: Record<string, number>;
-    category: Record<string, number>;
-  };
-  pagination: {
-    offset: number;
-    limit: number;
-    hasMore: boolean;
-  };
-};
-
-// Prometheus error result when PROMETHEUS_URL is not configured
-type PrometheusErrorResult = {
-  mode: 'prometheus';
-  error: string;
-  message: string;
-  example: string;
-  methods: PrometheusMethod[];
-  totalMatches: number;
-  libraries: {
-    'prometheus-query': { installed: boolean; version: string };
-  };
-  paths: {
-    scriptsDirectory: string;
-  };
-  facets: {
-    library: Record<string, number>;
-    category: Record<string, number>;
-  };
-  pagination: {
-    offset: number;
-    limit: number;
-    hasMore: boolean;
-  };
-};
-
-// Result type for metrics category in prometheus mode
-type MetricsModeResult = {
-  mode: 'prometheus';
-  category: 'metrics';
-  summary: string;
-  metrics: Array<{
-    name: string;
-    type: string;
-    description: string;
-  }>;
-  totalMatches: number;
-  indexingStatus: 'ready' | 'in_progress' | 'unavailable';
-  paths: {
-    scriptsDirectory: string;
-  };
-  pagination: {
-    offset: number;
-    limit: number;
-    hasMore: boolean;
-  };
 };
 
 // Analytics mode types
@@ -340,35 +214,65 @@ type AnalyticsFunction = {
   example: string;
 };
 
-// Result type for analytics mode
-type AnalyticsModeResult = {
-  mode: 'analytics';
+// ============================================================================
+// Loki mode types
+// ============================================================================
+
+type LokiCategory = 'query' | 'labels' | 'streams' | 'health' | 'all';
+
+type LokiMethod = {
+  library: '@prodisco/loki-client';
+  className?: string;           // e.g., "LokiClient"
+  methodName: string;           // e.g., "queryRange", "labels"
+  category: LokiCategory;
+  description: string;
+  parameters: Array<{
+    name: string;
+    type: string;
+    optional: boolean;
+    description?: string;
+  }>;
+  returnType: string;
+  example: string;
+};
+
+// Unified search result type for the new search mode
+type SearchModeResult = {
+  mode: 'search';
   summary: string;
-  functions: AnalyticsFunction[];
+  results: Array<{
+    id: string;
+    documentType: string;
+    name: string;
+    description: string;
+    library: string;
+    action: string;
+    parameters?: Array<{ name: string; type: string; optional: boolean; description?: string }>;
+    returnType?: string;
+    example?: string;
+  }>;
   totalMatches: number;
-  libraries: {
-    'simple-statistics': { installed: boolean; version: string; description: string };
-    'ml-regression': { installed: boolean; version: string; description: string };
-    'mathjs': { installed: boolean; version: string; description: string };
-    'fft-js': { installed: boolean; version: string; description: string };
-  };
-  usage: string;
-  paths: {
-    scriptsDirectory: string;
-  };
+  relevantScripts: RelevantScript[];
   facets: {
+    documentType: Record<string, number>;
     library: Record<string, number>;
-    category: Record<string, number>;
+    action: Record<string, number>;
+    scope: Record<string, number>;
   };
   pagination: {
     offset: number;
     limit: number;
     hasMore: boolean;
   };
+  searchTime: number;
+  usage: string;
+  paths: {
+    scriptsDirectory: string;
+  };
 };
 
 // Union type for all modes
-type SearchToolsResult = MethodModeResult | TypeModeResult | ScriptModeResult | PrometheusModeResult | PrometheusErrorResult | MetricsModeResult | AnalyticsModeResult;
+type SearchToolsResult = SearchModeResult | TypeModeResult;
 
 // ============================================================================
 // Type Definition Helper Types and Functions (from typeDefinitions.ts)
@@ -794,9 +698,6 @@ class SearchToolsService {
   /** Track indexed scripts to support incremental re-indexing */
   private indexedScriptPaths = new Set<string>();
 
-  /** Filesystem watcher instance */
-  private scriptWatcher: ReturnType<typeof chokidar.watch> | null = null;
-
   /** Whether the service has been initialized */
   private initialized = false;
 
@@ -810,7 +711,7 @@ class SearchToolsService {
   private static readonly METRICS_REFRESH_INTERVAL = 30 * 60 * 1000;
 
   /**
-   * Initialize the search index and start the script watcher.
+   * Initialize the search index.
    * This is called automatically on first use, but can be called explicitly
    * for pre-warming during server startup.
    */
@@ -835,15 +736,10 @@ class SearchToolsService {
   }
 
   /**
-   * Shutdown the service, stopping the script watcher.
+   * Shutdown the service and clean up resources.
    * Call this during graceful shutdown.
    */
   async shutdown(): Promise<void> {
-    if (this.scriptWatcher) {
-      await this.scriptWatcher.close();
-      this.scriptWatcher = null;
-      logger.info('Orama: Stopped script watcher');
-    }
     if (this.metricsRefreshInterval) {
       clearInterval(this.metricsRefreshInterval);
       this.metricsRefreshInterval = null;
@@ -857,6 +753,7 @@ class SearchToolsService {
     // Clear module-level caches
     clearPrometheusMethodsCache();
     clearAnalyticsMethodsCache();
+    clearLokiMethodsCache();
   }
 
   /**
@@ -934,7 +831,8 @@ class SearchToolsService {
       .filter(word => word.length > 2)
       .filter(word => !['the', 'and', 'for', 'from', 'with', 'this', 'that'].includes(word));
 
-    const searchTokens = [entry.description, ...keywords].join(' ');
+    // Always include 'script' so scripts can be found with default query
+    const searchTokens = ['script', entry.description, ...keywords].join(' ');
 
     const doc: OramaDocument = {
       id: entryId,
@@ -1012,11 +910,14 @@ class SearchToolsService {
     // Index prometheus library methods
     const prometheusCount = await this.indexPrometheusMethods(db);
 
-    // Start filesystem watcher for script changes
-    this.startScriptWatcher(db);
+    // Index loki library methods
+    const lokiCount = await this.indexLokiMethods(db);
+
+    // Index analytics library methods
+    const analyticsCount = await this.indexAnalyticsMethods(db);
 
     this.oramaDb = db;
-    logger.info(`Orama: Indexed ${methods.length} API methods, ${scriptCount} cached scripts, and ${prometheusCount} prometheus methods`);
+    logger.info(`Orama: Indexed ${methods.length} API methods, ${scriptCount} cached scripts, ${prometheusCount} prometheus methods, ${lokiCount} loki methods, and ${analyticsCount} analytics functions`);
     return db;
   }
 
@@ -1068,7 +969,9 @@ class SearchToolsService {
 
     for (const method of methods) {
       // Build searchTokens from identifiers for better matching
+      // Include 'prometheus' so searching with documentType finds all methods
       const searchTokens = [
+        'prometheus',
         method.methodName,
         method.className || '',
         method.library,
@@ -1079,16 +982,93 @@ class SearchToolsService {
       const doc: OramaDocument = {
         id: `prometheus:${method.library}:${method.className || 'fn'}:${method.methodName}`,
         documentType: 'prometheus',
+        resourceType: method.category,
+        methodName: method.methodName,
+        description: method.description,
+        searchTokens,
+        action: method.category,      // Use category as action for unified filtering
+        scope: 'library',
+        apiClass: method.library,     // Use library as apiClass for unified filtering
+        filePath: '',
+      };
+
+      await insert(db, doc);
+      indexedCount++;
+    }
+
+    return indexedCount;
+  }
+
+  /**
+   * Index Loki library methods into the Orama database.
+   */
+  private async indexLokiMethods(db: Orama<typeof oramaSchema>): Promise<number> {
+    const methods = getLokiMethods();
+    let indexedCount = 0;
+
+    for (const method of methods) {
+      // Build searchTokens from identifiers for better matching
+      // Include 'loki' so searching with documentType finds all methods
+      // Split camelCase method names for partial matching (e.g., "queryRange" -> "query Range")
+      const searchTokens = [
+        'loki',
+        method.methodName,
+        splitCamelCase(method.methodName),
+        method.className || '',
+        method.library,
+        method.category,
+        method.description,
+      ].join(' ');
+
+      const doc: OramaDocument = {
+        id: `loki:${method.library}:${method.className || 'fn'}:${method.methodName}`,
+        documentType: 'loki',
         resourceType: method.category, // Use category as resourceType for search
         methodName: method.methodName,
         description: method.description,
         searchTokens,
-        action: 'prometheus',
-        scope: 'prometheus',
-        apiClass: method.library,
+        action: method.category,      // Use category as action for unified filtering
+        scope: 'library',
+        apiClass: method.library,     // Use library as apiClass for unified filtering
         filePath: '',
-        library: method.library,
-        category: method.category,
+      };
+
+      await insert(db, doc);
+      indexedCount++;
+    }
+
+    return indexedCount;
+  }
+
+  /**
+   * Index analytics library functions into the Orama database.
+   */
+  private async indexAnalyticsMethods(db: Orama<typeof oramaSchema>): Promise<number> {
+    const functions = getAnalyticsFunctions();
+    let indexedCount = 0;
+
+    for (const func of functions) {
+      // Build searchTokens from identifiers for better matching
+      // Include 'analytics' so searching with documentType finds all methods
+      const searchTokens = [
+        'analytics',
+        func.functionName,
+        func.library,
+        func.category,
+        func.description,
+      ].join(' ');
+
+      const doc: OramaDocument = {
+        id: `analytics:${func.library}:${func.functionName}`,
+        documentType: 'analytics',
+        resourceType: func.category, // Use category as resourceType for search
+        methodName: func.functionName,
+        description: func.description,
+        searchTokens,
+        action: func.category,        // Use category as action for unified filtering
+        scope: 'library',
+        apiClass: func.library,       // Use library as apiClass for unified filtering
+        filePath: '',
       };
 
       await insert(db, doc);
@@ -1246,90 +1226,34 @@ class SearchToolsService {
   }
 
   /**
-   * Start filesystem watcher for cached scripts directory.
+   * Unified search using Orama - works for all document types
    */
-  private startScriptWatcher(db: Orama<typeof oramaSchema>): void {
-    const scriptsDirectory = SCRIPTS_CACHE_DIR;
-
-    // Ensure directory exists before watching
-    if (!existsSync(scriptsDirectory)) {
-      try {
-        mkdirSync(scriptsDirectory, { recursive: true });
-      } catch {
-        return;
-      }
-    }
-
-    this.scriptWatcher = chokidar.watch(join(scriptsDirectory, '*.ts'), {
-      persistent: true,
-      ignoreInitial: true,
-    });
-
-    this.scriptWatcher.on('add', async (filePath: string) => {
-      const script = parseScriptFile(filePath);
-      if (script) {
-        const doc = buildScriptDocument(script);
-        await insert(db, doc);
-        this.indexedScriptPaths.add(filePath);
-        logger.debug(`Orama: Indexed new script ${basename(filePath)}`);
-      }
-    });
-
-    this.scriptWatcher.on('unlink', async (filePath: string) => {
-      const docId = `script:${basename(filePath)}`;
-      try {
-        await remove(db, docId);
-        this.indexedScriptPaths.delete(filePath);
-        logger.debug(`Orama: Removed script ${basename(filePath)} from index`);
-      } catch (error) {
-        logger.debug(`Could not remove script ${basename(filePath)} from index: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    });
-
-    this.scriptWatcher.on('change', async (filePath: string) => {
-      const docId = `script:${basename(filePath)}`;
-      try {
-        await remove(db, docId);
-      } catch (error) {
-        logger.debug(`Script ${basename(filePath)} was not in index, will add: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      const script = parseScriptFile(filePath);
-      if (script) {
-        const doc = buildScriptDocument(script);
-        await insert(db, doc);
-        logger.debug(`Orama: Re-indexed modified script ${basename(filePath)}`);
-      }
-    });
-
-    logger.info(`Orama: Watching for script changes in ${scriptsDirectory}`);
-  }
-
-  /**
-   * Search using Orama with advanced features
-   */
-  async searchWithOrama(
-    resourceType: string,
-    action: string | undefined,
-    scope: string,
-    exclude: { actions?: string[]; apiClasses?: string[] } | undefined,
-    limit: number,
-    offset: number = 0
-  ): Promise<{
-    methodResults: OramaDocument[];
+  async searchWithOrama(options: {
+    query: string;
+    documentType?: 'method' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics' | 'script' | 'all';
+    action?: string;
+    library?: string;
+    scope?: 'namespaced' | 'cluster' | 'all';
+    exclude?: { actions?: string[]; libraries?: string[] };
+    limit: number;
+    offset: number;
+  }): Promise<{
+    results: OramaDocument[];
     scriptResults: OramaDocument[];
-    totalMethodCount: number;
-    totalScriptCount: number;
+    totalMatches: number;
     facets: {
+      documentType: Record<string, number>;
       apiClass: Record<string, number>;
       action: Record<string, number>;
       scope: Record<string, number>;
     };
     searchTime: number;
   }> {
+    const { query, documentType = 'all', action, library, scope = 'all', exclude, limit, offset } = options;
     const db = await this.getOramaDb();
 
     const searchParams: SearchParams<Orama<typeof oramaSchema>, OramaDocument> = {
-      term: resourceType,
+      term: query,
       properties: ['resourceType', 'methodName', 'description', 'searchTokens'],
       boost: {
         resourceType: 3,
@@ -1340,6 +1264,7 @@ class SearchToolsService {
       tolerance: 1,
       limit: Math.max((offset + limit) * SEARCH_RESULTS_MULTIPLIER, MIN_SEARCH_RESULTS),
       facets: {
+        documentType: {},
         apiClass: {},
         action: {},
         scope: {},
@@ -1350,57 +1275,78 @@ class SearchToolsService {
     const searchResult: Results<OramaDocument> = await search(db, searchParams);
     const searchTime = performance.now() - startTime;
 
-    // Separate results by documentType FIRST
-    const allScriptHits = searchResult.hits.filter(hit => hit.document.documentType === 'script');
-    let methodHits = searchResult.hits.filter(hit => hit.document.documentType === 'method');
-
-    // Apply method-specific filters to methods only
-    if (action) {
-      const lowerAction = action.toLowerCase();
-      methodHits = methodHits.filter(hit => hit.document.action === lowerAction);
+    // Filter by documentType
+    let hits = searchResult.hits;
+    if (documentType !== 'all') {
+      hits = hits.filter(hit => hit.document.documentType === documentType);
     }
 
+    // Separate scripts for display (shown separately in results)
+    const scriptHits = hits.filter(hit => hit.document.documentType === 'script');
+    let nonScriptHits = hits.filter(hit => hit.document.documentType !== 'script');
+
+    // Apply action filter
+    if (action) {
+      const lowerAction = action.toLowerCase();
+      nonScriptHits = nonScriptHits.filter(hit => hit.document.action === lowerAction);
+    }
+
+    // Apply library filter (using apiClass field)
+    if (library) {
+      nonScriptHits = nonScriptHits.filter(hit => hit.document.apiClass === library);
+    }
+
+    // Apply scope filter (only affects K8s methods)
     if (scope === 'namespaced') {
-      methodHits = methodHits.filter(hit => hit.document.scope === 'namespaced');
+      nonScriptHits = nonScriptHits.filter(hit =>
+        hit.document.documentType !== 'method' || hit.document.scope === 'namespaced'
+      );
     } else if (scope === 'cluster') {
-      methodHits = methodHits.filter(hit =>
+      nonScriptHits = nonScriptHits.filter(hit =>
+        hit.document.documentType !== 'method' ||
         hit.document.scope === 'cluster' || hit.document.scope === 'forAllNamespaces'
       );
     }
 
-    // Apply exclusions to methods only
+    // Apply exclusions
     if (exclude) {
-      methodHits = methodHits.filter(hit => {
+      nonScriptHits = nonScriptHits.filter(hit => {
         const doc = hit.document;
         const hasActions = exclude.actions && exclude.actions.length > 0;
-        const hasApiClasses = exclude.apiClasses && exclude.apiClasses.length > 0;
+        const hasLibraries = exclude.libraries && exclude.libraries.length > 0;
 
-        if (hasActions && hasApiClasses) {
+        if (hasActions && hasLibraries) {
           const matchesAction = exclude.actions!.some(a =>
             doc.action === a.toLowerCase() || doc.methodName.toLowerCase().includes(a.toLowerCase())
           );
-          const matchesApiClass = exclude.apiClasses!.includes(doc.apiClass);
-          return !(matchesAction && matchesApiClass);
+          const matchesLibrary = exclude.libraries!.includes(doc.apiClass);
+          return !(matchesAction && matchesLibrary);
         } else if (hasActions) {
           const matchesAction = exclude.actions!.some(a =>
             doc.action === a.toLowerCase() || doc.methodName.toLowerCase().includes(a.toLowerCase())
           );
           return !matchesAction;
-        } else if (hasApiClasses) {
-          return !exclude.apiClasses!.includes(doc.apiClass);
+        } else if (hasLibraries) {
+          return !exclude.libraries!.includes(doc.apiClass);
         }
         return true;
       });
     }
 
-    // Extract facets (filter out script-related values)
+    // Extract facets
     const facets = {
+      documentType: {} as Record<string, number>,
       apiClass: {} as Record<string, number>,
       action: {} as Record<string, number>,
       scope: {} as Record<string, number>,
     };
 
     if (searchResult.facets) {
+      if (searchResult.facets.documentType?.values) {
+        for (const [key, value] of Object.entries(searchResult.facets.documentType.values)) {
+          facets.documentType[key] = value as number;
+        }
+      }
       if (searchResult.facets.apiClass?.values) {
         for (const [key, value] of Object.entries(searchResult.facets.apiClass.values)) {
           if (key !== 'CachedScript') {
@@ -1424,10 +1370,12 @@ class SearchToolsService {
       }
     }
 
-    // Sort methods to prioritize exact resourceType matches
-    const sortedMethodHits = methodHits.sort((a, b) => {
-      const aExact = a.document.resourceType.toLowerCase() === resourceType.toLowerCase();
-      const bExact = b.document.resourceType.toLowerCase() === resourceType.toLowerCase();
+    // Sort by relevance, prioritizing exact matches
+    const sortedNonScriptHits = nonScriptHits.sort((a, b) => {
+      const aExact = a.document.resourceType.toLowerCase() === query.toLowerCase() ||
+                     a.document.methodName.toLowerCase() === query.toLowerCase();
+      const bExact = b.document.resourceType.toLowerCase() === query.toLowerCase() ||
+                     b.document.methodName.toLowerCase() === query.toLowerCase();
 
       if (aExact && !bExact) return -1;
       if (!aExact && bExact) return 1;
@@ -1435,17 +1383,29 @@ class SearchToolsService {
       return (b.score || 0) - (a.score || 0);
     });
 
-    // Sort scripts by relevance score
-    const sortedScriptHits = allScriptHits.sort((a, b) => (b.score || 0) - (a.score || 0));
+    // Sort by score, then by id for stable ordering (important for pagination)
+    const sortedScriptHits = scriptHits.sort((a, b) => {
+      const scoreDiff = (b.score || 0) - (a.score || 0);
+      if (scoreDiff !== 0) return scoreDiff;
+      // Use document id for stable secondary sort
+      return a.document.id.localeCompare(b.document.id);
+    });
 
-    const totalMethodCount = sortedMethodHits.length;
-    const totalScriptCount = sortedScriptHits.length;
+    // When specifically searching for scripts, return them in results (not scriptResults)
+    if (documentType === 'script') {
+      return {
+        results: sortedScriptHits.slice(offset, offset + limit).map(hit => hit.document),
+        scriptResults: [], // Scripts are already in results
+        totalMatches: sortedScriptHits.length,
+        facets,
+        searchTime,
+      };
+    }
 
     return {
-      methodResults: sortedMethodHits.slice(offset, offset + limit).map(hit => hit.document),
+      results: sortedNonScriptHits.slice(offset, offset + limit).map(hit => hit.document),
       scriptResults: sortedScriptHits.slice(0, MAX_RELEVANT_SCRIPTS).map(hit => hit.document),
-      totalMethodCount,
-      totalScriptCount,
+      totalMatches: sortedNonScriptHits.length,
       facets,
       searchTime,
     };
@@ -1539,7 +1499,7 @@ export { SearchToolsService };
  */
 const oramaSchema = {
   // Document type discriminator
-  documentType: 'enum',          // "method" | "script" | "prometheus" | "prometheus-metric"
+  documentType: 'enum',          // "method" | "script" | "prometheus" | "prometheus-metric" | "loki" | "analytics"
 
   // Full-text searchable fields
   resourceType: 'string',        // "Pod", "Deployment" - boosted 3x
@@ -1559,29 +1519,31 @@ const oramaSchema = {
   id: 'string',                  // Unique identifier: apiClass.methodName or script:filename
   filePath: 'string',            // Full path for scripts (empty for methods)
 
-  // Prometheus-specific fields
-  library: 'enum',               // "prometheus-query" (empty for non-prometheus)
-  category: 'enum',              // "query" | "metadata" | "alerts" (empty for non-prometheus)
-
   // Prometheus metric fields (for prometheus-metric documentType)
   metricType: 'enum',            // "gauge" | "counter" | "histogram" | "summary" | "unknown"
 } as const;
 
 type OramaDocument = {
   id: string;
-  documentType: 'method' | 'script' | 'prometheus' | 'prometheus-metric';
+  documentType: 'method' | 'script' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics';
   resourceType: string;
   methodName: string;
   description: string;
   searchTokens: string;
-  action: string;
+  action: string;       // K8s action (list, create, etc.) OR library category (query, metadata, descriptive, etc.)
   scope: string;
-  apiClass: string;
+  apiClass: string;     // K8s API class OR library name (unified for filtering)
   filePath: string;
-  library?: string;
-  category?: string;
   metricType?: string;
 };
+
+/**
+ * Split camelCase/PascalCase identifiers into separate words for better search matching.
+ * e.g., "queryRange" -> "query Range", "queryRangeStream" -> "query Range Stream"
+ */
+function splitCamelCase(identifier: string): string {
+  return identifier.replace(/([a-z])([A-Z])/g, '$1 $2');
+}
 
 /**
  * Extract the action from a method name
@@ -2219,6 +2181,176 @@ function clearAnalyticsMethodsCache(): void {
 }
 
 // ============================================================================
+// Loki Library Methods (Based on @prodisco/loki-client)
+// ============================================================================
+
+/**
+ * Loki methods cache
+ */
+let lokiMethodsCache: LokiMethod[] | null = null;
+
+/**
+ * Generate example code for a Loki method
+ */
+function generateLokiExample(methodName: string, _className: string): string {
+  const baseSetup = `// Sandbox provides: require('@prodisco/loki-client'), process.env.LOKI_URL
+const { LokiClient } = require('@prodisco/loki-client');
+const client = new LokiClient({ baseUrl: process.env.LOKI_URL || 'http://loki:3100' });
+`;
+
+  switch (methodName) {
+    case 'queryRange':
+      return `${baseSetup}
+// Query logs from the last hour
+const result = await client.queryRange('{app="nginx"}', { since: '1h', limit: 100 });
+console.log(\`Found \${result.logs.length} log entries\`);
+result.logs.forEach(log => console.log(\`[\${log.timestamp.toISOString()}] \${log.line}\`));`;
+
+    case 'queryRangeMatrix':
+      return `${baseSetup}
+// Query for metric results (rate, count, etc.)
+const result = await client.queryRangeMatrix('rate({app="nginx"}[5m])', { since: '1h' });
+console.log(\`Found \${result.metrics.length} metric series\`);
+result.metrics.forEach(m => console.log(m.labels, m.values));`;
+
+    case 'labels':
+      return `${baseSetup}
+// Get all available label names
+const labels = await client.labels({ since: '24h' });
+console.log('Available labels:', labels);`;
+
+    case 'labelValues':
+      return `${baseSetup}
+// Get values for a specific label
+const values = await client.labelValues('namespace', { since: '24h' });
+console.log('Namespace values:', values);`;
+
+    case 'series':
+      return `${baseSetup}
+// Get log stream series matching selectors
+const series = await client.series(['{namespace="default"}'], { since: '1h' });
+console.log(\`Found \${series.length} series\`);
+series.forEach(s => console.log(s));`;
+
+    case 'ready':
+      return `${baseSetup}
+// Check if Loki is ready
+const isReady = await client.ready();
+console.log('Loki is ready:', isReady);`;
+
+    default:
+      return `${baseSetup}
+const result = await client.${methodName}();
+console.log(result);`;
+  }
+}
+
+/**
+ * Get all Loki methods (based on @prodisco/loki-client API)
+ */
+function getAllLokiMethods(): LokiMethod[] {
+  const methods: LokiMethod[] = [
+    // Query methods
+    {
+      library: '@prodisco/loki-client',
+      className: 'LokiClient',
+      methodName: 'queryRange',
+      category: 'query',
+      description: 'Query logs from Loki using LogQL. Returns parsed log entries with timestamps and labels.',
+      parameters: [
+        { name: 'logQL', type: 'string', optional: false, description: 'LogQL query string (e.g., {app="nginx"})' },
+        { name: 'options', type: 'QueryRangeOptions', optional: true, description: 'Query options: limit, start, end, since, direction' },
+      ],
+      returnType: 'Promise<QueryRangeLogsResult>',
+      example: generateLokiExample('queryRange', 'LokiClient'),
+    },
+    {
+      library: '@prodisco/loki-client',
+      className: 'LokiClient',
+      methodName: 'queryRangeMatrix',
+      category: 'query',
+      description: 'Query for matrix/metric results. Use for LogQL metric queries like rate() or count_over_time().',
+      parameters: [
+        { name: 'logQL', type: 'string', optional: false, description: 'LogQL metric query (e.g., rate({app="nginx"}[5m]))' },
+        { name: 'options', type: 'QueryRangeOptions', optional: true, description: 'Query options: limit, start, end, since' },
+      ],
+      returnType: 'Promise<QueryRangeMatrixResult>',
+      example: generateLokiExample('queryRangeMatrix', 'LokiClient'),
+    },
+    {
+      library: '@prodisco/loki-client',
+      className: 'LokiClient',
+      methodName: 'series',
+      category: 'query',
+      description: 'Get log stream series matching one or more stream selectors.',
+      parameters: [
+        { name: 'selectors', type: 'string[]', optional: false, description: 'Array of stream selectors (e.g., ["{namespace=\\"default\\"}"])' },
+        { name: 'options', type: '{ start?, end?, since? }', optional: true, description: 'Time range options' },
+      ],
+      returnType: 'Promise<Record<string, string>[]>',
+      example: generateLokiExample('series', 'LokiClient'),
+    },
+    // Labels methods
+    {
+      library: '@prodisco/loki-client',
+      className: 'LokiClient',
+      methodName: 'labels',
+      category: 'labels',
+      description: 'Get all available label names in Loki. Useful for discovering what labels exist.',
+      parameters: [
+        { name: 'options', type: 'LabelValuesOptions', optional: true, description: 'Options: start, end, since' },
+      ],
+      returnType: 'Promise<string[]>',
+      example: generateLokiExample('labels', 'LokiClient'),
+    },
+    {
+      library: '@prodisco/loki-client',
+      className: 'LokiClient',
+      methodName: 'labelValues',
+      category: 'labels',
+      description: 'Get all values for a specific label. Essential for building log queries.',
+      parameters: [
+        { name: 'label', type: 'string', optional: false, description: 'Label name (e.g., "namespace", "app")' },
+        { name: 'options', type: 'LabelValuesOptions', optional: true, description: 'Options: start, end, since, query' },
+      ],
+      returnType: 'Promise<string[]>',
+      example: generateLokiExample('labelValues', 'LokiClient'),
+    },
+    // Health check
+    {
+      library: '@prodisco/loki-client',
+      className: 'LokiClient',
+      methodName: 'ready',
+      category: 'health',
+      description: 'Check if Loki is ready and accepting requests.',
+      parameters: [],
+      returnType: 'Promise<boolean>',
+      example: generateLokiExample('ready', 'LokiClient'),
+    },
+  ];
+
+  return methods;
+}
+
+/**
+ * Get cached Loki methods
+ */
+function getLokiMethods(): LokiMethod[] {
+  if (!lokiMethodsCache) {
+    lokiMethodsCache = getAllLokiMethods();
+    logger.info(`Loaded ${lokiMethodsCache.length} Loki methods`);
+  }
+  return lokiMethodsCache;
+}
+
+/**
+ * Clear the Loki methods cache (used during shutdown/reset)
+ */
+function clearLokiMethodsCache(): void {
+  lokiMethodsCache = null;
+}
+
+// ============================================================================
 // Script Parsing Functions
 // ============================================================================
 
@@ -2426,6 +2558,7 @@ function buildScriptDocument(script: CachedScript): OramaDocument {
 
   // Build search tokens from content analysis, NOT filename for auto-generated scripts
   const searchTokens = [
+    'script', // Always include 'script' so scripts can be found with default query
     // Only include filename tokens for manually named scripts
     ...(isAutoGenerated ? [] : [script.filename.replace(/\.ts$/, '').replace(/[-_]/g, ' ')]),
     ...script.resourceTypes,
@@ -2897,714 +3030,212 @@ async function executeTypeMode(input: z.infer<typeof SearchToolsInputSchema>): P
   };
 }
 
+// ============================================================================
+// Unified Search Mode Execution
+// ============================================================================
+
 /**
- * Execute method search mode
+ * Execute unified search mode - searches all indexed documents with unified filters
  */
-async function executeMethodMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<MethodModeResult> {
-  const { resourceType, action, scope = 'all', exclude, limit = 10, offset = 0 } = input;
-
-  if (!resourceType) {
-    return {
-      mode: 'methods',
-      summary: 'Error: resourceType parameter is required when mode is "methods"',
-      tools: [],
-      totalMatches: 0,
-      usage: '',
-      paths: { scriptsDirectory: '' },
-      cachedScripts: [],
-      relevantScripts: [],
-      pagination: { offset: 0, limit: 10, hasMore: false },
-    };
-  }
-
+async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<SearchModeResult> {
   const {
-    methodResults: oramaResults,
-    scriptResults,
-    totalMethodCount,
-    facets,
-    searchTime
-  } = await searchToolsService.searchWithOrama(
-    resourceType,
+    query = '',
+    documentType = 'all',
     action,
-    scope,
+    library,
+    scope = 'all',
     exclude,
-    limit,
-    offset
-  );
-
-  const allMethods = searchToolsService.getApiMethods();
-  const methodMap = new Map(allMethods.map(m => [`${m.apiClass}.${m.methodName}`, m]));
-
-  const results: KubernetesApiMethod[] = oramaResults
-    .map(doc => methodMap.get(doc.id))
-    .filter((m): m is KubernetesApiMethod => m !== undefined);
+    limit = 10,
+    offset = 0
+  } = input;
 
   const scriptsDirectory = SCRIPTS_CACHE_DIR;
   initializeScriptsDirectory(scriptsDirectory);
 
-  let cachedScripts: string[] = [];
-  try {
-    if (existsSync(scriptsDirectory)) {
-      cachedScripts = readdirSync(scriptsDirectory)
-        .filter(f => f.endsWith('.ts'))
-        .sort();
-    }
-  } catch {
-    // Ignore errors
-  }
+  // Use the unified search
+  const searchResult = await searchToolsService.searchWithOrama({
+    query: query || documentType, // Use documentType as fallback query for discovery
+    documentType,
+    action,
+    library,
+    scope,
+    exclude,
+    limit,
+    offset,
+  });
 
-  // Build relevant scripts array from search results (NO filePath for security)
-  // Extract actual filename from document id (format: "script:<filename>")
-  const relevantScripts: RelevantScript[] = scriptResults.map(doc => ({
-    filename: doc.id.replace(/^script:/, ''),  // Extract actual filename from id
+  // Get method details from caches
+  const allK8sMethods = searchToolsService.getApiMethods();
+  const k8sMethodMap = new Map(allK8sMethods.map(m => [`${m.apiClass}.${m.methodName}`, m]));
+
+  const allPrometheusMethods = getPrometheusMethods();
+  const prometheusMethodMap = new Map(allPrometheusMethods.map(m =>
+    [`prometheus:${m.library}:${m.className || 'fn'}:${m.methodName}`, m]
+  ));
+
+  const allLokiMethods = getLokiMethods();
+  const lokiMethodMap = new Map(allLokiMethods.map(m =>
+    [`loki:${m.library}:${m.className || 'fn'}:${m.methodName}`, m]
+  ));
+
+  const allAnalyticsFunctions = getAnalyticsFunctions();
+  const analyticsMap = new Map(allAnalyticsFunctions.map(f =>
+    [`analytics:${f.library}:${f.functionName}`, f]
+  ));
+
+  // Map results to unified format
+  const results = searchResult.results.map(doc => {
+    let parameters: Array<{ name: string; type: string; optional: boolean; description?: string }> | undefined;
+    let returnType: string | undefined;
+    let example: string | undefined;
+
+    if (doc.documentType === 'method') {
+      const method = k8sMethodMap.get(doc.id);
+      if (method) {
+        parameters = method.parameters;
+        returnType = method.returnType;
+        example = method.example;
+      }
+    } else if (doc.documentType === 'prometheus') {
+      const method = prometheusMethodMap.get(doc.id);
+      if (method) {
+        parameters = method.parameters;
+        returnType = method.returnType;
+        example = method.example;
+      }
+    } else if (doc.documentType === 'loki') {
+      const method = lokiMethodMap.get(doc.id);
+      if (method) {
+        parameters = method.parameters;
+        returnType = method.returnType;
+        example = method.example;
+      }
+    } else if (doc.documentType === 'analytics') {
+      const func = analyticsMap.get(doc.id);
+      if (func) {
+        parameters = func.parameters;
+        returnType = func.returnType;
+        example = func.example;
+      }
+    }
+
+    return {
+      id: doc.id,
+      documentType: doc.documentType,
+      name: doc.methodName,
+      description: doc.description,
+      library: doc.apiClass,
+      action: doc.action,
+      parameters,
+      returnType,
+      example,
+    };
+  });
+
+  // Map script results
+  const relevantScripts: RelevantScript[] = searchResult.scriptResults.map(doc => ({
+    filename: doc.id.replace(/^script:/, ''),
     description: doc.description,
     apiClasses: doc.apiClass !== 'CachedScript' ? [doc.apiClass] : [],
   }));
 
-  const hasMore = offset + results.length < totalMethodCount;
+  const hasMore = offset + results.length < searchResult.totalMatches;
 
-  let summary = `Found ${results.length} method(s) for resource "${resourceType}"`;
-  if (action) summary += `, action "${action}"`;
-  if (scope !== 'all') summary += `, scope "${scope}"`;
-  if (exclude) {
-    if (exclude.actions && exclude.actions.length > 0) {
-      summary += `, excluding actions: [${exclude.actions.join(', ')}]`;
-    }
-    if (exclude.apiClasses && exclude.apiClasses.length > 0) {
-      summary += `, excluding API classes: [${exclude.apiClasses.join(', ')}]`;
-    }
-  }
-  summary += ` (search: ${searchTime.toFixed(2)}ms)`;
-
+  // Build summary
+  let summary = `SEARCH RESULTS`;
+  if (query) summary += ` for "${query}"`;
+  if (documentType !== 'all') summary += ` (type: ${documentType})`;
+  if (action) summary += ` (action: ${action})`;
+  if (library) summary += ` (library: ${library})`;
+  if (scope !== 'all') summary += ` (scope: ${scope})`;
+  summary += `\n\nFound ${searchResult.totalMatches} result(s) (search: ${searchResult.searchTime.toFixed(2)}ms)`;
   if (offset > 0 || hasMore) {
-    summary += ` | Page: ${Math.floor(offset / limit) + 1}, showing ${offset + 1}-${offset + results.length} of ${totalMethodCount}`;
+    summary += ` | Page ${Math.floor(offset / limit) + 1}, showing ${offset + 1}-${offset + results.length} of ${searchResult.totalMatches}`;
   }
   summary += `\n\n`;
 
-  // ========== RELEVANT CACHED SCRIPTS (shown FIRST with strong recommendation) ==========
+  // Show relevant scripts first if any
   if (relevantScripts.length > 0) {
     summary += `═══════════════════════════════════════════════════════════════\n`;
     summary += `⚡ CACHED SCRIPTS AVAILABLE - USE THESE FIRST!\n`;
     summary += `═══════════════════════════════════════════════════════════════\n`;
-    summary += `Found ${relevantScripts.length} cached script(s) matching "${resourceType}".\n`;
-    summary += `→ DO NOT write new code if a cached script does what you need.\n`;
-    summary += `→ Just call: runSandbox({ cached: "<filename>" })\n\n`;
     relevantScripts.forEach((script, i) => {
       summary += `${i + 1}. ${script.filename}\n`;
       summary += `   ${script.description}\n`;
-      if (script.apiClasses.length > 0) {
-        summary += `   APIs: ${script.apiClasses.join(', ')}\n`;
-      }
       summary += `   ➤ runSandbox({ cached: "${script.filename}" })\n\n`;
     });
     summary += `═══════════════════════════════════════════════════════════════\n\n`;
   }
 
-  // ========== FACETS ==========
-  if (Object.keys(facets.apiClass).length > 0) {
-    summary += `FACETS (refine your search):\n`;
-    summary += `   API Classes: ${Object.entries(facets.apiClass).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
-    summary += `   Actions: ${Object.entries(facets.action).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
-    summary += `   Scopes: ${Object.entries(facets.scope).map(([k, v]) => `${k}(${v})`).join(', ')}\n\n`;
+  // Show facets
+  if (Object.keys(searchResult.facets.documentType).length > 0) {
+    summary += `FACETS:\n`;
+    summary += `   Types: ${Object.entries(searchResult.facets.documentType).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+    if (Object.keys(searchResult.facets.apiClass).length > 0) {
+      summary += `   Libraries: ${Object.entries(searchResult.facets.apiClass).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+    }
+    if (Object.keys(searchResult.facets.action).length > 0) {
+      summary += `   Actions: ${Object.entries(searchResult.facets.action).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+    }
+    summary += `\n`;
   }
 
-  // ========== API METHODS ==========
-  summary += `API METHODS:\n\n`;
-
-  results.forEach((method, i) => {
-    summary += `${i + 1}. ${method.apiClass}.${method.methodName}\n`;
-
-    if (method.inputSchema.required.length > 0) {
-      const params = method.inputSchema.required.map(r =>
-        `${r}: "${method.inputSchema.properties[r]?.type || 'string'}"`
-      ).join(', ');
-      summary += `   method_args: { ${params} }\n`;
-    } else {
-      summary += `   method_args: {} (empty object - required)\n`;
+  // Show results
+  summary += `RESULTS:\n\n`;
+  results.forEach((result, i) => {
+    summary += `${i + 1}. [${result.documentType}] ${result.library}.${result.name}\n`;
+    summary += `   ${result.description}\n`;
+    if (result.parameters && result.parameters.length > 0) {
+      const params = result.parameters.map(p => `${p.name}${p.optional ? '?' : ''}: ${p.type}`).join(', ');
+      summary += `   Params: (${params})\n`;
     }
-
-    const isList = method.methodName.startsWith('list');
-    if (isList) {
-      summary += `   return_values: response.items (array of ${method.resourceType})\n`;
-    } else {
-      summary += `   return_values: response (${method.resourceType} object)\n`;
+    if (result.returnType) {
+      summary += `   Returns: ${result.returnType}\n`;
     }
-
     summary += `\n`;
   });
 
   if (results.length === 0) {
-    summary += `No methods found. Try:\n`;
-    summary += `- Different resourceType (e.g., "Pod", "Deployment", "Service")\n`;
-    summary += `- Omit action to see all available methods\n`;
-    summary += `- Use scope: "all" to see both namespaced and cluster methods\n`;
+    summary += `No results found. Try:\n`;
+    summary += `- Different query term\n`;
+    summary += `- Omit filters to see more results\n`;
+    summary += `- Use documentType filter to narrow by type (method, prometheus, loki, analytics)\n`;
   }
-
-  summary += `EXECUTION OPTIONS:\n`;
-  summary += `  - New code: runSandbox({ code: '<TypeScript code>' })\n`;
-  summary += `  - Cached script: runSandbox({ cached: '<script-name>' })\n`;
-  summary += `  - Execution modes:\n`;
-  summary += `      mode: "execute" (default) - blocking, waits for completion\n`;
-  summary += `      mode: "stream" - real-time output for long-running ops\n`;
-  summary += `      mode: "async" - non-blocking, returns executionId to check later\n`;
-  summary += `TIP: Use "stream" or "async" for operations that may take time (list across namespaces, watch, etc.)\n`;
-  summary += `For type definitions: use mode: "types" with types: ["V1Pod"]\n\n`;
 
   const usage =
     'USAGE:\n' +
     '- New code: runSandbox({ code: "..." })\n' +
     '- Cached script: runSandbox({ cached: "script-name.ts" })\n' +
-    '- Sandbox provides: k8s, kc (KubeConfig), console, require("prometheus-query")\n' +
-    '- All methods require object parameter: await api.method({ param: value })\n' +
-    '- List operations return: response.items (array)\n' +
-    '- Single resource operations return: response (object)\n' +
-    '- Execution modes: "execute" (blocking), "stream" (real-time), "async" (non-blocking)';
+    '- Execution modes: "execute" (blocking), "stream" (real-time), "async" (non-blocking)\n' +
+    '\n' +
+    'LIBRARY IMPORTS:\n' +
+    '- Prometheus: const { PrometheusDriver } = require("prometheus-query"); const prom = new PrometheusDriver({ endpoint: process.env.PROMETHEUS_URL });\n' +
+    '- Loki: const { LokiClient } = require("@prodisco/loki-client"); const client = new LokiClient({ baseUrl: process.env.LOKI_URL });\n' +
+    '- Analytics: require("simple-statistics"), require("ml-regression"), require("mathjs"), require("fft-js")\n' +
+    '- K8s: k8s and kc (KubeConfig) are pre-configured globals';
 
   return {
-    mode: 'methods',
+    mode: 'search',
     summary,
-    tools: results,
-    totalMatches: totalMethodCount,
-    usage,
-    paths: {
-      scriptsDirectory,
-    },
-    cachedScripts,
+    results,
+    totalMatches: searchResult.totalMatches,
     relevantScripts,
-    facets,
-    searchTime,
+    facets: {
+      documentType: searchResult.facets.documentType,
+      library: searchResult.facets.apiClass,
+      action: searchResult.facets.action,
+      scope: searchResult.facets.scope,
+    },
     pagination: {
       offset,
       limit,
       hasMore,
     },
-  };
-}
-
-/**
- * Execute script search mode
- */
-async function executeScriptMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<ScriptModeResult> {
-  const { searchTerm, limit = 10, offset = 0 } = input;
-
-  const db = await searchToolsService.getOramaDb();
-
-  const scriptsDirectory = SCRIPTS_CACHE_DIR;
-  initializeScriptsDirectory(scriptsDirectory);
-
-  let scripts: RelevantScript[] = [];
-  let totalMatches = 0;
-
-  if (searchTerm) {
-    // Search for scripts matching the term
-    const searchParams: SearchParams<Orama<typeof oramaSchema>, OramaDocument> = {
-      term: searchTerm,
-      properties: ['resourceType', 'methodName', 'description', 'searchTokens'],
-      boost: {
-        resourceType: 3,
-        searchTokens: 2.5,
-        methodName: 2,
-        description: 1,
-      },
-      tolerance: 1,
-      limit: 100, // Get all matches for filtering
-    };
-
-    const searchResult: Results<OramaDocument> = await search(db, searchParams);
-
-    // Filter to only scripts
-    const scriptHits = searchResult.hits
-      .filter(hit => hit.document.documentType === 'script')
-      .sort((a, b) => (b.score || 0) - (a.score || 0));
-
-    totalMatches = scriptHits.length;
-
-    // Filter out scripts that no longer exist on disk, and clean up stale index entries
-    const validScriptHits: typeof scriptHits = [];
-    for (const hit of scriptHits) {
-      if (existsSync(hit.document.filePath)) {
-        validScriptHits.push(hit);
-      } else {
-        // Clean up stale index entry
-        try {
-          await remove(db, hit.document.id);
-          logger.debug(`Orama: Removed stale script ${hit.document.methodName} from index`);
-        } catch {
-          // Ignore removal errors
-        }
-      }
-    }
-    totalMatches = validScriptHits.length;
-
-    scripts = validScriptHits
-      .slice(offset, offset + limit)
-      .map(hit => ({
-        filename: hit.document.id.replace(/^script:/, ''),  // Extract actual filename from id
-        description: hit.document.description,
-        apiClasses: hit.document.apiClass !== 'CachedScript' ? [hit.document.apiClass] : [],
-      }));
-  } else {
-    // List all scripts
-    try {
-      if (existsSync(scriptsDirectory)) {
-        const allScripts = readdirSync(scriptsDirectory)
-          .filter(f => f.endsWith('.ts'))
-          .sort();
-
-        totalMatches = allScripts.length;
-
-        scripts = allScripts
-          .slice(offset, offset + limit)
-          .map(filename => {
-            const fullPath = join(scriptsDirectory, filename);
-            const parsed = parseScriptFile(fullPath);
-            return {
-              filename,
-              description: parsed?.description || `Script: ${filename.replace(/\.ts$/, '')}`,
-              apiClasses: parsed?.apiClasses || [],
-            };
-          });
-      }
-    } catch {
-      // Ignore errors
-    }
-  }
-
-  const hasMore = offset + scripts.length < totalMatches;
-
-  let summary = searchTerm
-    ? `CACHED SCRIPTS (${totalMatches} matching "${searchTerm}")`
-    : `CACHED SCRIPTS (${totalMatches} total)`;
-
-  if (offset > 0 || hasMore) {
-    summary += ` | Page ${Math.floor(offset / limit) + 1}, showing ${offset + 1}-${offset + scripts.length} of ${totalMatches}`;
-  }
-  summary += `\n\n`;
-
-  if (scripts.length > 0) {
-    scripts.forEach((script, i) => {
-      summary += `${i + 1}. ${script.filename}\n`;
-      summary += `   ${script.description}\n`;
-      if (script.apiClasses.length > 0) {
-        summary += `   APIs: ${script.apiClasses.join(', ')}\n`;
-      }
-      summary += `   Run: runSandbox({ cached: "${script.filename}" })\n\n`;
-    });
-  } else {
-    summary += `No scripts found.`;
-    if (searchTerm) {
-      summary += ` Try a different search term or omit searchTerm to list all scripts.\n`;
-    } else {
-      summary += ` Scripts directory: ${scriptsDirectory}\n`;
-    }
-  }
-
-  return {
-    mode: 'scripts',
-    summary,
-    scripts,
-    totalMatches,
+    searchTime: searchResult.searchTime,
+    usage,
     paths: {
       scriptsDirectory,
     },
-    pagination: {
-      offset,
-      limit,
-      hasMore,
-    },
-  };
-}
-
-/**
- * Group metrics by semantic category for better discoverability
- */
-function groupMetricsByCategory(
-  metrics: Array<{ name: string; type: string; description: string }>
-): Record<string, Array<{ name: string; type: string; description: string }>> {
-  type MetricItem = { name: string; type: string; description: string };
-  const categories: Record<string, MetricItem[]> = {
-    'status & lifecycle': [],
-    'cpu & compute': [],
-    'memory': [],
-    'network': [],
-    'storage': [],
-    'other': [],
-  };
-
-  for (const m of metrics) {
-    const name = m.name.toLowerCase();
-
-    if (name.includes('status') || name.includes('phase') || name.includes('ready') || name.includes('restart')) {
-      categories['status & lifecycle']!.push(m);
-    } else if (name.includes('cpu') || name.includes('throttl')) {
-      categories['cpu & compute']!.push(m);
-    } else if (name.includes('memory') || name.includes('mem_') || name.includes('_mem')) {
-      categories['memory']!.push(m);
-    } else if (name.includes('network') || name.includes('receive') || name.includes('transmit') || name.includes('_rx_') || name.includes('_tx_')) {
-      categories['network']!.push(m);
-    } else if (name.includes('storage') || name.includes('disk') || name.includes('volume') || name.includes('fs_')) {
-      categories['storage']!.push(m);
-    } else {
-      categories['other']!.push(m);
-    }
-  }
-
-  // Remove empty categories
-  return Object.fromEntries(
-    Object.entries(categories).filter(([, v]) => v.length > 0)
-  );
-}
-
-/**
- * Execute metrics mode - search for actual Prometheus metrics from the cluster
- */
-async function executeMetricsMode(
-  searchPattern: string | undefined,
-  limit: number,
-  offset: number
-): Promise<MetricsModeResult> {
-  const scriptsDirectory = SCRIPTS_CACHE_DIR;
-  initializeScriptsDirectory(scriptsDirectory);
-
-  const indexingStatus = searchToolsService.getMetricsIndexingStatus();
-
-  if (indexingStatus === 'unavailable') {
-    return {
-      mode: 'prometheus',
-      category: 'metrics',
-      summary: 'Prometheus metrics indexing unavailable. Ensure PROMETHEUS_URL is configured.',
-      metrics: [],
-      totalMatches: 0,
-      indexingStatus,
-      paths: { scriptsDirectory },
-      pagination: { offset: 0, limit, hasMore: false },
-    };
-  }
-
-  const db = await searchToolsService.getOramaDb();
-
-  // Search Orama for prometheus-metric documents
-  const searchResults = await search(db, {
-    term: searchPattern || '',
-    properties: ['methodName', 'description', 'searchTokens'],
-    limit: 10000, // Get all matching, we'll paginate manually
-  });
-
-  // Filter to only prometheus-metric documents
-  const metricHits = searchResults.hits.filter(
-    hit => hit.document.documentType === 'prometheus-metric'
-  );
-
-  const totalMatches = metricHits.length;
-
-  // Apply pagination
-  const paginatedHits = metricHits.slice(offset, offset + limit);
-
-  // Map to output format
-  const metrics = paginatedHits.map(hit => ({
-    name: hit.document.methodName,
-    type: String(hit.document.metricType || 'unknown'),
-    description: hit.document.description,
-  }));
-
-  // Build summary with semantic grouping
-  let summary = `PROMETHEUS METRICS`;
-  if (searchPattern) summary += ` matching "${searchPattern}"`;
-  summary += `\n\nFound ${totalMatches} metric(s)`;
-  if (indexingStatus === 'in_progress') {
-    summary += ` (indexing in progress, results may be incomplete)`;
-  }
-  summary += `\n\n`;
-
-  // Group metrics by category
-  const grouped = groupMetricsByCategory(metrics);
-  for (const [category, categoryMetrics] of Object.entries(grouped)) {
-    summary += `${category.toUpperCase()}:\n`;
-    for (const m of categoryMetrics) {
-      summary += `  ${m.name} (${m.type})\n`;
-      summary += `    ${m.description}\n\n`;
-    }
-  }
-
-  // Add prominent usage hints
-  summary += `${'='.repeat(60)}\n`;
-  summary += `NEXT STEPS:\n\n`;
-  summary += `1. GET LABELS for a metric (to see what you can filter on):\n`;
-  summary += `   prom.labelNames(['{__name__="${metrics[0]?.name || 'metric_name'}"}'])\n`;
-  summary += `   → Returns: ["namespace", "pod", "phase", ...]\n\n`;
-  summary += `2. QUERY a metric:\n`;
-  summary += `   prom.instantQuery('${metrics[0]?.name || 'metric_name'}{namespace="default"}')\n`;
-  summary += `${'='.repeat(60)}\n`;
-
-  return {
-    mode: 'prometheus',
-    category: 'metrics',
-    summary,
-    metrics,
-    totalMatches,
-    indexingStatus,
-    paths: { scriptsDirectory },
-    pagination: {
-      offset,
-      limit,
-      hasMore: offset + metrics.length < totalMatches,
-    },
-  };
-}
-
-/**
- * Execute prometheus mode - search for prometheus-query library methods
- */
-async function executePrometheusMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<PrometheusModeResult | PrometheusErrorResult | MetricsModeResult> {
-  const { category = 'all', methodPattern, limit = 10, offset = 0 } = input;
-
-  // Handle metrics category - search indexed cluster metrics
-  if (category === 'metrics') {
-    return executeMetricsMode(methodPattern, limit, offset);
-  }
-
-  const scriptsDirectory = SCRIPTS_CACHE_DIR;
-  initializeScriptsDirectory(scriptsDirectory);
-
-  // Get all prometheus methods
-  let methods = getPrometheusMethods();
-
-  // Filter by category
-  if (category !== 'all') {
-    methods = methods.filter(m => m.category === category);
-  }
-
-  // Filter by method pattern
-  if (methodPattern) {
-    const pattern = methodPattern.toLowerCase();
-    methods = methods.filter(m =>
-      m.methodName.toLowerCase().includes(pattern) ||
-      m.description.toLowerCase().includes(pattern)
-    );
-  }
-
-  const totalMatches = methods.length;
-
-  // Apply pagination
-  const paginatedMethods = methods.slice(offset, offset + limit);
-  const hasMore = offset + paginatedMethods.length < totalMatches;
-
-  // Build facets
-  const facets = {
-    library: {} as Record<string, number>,
-    category: {} as Record<string, number>,
-  };
-
-  for (const m of methods) {
-    facets.library[m.library] = (facets.library[m.library] || 0) + 1;
-    facets.category[m.category] = (facets.category[m.category] || 0) + 1;
-  }
-
-  // Library info
-  const libraries = {
-    'prometheus-query': { installed: true, version: '^3.3.2' },
-  };
-
-  // Check if PROMETHEUS_URL is configured
-  const prometheusUrl = process.env.PROMETHEUS_URL;
-
-  // Build summary
-  let summary = `PROMETHEUS METHODS`;
-  if (category !== 'all') summary += ` (category: ${category})`;
-  if (methodPattern) summary += ` (pattern: "${methodPattern}")`;
-  summary += `\n\nFound ${totalMatches} method(s)`;
-  if (offset > 0 || hasMore) {
-    summary += ` | Page ${Math.floor(offset / limit) + 1}, showing ${offset + 1}-${offset + paginatedMethods.length} of ${totalMatches}`;
-  }
-  summary += `\n\n`;
-
-  // Show PROMETHEUS_URL status
-  if (!prometheusUrl) {
-    summary += `⚠️  PROMETHEUS_URL not configured - prometheus-query methods require this environment variable\n`;
-    summary += `   Set via: PROMETHEUS_URL="http://prometheus:9090"\n\n`;
-  } else {
-    summary += `✓ PROMETHEUS_URL: ${prometheusUrl}\n\n`;
-  }
-
-  // Show facets
-  if (Object.keys(facets.category).length > 0) {
-    summary += `FACETS:\n`;
-    summary += `   Categories: ${Object.entries(facets.category).map(([k, v]) => `${k}(${v})`).join(', ')}\n\n`;
-  }
-
-  // Show methods
-  summary += `METHODS:\n\n`;
-  paginatedMethods.forEach((method, i) => {
-    const className = method.className ? `${method.className}.` : '';
-    summary += `${i + 1}. ${method.library}: ${className}${method.methodName}\n`;
-    summary += `   Category: ${method.category}\n`;
-    summary += `   ${method.description}\n`;
-    if (method.parameters.length > 0) {
-      const params = method.parameters.map(p =>
-        `${p.name}${p.optional ? '?' : ''}: ${p.type}`
-      ).join(', ');
-      summary += `   Params: (${params})\n`;
-    }
-    summary += `   Returns: ${method.returnType}\n\n`;
-  });
-
-  if (paginatedMethods.length === 0) {
-    summary += `No methods found. Try:\n`;
-    summary += `- Different category filter\n`;
-    summary += `- Different methodPattern\n`;
-  }
-
-  summary += `\nEXECUTION OPTIONS:\n`;
-  summary += `  - New code: runSandbox({ code: '<TypeScript code>' })\n`;
-  summary += `  - Cached script: runSandbox({ cached: '<script-name>' })\n`;
-  summary += `  - Execution modes:\n`;
-  summary += `      mode: "execute" (default) - blocking, waits for completion\n`;
-  summary += `      mode: "stream" - real-time output for range queries\n`;
-  summary += `      mode: "async" - non-blocking for long queries, check status later\n`;
-  summary += `TIP: Use "stream" or "async" for Prometheus queries over large time ranges.\n`;
-
-  // Add tip about metrics category
-  if (prometheusUrl) {
-    summary += `\n💡 TIP: Use category: "metrics" to discover actual metrics from your cluster.\n`;
-    summary += `   Example: { mode: "prometheus", category: "metrics", methodPattern: "pod" }\n`;
-  }
-
-  // Add tip about analytics libraries for advanced analysis
-  summary += `\n📊 ANALYTICS: Use { mode: "analytics" } for stats, regression, FFT libraries to analyze Prometheus data.\n`;
-
-  const usage =
-    'USAGE:\n' +
-    '- New code: runSandbox({ code: "..." })\n' +
-    '- Cached script: runSandbox({ cached: "script-name.ts" })\n' +
-    '- Sandbox provides: k8s, kc (KubeConfig), console, require("prometheus-query")\n' +
-    '- Execution modes: "execute" (blocking), "stream" (real-time), "async" (non-blocking)';
-
-  // If PROMETHEUS_URL is not set, return error result
-  if (!prometheusUrl) {
-    return {
-      mode: 'prometheus',
-      error: 'PROMETHEUS_URL_NOT_CONFIGURED',
-      message: 'The PROMETHEUS_URL environment variable is not set. prometheus-query methods require this to connect to a Prometheus server.',
-      example: 'Set PROMETHEUS_URL environment variable before starting the MCP server',
-      methods: paginatedMethods,
-      totalMatches,
-      libraries,
-      paths: { scriptsDirectory },
-      facets,
-      pagination: { offset, limit, hasMore },
-    };
-  }
-
-  return {
-    mode: 'prometheus',
-    summary,
-    methods: paginatedMethods,
-    totalMatches,
-    libraries,
-    usage,
-    paths: { scriptsDirectory },
-    facets,
-    pagination: { offset, limit, hasMore },
-  };
-}
-
-// ============================================================================
-// Analytics Mode Execution
-// ============================================================================
-
-/**
- * Execute analytics mode - search and display analytics library functions
- */
-async function executeAnalyticsMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<AnalyticsModeResult> {
-  const scriptsDirectory = SCRIPTS_CACHE_DIR;
-  const library = input.library || 'all';
-  const functionPattern = input.functionPattern;
-  const limit = input.limit ?? 10;
-  const offset = input.offset ?? 0;
-
-  // Get all analytics functions
-  let allFunctions = getAnalyticsFunctions();
-
-  // Filter by library
-  if (library !== 'all') {
-    allFunctions = allFunctions.filter(f => f.library === library);
-  }
-
-  // Filter by function pattern
-  if (functionPattern) {
-    const pattern = functionPattern.toLowerCase();
-    allFunctions = allFunctions.filter(f =>
-      f.functionName.toLowerCase().includes(pattern) ||
-      f.description.toLowerCase().includes(pattern)
-    );
-  }
-
-  const totalMatches = allFunctions.length;
-
-  // Paginate
-  const paginatedFunctions = allFunctions.slice(offset, offset + limit);
-  const hasMore = offset + limit < totalMatches;
-
-  // Build facets
-  const facets: { library: Record<string, number>; category: Record<string, number> } = {
-    library: {},
-    category: {},
-  };
-
-  for (const func of allFunctions) {
-    facets.library[func.library] = (facets.library[func.library] || 0) + 1;
-    facets.category[func.category] = (facets.category[func.category] || 0) + 1;
-  }
-
-  // Build libraries info
-  const libraries = {
-    'simple-statistics': { installed: true, version: '7.8.8', description: 'Descriptive statistics, regression, distributions' },
-    'ml-regression': { installed: true, version: '5.0.0', description: 'Advanced regression models (polynomial, exponential, power)' },
-    'mathjs': { installed: true, version: '14.5.2', description: 'Matrix operations, linear algebra, symbolic math' },
-    'fft-js': { installed: true, version: '0.0.12', description: 'Fast Fourier Transform for frequency analysis' },
-  };
-
-  // Build summary
-  let summary = `ANALYTICS LIBRARIES (${totalMatches} functions available)\n`;
-  summary += `=========================================\n\n`;
-
-  if (paginatedFunctions.length === 0) {
-    summary += `No functions found matching your criteria.\n`;
-    summary += `Try: { mode: "analytics" } to see all, or { mode: "analytics", library: "simple-statistics" }\n`;
-  }
-
-  paginatedFunctions.forEach((func, idx) => {
-    summary += `${offset + idx + 1}. ${func.library}.${func.functionName}\n`;
-    summary += `   ${func.description}\n`;
-    summary += `   Signature: ${func.signature}\n`;
-    summary += `   Category: ${func.category}\n`;
-    summary += `   Returns: ${func.returnType}\n\n`;
-  });
-
-  summary += `\nEXECUTION:\n`;
-  summary += `  runSandbox({ code: '<TypeScript code using these libraries>' })\n`;
-  summary += `\nAVAILABLE LIBRARIES:\n`;
-  summary += `  - simple-statistics: Descriptive stats, regression, anomaly detection\n`;
-  summary += `  - ml-regression: Polynomial, exponential, power regression\n`;
-  summary += `  - mathjs: Matrix operations, linear algebra\n`;
-  summary += `  - fft-js: FFT for periodic pattern detection\n`;
-
-  const usage =
-    'USAGE:\n' +
-    '- Sandbox provides: require("simple-statistics"), require("ml-regression"), require("mathjs"), require("fft-js")\n' +
-    '- Example: const ss = require("simple-statistics"); const avg = ss.mean([1,2,3,4,5]);\n' +
-    '- Use with Prometheus data for anomaly detection, trend forecasting, correlation analysis';
-
-  return {
-    mode: 'analytics',
-    summary,
-    functions: paginatedFunctions,
-    totalMatches,
-    libraries,
-    usage,
-    paths: { scriptsDirectory },
-    facets,
-    pagination: { offset, limit, hasMore },
   };
 }
 
@@ -3634,41 +3265,37 @@ export async function shutdownSearchIndex(): Promise<void> {
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
   name: 'kubernetes.searchTools',
   description:
-    'Find Kubernetes API methods, get type definitions, or search cached scripts. ' +
+    'Unified search tool for discovering methods across all supported libraries. ' +
     'MODES: ' +
-    '• methods (default): Search for API methods by resource type. Also shows relevant cached scripts first. ' +
-    'Params: resourceType (required), action, scope, exclude, limit, offset. ' +
-    'Example: { resourceType: "Pod", action: "list" } ' +
+    '• search (default): Search all indexed methods - K8s API, Prometheus, Loki, Analytics. ' +
+    'Mix and match libraries in sandbox scripts. ' +
+    'Filters: query, documentType (method/prometheus/loki/analytics/script/all), action, library, scope, exclude. ' +
+    'Example: { query: "Pod" } or { query: "query", documentType: "loki" } or { documentType: "prometheus", action: "query" } ' +
     '• types: Get TypeScript type definitions with path navigation. ' +
     'Params: types (required), depth. ' +
     'Example: { mode: "types", types: ["V1Pod", "V1Deployment.spec.template.spec"] } ' +
-    '• scripts: Search or list cached scripts. ' +
-    'Params: searchTerm (optional), limit, offset. ' +
-    'Example: { mode: "scripts", searchTerm: "pod" } ' +
-    '• prometheus: Search Prometheus API methods or discover cluster metrics. ' +
-    'Params: category (query/metadata/alerts/metrics), methodPattern (optional), limit, offset. ' +
-    'Example: { mode: "prometheus", category: "query" } ' +
-    'Use category: "metrics" with methodPattern to discover metrics (e.g., { mode: "prometheus", category: "metrics", methodPattern: "gpu" }). ' +
-    '• analytics: Search analytics/math libraries for advanced data analysis. ' +
-    'Params: library (simple-statistics/ml-regression/mathjs/fft-js/all), functionPattern (optional), limit, offset. ' +
-    'Example: { mode: "analytics", library: "simple-statistics" } ' +
-    'Actions: list, read, create, delete, patch, replace, connect, get, watch. ' +
-    'Scopes: namespaced, cluster, all. ' +
+    '• metrics: Discover Prometheus cluster metrics (requires PROMETHEUS_URL). ' +
+    'Example: { mode: "metrics", query: "cpu" } ' +
+    'LIBRARIES: ' +
+    'K8s: CoreV1Api, AppsV1Api, BatchV1Api, NetworkingV1Api, etc. ' +
+    'Prometheus: prometheus-query (query, metadata, alerts). ' +
+    'Loki: @prodisco/loki-client (queryRange, labels, labelValues, series, ready). ' +
+    'Analytics: simple-statistics, ml-regression, mathjs, fft-js. ' +
+    'FILTERS: ' +
+    'action: K8s actions (list, create, read, delete, patch) or library categories (query, labels, descriptive, regression). ' +
+    'library: Filter by specific library/API class. ' +
+    'scope: namespaced, cluster, all (K8s methods only). ' +
+    'exclude: { actions: [...], libraries: [...] } ' +
     'Docs: https://github.com/harche/ProDisco/blob/main/docs/search-tools.md',
   schema: SearchToolsInputSchema,
   async execute(input) {
-    const { mode = 'methods' } = input;
+    const { mode = 'search' } = input;
 
     if (mode === 'types') {
       return executeTypeMode(input);
-    } else if (mode === 'scripts') {
-      return executeScriptMode(input);
-    } else if (mode === 'prometheus') {
-      return executePrometheusMode(input);
-    } else if (mode === 'analytics') {
-      return executeAnalyticsMode(input);
     } else {
-      return executeMethodMode(input);
+      // Default: unified search mode - handles all document types including prometheus-metric
+      return executeSearchMode(input);
     }
   },
 };
