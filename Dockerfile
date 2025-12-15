@@ -30,11 +30,13 @@ WORKDIR /app
 
 # Install production dependencies
 COPY package.json package-lock.json ./
+COPY packages/loki-client/package.json ./packages/loki-client/
 COPY packages/sandbox-server/package.json ./packages/sandbox-server/
 
 RUN npm ci --omit=dev --ignore-scripts
 
 # Copy built files from builder
+COPY --from=builder /app/packages/loki-client/dist ./packages/loki-client/dist
 COPY --from=builder /app/packages/sandbox-server/dist ./packages/sandbox-server/dist
 COPY --from=builder /app/dist ./dist
 

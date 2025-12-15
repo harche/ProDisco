@@ -28,11 +28,13 @@ WORKDIR /app
 
 # Install only production dependencies (ignore prepare scripts)
 COPY package.json ./
+COPY packages/loki-client/package.json ./packages/loki-client/
 COPY packages/sandbox-server/package.json ./packages/sandbox-server/
 
-RUN npm install --workspace=@prodisco/sandbox-server --omit=dev --ignore-scripts
+RUN npm install --workspace=@prodisco/loki-client --workspace=@prodisco/sandbox-server --omit=dev --ignore-scripts
 
 # Copy built files from builder
+COPY --from=builder /app/packages/loki-client/dist ./packages/loki-client/dist
 COPY --from=builder /app/packages/sandbox-server/dist ./packages/sandbox-server/dist
 
 # Create cache directory for scripts
