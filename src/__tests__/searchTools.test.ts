@@ -44,7 +44,7 @@ writeFileSync(testScriptPath, testScriptContent);
 // Main search helper - works for all document types
 type SearchInput = {
   query?: string;
-  documentType?: 'method' | 'prometheus' | 'loki' | 'analytics' | 'script' | 'all';
+  documentType?: 'kubernetes' | 'prometheus' | 'loki' | 'analytics' | 'script' | 'all';
   action?: string;
   library?: string;
   scope?: 'namespaced' | 'cluster' | 'all';
@@ -98,7 +98,7 @@ const searchTools = async (input: {
 }) => {
   const result = await search({
     query: input.resourceType,
-    documentType: 'method',
+    documentType: 'kubernetes',
     action: input.action,
     scope: input.scope,
     exclude: input.exclude ? { actions: input.exclude.actions, libraries: input.exclude.apiClasses } : undefined,

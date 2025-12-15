@@ -13,7 +13,7 @@ Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8
   - [Search Mode (Default)](#search-mode-default)
   - [Types Mode](#types-mode)
 - [Document Types](#document-types)
-  - [Kubernetes Methods](#kubernetes-methods-documenttype-method)
+  - [Kubernetes Methods](#kubernetes-methods-documenttype-kubernetes)
   - [Prometheus Methods](#prometheus-methods-documenttype-prometheus)
   - [Prometheus Metrics](#prometheus-metrics-documenttype-prometheus-metric)
   - [Loki Methods](#loki-methods-documenttype-loki)
@@ -45,7 +45,7 @@ Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8
 
 | Type | Description | Example |
 |------|-------------|---------|
-| `method` | Kubernetes API methods | `{ documentType: "method", query: "Pod" }` |
+| `kubernetes` | Kubernetes API methods | `{ documentType: "kubernetes", query: "Pod" }` |
 | `prometheus` | Prometheus client methods | `{ documentType: "prometheus", action: "query" }` |
 | `prometheus-metric` | Live cluster metrics | `{ documentType: "prometheus-metric", query: "cpu" }` |
 | `loki` | Loki client methods | `{ documentType: "loki", action: "query" }` |
@@ -66,7 +66,7 @@ Search for methods across all supported libraries using a unified query interfac
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | No | Search term - searches method names, descriptions, and resource types |
-| `documentType` | enum | No | Filter by type: `method`, `prometheus`, `prometheus-metric`, `loki`, `analytics`, `script`, or `all` (default) |
+| `documentType` | enum | No | Filter by type: `kubernetes`, `prometheus`, `prometheus-metric`, `loki`, `analytics`, `script`, or `all` (default) |
 | `action` | string | No | Filter by action/category: K8s actions (list, create, read, delete, patch) or library categories (query, labels, descriptive, regression) |
 | `library` | string | No | Filter by library/API class: K8s (CoreV1Api, AppsV1Api, etc.) or libraries (prometheus-query, @prodisco/loki-client, simple-statistics, etc.) |
 | `scope` | enum | No | Filter by scope: `namespaced`, `cluster`, or `all` (default) - K8s methods only |
@@ -81,10 +81,10 @@ Search for methods across all supported libraries using a unified query interfac
 { query: "Pod" }
 
 // Filter to Kubernetes methods only
-{ query: "Pod", documentType: "method" }
+{ query: "Pod", documentType: "kubernetes" }
 
 // Find K8s list methods for Pods
-{ query: "Pod", documentType: "method", action: "list", scope: "namespaced" }
+{ query: "Pod", documentType: "kubernetes", action: "list", scope: "namespaced" }
 
 // Find Loki query methods
 { documentType: "loki", action: "query" }
@@ -116,7 +116,7 @@ Search for methods across all supported libraries using a unified query interfac
   summary: string,          // Human-readable result summary
   results: [{               // Array of matching methods/functions
     id: string,             // Unique identifier
-    documentType: string,   // "method", "prometheus", "loki", "analytics", "script"
+    documentType: string,   // "kubernetes", "prometheus", "loki", "analytics", "script"
     name: string,           // Method/function name
     description: string,
     library: string,        // API class or library name
@@ -132,7 +132,7 @@ Search for methods across all supported libraries using a unified query interfac
     apiClasses: string[]
   }],
   facets: {                 // Result breakdown for refining search
-    documentType: { "method": 15, "loki": 3 },
+    documentType: { "kubernetes": 15, "loki": 3 },
     library: { "CoreV1Api": 15, "AppsV1Api": 3 },
     action: { "list": 5, "query": 4, "create": 3 },
     scope: { "namespaced": 10, "cluster": 5 }
@@ -202,7 +202,7 @@ Use dot notation to navigate to nested types:
 
 ## Document Types
 
-### Kubernetes Methods (documentType: "method")
+### Kubernetes Methods (documentType: "kubernetes")
 
 Kubernetes API methods from `@kubernetes/client-node`. Filter by `action` for CRUD operations and `scope` for namespaced vs cluster resources.
 
@@ -212,7 +212,7 @@ Kubernetes API methods from `@kubernetes/client-node`. Filter by `action` for CR
 
 ```typescript
 // Find Pod list methods
-{ documentType: "method", query: "Pod", action: "list", scope: "namespaced" }
+{ documentType: "kubernetes", query: "Pod", action: "list", scope: "namespaced" }
 ```
 
 ---
@@ -376,7 +376,7 @@ runSandbox({ cached: "script-2025-01-01T12-00-00-abc123.ts" })
 
 ```
 Step 1: Discover the API method
-> searchTools({ documentType: "method", query: "Pod", action: "list", scope: "namespaced" })
+> searchTools({ documentType: "kubernetes", query: "Pod", action: "list", scope: "namespaced" })
 
 Step 2: Get type definition for understanding the response
 > searchTools({ mode: "types", types: ["V1Pod.spec", "V1Pod.status"] })
@@ -394,7 +394,7 @@ Step 3: Execute in sandbox
 
 ```
 Step 1: Find the create method
-> searchTools({ documentType: "method", query: "Deployment", action: "create" })
+> searchTools({ documentType: "kubernetes", query: "Deployment", action: "create" })
 
 Step 2: Get the full Deployment spec structure
 > searchTools({ mode: "types", types: ["V1Deployment.spec"], depth: 2 })
@@ -499,7 +499,7 @@ searchTools uses [Orama](https://orama.com) for fast, typo-tolerant full-text se
 
 ```typescript
 const oramaSchema = {
-  documentType: 'enum',      // "method" | "script" | "prometheus" | "prometheus-metric" | "loki" | "analytics"
+  documentType: 'enum',      // "kubernetes" | "script" | "prometheus" | "prometheus-metric" | "loki" | "analytics"
   resourceType: 'string',    // Searchable: "Pod", "Deployment"
   methodName: 'string',      // Searchable: "listNamespacedPod", "queryRange", "mean", metric names
   description: 'string',     // Searchable: full description text

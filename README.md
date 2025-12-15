@@ -189,7 +189,7 @@ A unified search interface for discovering methods across all supported librarie
 
 | Type | Description |
 |------|-------------|
-| `method` | Kubernetes API methods (CoreV1Api, AppsV1Api, etc.) |
+| `kubernetes` | Kubernetes API methods (CoreV1Api, AppsV1Api, etc.) |
 | `prometheus` | Prometheus client methods (query, metadata, alerts) |
 | `prometheus-metric` | Live Prometheus metrics (requires PROMETHEUS_URL) |
 | `loki` | Loki client methods (queryRange, labels, series) |
@@ -204,7 +204,7 @@ A unified search interface for discovering methods across all supported librarie
 { query: "Pod" }
 
 // Filter by document type
-{ query: "Pod", documentType: "method" }
+{ query: "Pod", documentType: "kubernetes" }
 
 // Find Loki query methods
 { documentType: "loki", action: "query" }

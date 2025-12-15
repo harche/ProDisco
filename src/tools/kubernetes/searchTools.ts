@@ -39,10 +39,10 @@ const SearchToolsInputSchema = z.object({
 
   // === Filter parameters (work for all document types) ===
   documentType: z
-    .enum(['method', 'prometheus', 'prometheus-metric', 'loki', 'analytics', 'script', 'all'])
+    .enum(['kubernetes', 'prometheus', 'prometheus-metric', 'loki', 'analytics', 'script', 'all'])
     .optional()
     .default('all')
-    .describe('Filter by document type: "method" (K8s API), "prometheus" (Prometheus client methods), "prometheus-metric" (live Prometheus metrics - requires PROMETHEUS_URL), "loki", "analytics", "script", or "all"'),
+    .describe('Filter by document type: "kubernetes" (K8s API methods), "prometheus" (Prometheus client methods), "prometheus-metric" (live Prometheus metrics - requires PROMETHEUS_URL), "loki", "analytics", "script", or "all"'),
 
   action: z
     .string()
@@ -890,7 +890,7 @@ class SearchToolsService {
 
       const doc: OramaDocument = {
         id: `${method.apiClass}.${method.methodName}`,
-        documentType: 'method',
+        documentType: 'kubernetes',
         resourceType: method.resourceType,
         methodName: method.methodName,
         description: method.description,
@@ -1230,7 +1230,7 @@ class SearchToolsService {
    */
   async searchWithOrama(options: {
     query: string;
-    documentType?: 'method' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics' | 'script' | 'all';
+    documentType?: 'kubernetes' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics' | 'script' | 'all';
     action?: string;
     library?: string;
     scope?: 'namespaced' | 'cluster' | 'all';
@@ -1299,11 +1299,11 @@ class SearchToolsService {
     // Apply scope filter (only affects K8s methods)
     if (scope === 'namespaced') {
       nonScriptHits = nonScriptHits.filter(hit =>
-        hit.document.documentType !== 'method' || hit.document.scope === 'namespaced'
+        hit.document.documentType !== 'kubernetes' || hit.document.scope === 'namespaced'
       );
     } else if (scope === 'cluster') {
       nonScriptHits = nonScriptHits.filter(hit =>
-        hit.document.documentType !== 'method' ||
+        hit.document.documentType !== 'kubernetes' ||
         hit.document.scope === 'cluster' || hit.document.scope === 'forAllNamespaces'
       );
     }
@@ -1499,7 +1499,7 @@ export { SearchToolsService };
  */
 const oramaSchema = {
   // Document type discriminator
-  documentType: 'enum',          // "method" | "script" | "prometheus" | "prometheus-metric" | "loki" | "analytics"
+  documentType: 'enum',          // "kubernetes" | "script" | "prometheus" | "prometheus-metric" | "loki" | "analytics"
 
   // Full-text searchable fields
   resourceType: 'string',        // "Pod", "Deployment" - boosted 3x
@@ -1525,7 +1525,7 @@ const oramaSchema = {
 
 type OramaDocument = {
   id: string;
-  documentType: 'method' | 'script' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics';
+  documentType: 'kubernetes' | 'script' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics';
   resourceType: string;
   methodName: string;
   description: string;
@@ -3089,7 +3089,7 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
     let returnType: string | undefined;
     let example: string | undefined;
 
-    if (doc.documentType === 'method') {
+    if (doc.documentType === 'kubernetes') {
       const method = k8sMethodMap.get(doc.id);
       if (method) {
         parameters = method.parameters;
@@ -3199,7 +3199,7 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
     summary += `No results found. Try:\n`;
     summary += `- Different query term\n`;
     summary += `- Omit filters to see more results\n`;
-    summary += `- Use documentType filter to narrow by type (method, prometheus, loki, analytics)\n`;
+    summary += `- Use documentType filter to narrow by type (kubernetes, prometheus, loki, analytics)\n`;
   }
 
   const usage =
@@ -3269,8 +3269,8 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     'MODES: ' +
     '• search (default): Search all indexed methods - K8s API, Prometheus, Loki, Analytics. ' +
     'Mix and match libraries in sandbox scripts. ' +
-    'Filters: query, documentType (method/prometheus/loki/analytics/script/all), action, library, scope, exclude. ' +
-    'Example: { query: "Pod" } or { query: "query", documentType: "loki" } or { documentType: "prometheus", action: "query" } ' +
+    'Filters: query, documentType (kubernetes/prometheus/loki/analytics/script/all), action, library, scope, exclude. ' +
+    'Example: { query: "Pod" } or { query: "query", documentType: "loki" } or { documentType: "kubernetes", action: "list" } ' +
     '• types: Get TypeScript type definitions with path navigation. ' +
     'Params: types (required), depth. ' +
     'Example: { mode: "types", types: ["V1Pod", "V1Deployment.spec.template.spec"] } ' +
