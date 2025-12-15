@@ -44,9 +44,10 @@ log "Setting up test environment"
 rm -rf "$ARTIFACT_DIR"
 mkdir -p "$TEST_DIR"
 
-# Step 2: Build packages (sandbox-server first, then main package)
+# Step 2: Build packages (loki-client, then sandbox-server, then main package)
 log "Building packages"
 cd "$ROOT_DIR"
+npm run build -w @prodisco/loki-client
 npm run proto:generate -w @prodisco/sandbox-server
 npm run build -w @prodisco/sandbox-server
 npm run build
