@@ -69,7 +69,6 @@ Search for methods across all supported libraries using a unified query interfac
 | `documentType` | enum | No | Filter by type: `kubernetes`, `prometheus`, `prometheus-metric`, `loki`, `analytics`, `script`, or `all` (default) |
 | `action` | string | No | Filter by action/category: K8s actions (list, create, read, delete, patch) or library categories (query, labels, descriptive, regression) |
 | `library` | string | No | Filter by library/API class: K8s (CoreV1Api, AppsV1Api, etc.) or libraries (prometheus-query, @prodisco/loki-client, simple-statistics, etc.) |
-| `scope` | enum | No | Filter by scope: `namespaced`, `cluster`, or `all` (default) - K8s methods only |
 | `exclude` | object | No | Exclude specific actions or libraries: `{ actions: [...], libraries: [...] }` |
 | `limit` | number | No | Max results (default: 10, max: 50) |
 | `offset` | number | No | Skip N results for pagination (default: 0) |
@@ -84,7 +83,7 @@ Search for methods across all supported libraries using a unified query interfac
 { query: "Pod", documentType: "kubernetes" }
 
 // Find K8s list methods for Pods
-{ query: "Pod", documentType: "kubernetes", action: "list", scope: "namespaced" }
+{ query: "Pod", documentType: "kubernetes", action: "list" }
 
 // Find Loki query methods
 { documentType: "loki", action: "query" }
@@ -134,8 +133,7 @@ Search for methods across all supported libraries using a unified query interfac
   facets: {                 // Result breakdown for refining search
     documentType: { "kubernetes": 15, "loki": 3 },
     library: { "CoreV1Api": 15, "AppsV1Api": 3 },
-    action: { "list": 5, "query": 4, "create": 3 },
-    scope: { "namespaced": 10, "cluster": 5 }
+    action: { "list": 5, "query": 4, "create": 3 }
   },
   pagination: {
     offset: number,
@@ -204,7 +202,7 @@ Use dot notation to navigate to nested types:
 
 ### Kubernetes Methods (documentType: "kubernetes")
 
-Kubernetes API methods from `@kubernetes/client-node`. Filter by `action` for CRUD operations and `scope` for namespaced vs cluster resources.
+Kubernetes API methods from `@kubernetes/client-node`. Filter by `action` for CRUD operations.
 
 **Actions:** `list`, `read`, `create`, `delete`, `patch`, `replace`, `connect`, `watch`
 
@@ -212,7 +210,7 @@ Kubernetes API methods from `@kubernetes/client-node`. Filter by `action` for CR
 
 ```typescript
 // Find Pod list methods
-{ documentType: "kubernetes", query: "Pod", action: "list", scope: "namespaced" }
+{ documentType: "kubernetes", query: "Pod", action: "list" }
 ```
 
 ---
@@ -376,7 +374,7 @@ runSandbox({ cached: "script-2025-01-01T12-00-00-abc123.ts" })
 
 ```
 Step 1: Discover the API method
-> searchTools({ documentType: "kubernetes", query: "Pod", action: "list", scope: "namespaced" })
+> searchTools({ documentType: "kubernetes", query: "Pod", action: "list" })
 
 Step 2: Get type definition for understanding the response
 > searchTools({ mode: "types", types: ["V1Pod.spec", "V1Pod.status"] })
@@ -505,7 +503,6 @@ const oramaSchema = {
   description: 'string',     // Searchable: full description text
   searchTokens: 'string',    // CamelCase-split tokens for better matching
   action: 'enum',            // Filterable: "list", "create", "query", "labels", "descriptive", etc.
-  scope: 'enum',             // Filterable: "namespaced", "cluster", "library"
   apiClass: 'enum',          // Filterable: "CoreV1Api", "prometheus-query", "@prodisco/loki-client", etc.
   id: 'string',              // Unique identifier (e.g., "loki:@prodisco/loki-client:LokiClient:queryRange")
   metricType: 'enum',        // Prometheus metrics: "gauge", "counter", "histogram", "summary"

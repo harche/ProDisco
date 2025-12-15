@@ -47,7 +47,6 @@ type SearchInput = {
   documentType?: 'kubernetes' | 'prometheus' | 'loki' | 'analytics' | 'script' | 'all';
   action?: string;
   library?: string;
-  scope?: 'namespaced' | 'cluster' | 'all';
   exclude?: {
     actions?: string[];
     libraries?: string[];
@@ -76,7 +75,6 @@ type SearchResult = {
     documentType: Record<string, number>;
     library: Record<string, number>;
     action: Record<string, number>;
-    scope: Record<string, number>;
   };
   pagination: { offset: number; limit: number; hasMore: boolean };
   searchTime: number;
@@ -91,7 +89,6 @@ const search = searchToolsTool.execute.bind(searchToolsTool) as (input: SearchIn
 const searchTools = async (input: {
   resourceType: string;
   action?: string;
-  scope?: 'namespaced' | 'cluster' | 'all';
   exclude?: { actions?: string[]; apiClasses?: string[] };
   limit?: number;
   offset?: number;
@@ -100,7 +97,6 @@ const searchTools = async (input: {
     query: input.resourceType,
     documentType: 'kubernetes',
     action: input.action,
-    scope: input.scope,
     exclude: input.exclude ? { actions: input.exclude.actions, libraries: input.exclude.apiClasses } : undefined,
     limit: input.limit,
     offset: input.offset,
@@ -129,7 +125,6 @@ const searchTools = async (input: {
     facets: {
       apiClass: result.facets.library,
       action: result.facets.action,
-      scope: result.facets.scope,
     },
     searchTime: result.searchTime,
     pagination: result.pagination,
@@ -182,7 +177,6 @@ describe('kubernetes.searchTools', () => {
       const result = await searchTools({
         resourceType: 'Pod',
         action: 'list',
-        scope: 'namespaced',
         limit: 5,
       });
 
@@ -190,7 +184,6 @@ describe('kubernetes.searchTools', () => {
       // Check that results match the structured parameters
       expect(result.tools.some((tool) => tool.methodName.toLowerCase().includes('list'))).toBe(true);
       expect(result.tools.some((tool) => tool.methodName.toLowerCase().includes('pod'))).toBe(true);
-      expect(result.tools.some((tool) => tool.methodName.toLowerCase().includes('namespaced'))).toBe(true);
     });
 
     it('works without action parameter', async () => {
@@ -218,11 +211,10 @@ describe('kubernetes.searchTools', () => {
       const result = await searchTools({
         resourceType: 'Pod',
         action: 'list',
-        scope: 'namespaced',
       });
 
       expect(result.tools.length).toBeGreaterThan(0);
-      expect(result.tools.some(t => 
+      expect(result.tools.some(t =>
         t.methodName === 'listNamespacedPod' && t.apiClass === 'CoreV1Api'
       )).toBe(true);
     });
@@ -385,48 +377,10 @@ describe('kubernetes.searchTools', () => {
     });
   });
 
-  describe('Scope Filtering', () => {
-    it('filters namespaced resources correctly', async () => {
-      const result = await searchTools({
-        resourceType: 'Pod',
-        action: 'list',
-        scope: 'namespaced',
-        limit: 5,
-      });
-
-      // Namespaced Pod methods should include 'namespaced' in method name
-      expect(result.tools.every(t => t.methodName.toLowerCase().includes('namespaced'))).toBe(true);
-    });
-
-    it('filters cluster-scoped resources correctly', async () => {
-      const result = await searchTools({
-        resourceType: 'Node',
-        action: 'list',
-        scope: 'cluster',
-        limit: 5,
-      });
-
-      // Cluster-scoped Node methods should NOT include 'namespaced' (unless ForAllNamespaces)
-      expect(result.tools.some(t => !t.methodName.toLowerCase().includes('namespaced'))).toBe(true);
-    });
-
-    it('returns both scopes with "all" scope', async () => {
-      const result = await searchTools({
-        resourceType: 'Pod',
-        scope: 'all',
-        limit: 20,
-      });
-
-      // Should have both namespaced and potentially cluster-wide methods
-      expect(result.tools.length).toBeGreaterThan(0);
-    });
-  });
-
   describe('Exclude Filtering', () => {
     it('excludes single action', async () => {
       const result = await searchTools({
         resourceType: 'Pod',
-        scope: 'namespaced',
         exclude: { actions: ['delete'] },
         limit: 20,
       });
@@ -439,7 +393,6 @@ describe('kubernetes.searchTools', () => {
     it('excludes multiple actions', async () => {
       const result = await searchTools({
         resourceType: 'Pod',
-        scope: 'namespaced',
         exclude: { actions: ['delete', 'create'] },
         limit: 20,
       });
@@ -781,7 +734,6 @@ describe('kubernetes.searchTools', () => {
       expect(result).toHaveProperty('facets');
       expect(result.facets).toHaveProperty('apiClass');
       expect(result.facets).toHaveProperty('action');
-      expect(result.facets).toHaveProperty('scope');
     });
 
     it('facets contain counts for each category', async () => {
@@ -901,36 +853,6 @@ describe('kubernetes.searchTools', () => {
     });
   });
 
-  describe('ForAllNamespaces Scope', () => {
-    it('cluster scope includes forAllNamespaces methods', async () => {
-      const result = await searchTools({
-        resourceType: 'Pod',
-        action: 'list',
-        scope: 'cluster',
-        limit: 20,
-      });
-
-      // Should include listPodForAllNamespaces
-      expect(result.tools.some(t =>
-        t.methodName.toLowerCase().includes('forallnamespaces')
-      )).toBe(true);
-    });
-
-    it('namespaced scope excludes forAllNamespaces methods', async () => {
-      const result = await searchTools({
-        resourceType: 'Pod',
-        action: 'list',
-        scope: 'namespaced',
-        limit: 20,
-      });
-
-      // Should NOT include forAllNamespaces methods
-      expect(result.tools.every(t =>
-        !t.methodName.toLowerCase().includes('forallnamespaces')
-      )).toBe(true);
-    });
-  });
-
   describe('Custom Resources', () => {
     it('finds CustomObjectsApi methods', async () => {
       const result = await searchTools({
@@ -957,7 +879,7 @@ describe('kubernetes.searchTools', () => {
     });
 
     it('inputSchema has correct structure', async () => {
-      const result = await searchTools({ resourceType: 'Pod', action: 'list', scope: 'namespaced', limit: 1 });
+      const result = await searchTools({ resourceType: 'Pod', action: 'list', limit: 1 });
 
       expect(result.tools.length).toBeGreaterThan(0);
       const method = result.tools[0];
@@ -993,7 +915,7 @@ describe('kubernetes.searchTools', () => {
     });
 
     it('parameters array contains required fields', async () => {
-      const result = await searchTools({ resourceType: 'Pod', action: 'read', scope: 'namespaced', limit: 1 });
+      const result = await searchTools({ resourceType: 'Pod', action: 'read', limit: 1 });
 
       expect(result.tools.length).toBeGreaterThan(0);
       const method = result.tools[0];
@@ -1016,12 +938,10 @@ describe('kubernetes.searchTools', () => {
       const result = await searchTools({
         resourceType: 'Deployment',
         action: 'create',
-        scope: 'namespaced',
       });
 
       expect(result.summary).toContain('Deployment');
       expect(result.summary).toContain('create');
-      expect(result.summary).toContain('namespaced');
     });
 
     it('summary includes exclusion info when excluding', async () => {

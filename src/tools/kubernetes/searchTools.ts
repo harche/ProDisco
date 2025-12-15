@@ -54,12 +54,6 @@ const SearchToolsInputSchema = z.object({
     .optional()
     .describe('Filter by library/API class: K8s (CoreV1Api, AppsV1Api, etc.) or libraries (prometheus-query, @prodisco/loki-client, simple-statistics, ml-regression, mathjs, fft-js)'),
 
-  scope: z
-    .enum(['namespaced', 'cluster', 'all'])
-    .optional()
-    .default('all')
-    .describe('Filter by scope: "namespaced", "cluster", or "all" (K8s methods only)'),
-
   exclude: z
     .object({
       actions: z
@@ -257,7 +251,6 @@ type SearchModeResult = {
     documentType: Record<string, number>;
     library: Record<string, number>;
     action: Record<string, number>;
-    scope: Record<string, number>;
   };
   pagination: {
     offset: number;
@@ -1233,7 +1226,6 @@ class SearchToolsService {
     documentType?: 'kubernetes' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics' | 'script' | 'all';
     action?: string;
     library?: string;
-    scope?: 'namespaced' | 'cluster' | 'all';
     exclude?: { actions?: string[]; libraries?: string[] };
     limit: number;
     offset: number;
@@ -1245,11 +1237,10 @@ class SearchToolsService {
       documentType: Record<string, number>;
       apiClass: Record<string, number>;
       action: Record<string, number>;
-      scope: Record<string, number>;
     };
     searchTime: number;
   }> {
-    const { query, documentType = 'all', action, library, scope = 'all', exclude, limit, offset } = options;
+    const { query, documentType = 'all', action, library, exclude, limit, offset } = options;
     const db = await this.getOramaDb();
 
     const searchParams: SearchParams<Orama<typeof oramaSchema>, OramaDocument> = {
@@ -1267,7 +1258,6 @@ class SearchToolsService {
         documentType: {},
         apiClass: {},
         action: {},
-        scope: {},
       },
     };
 
@@ -1294,18 +1284,6 @@ class SearchToolsService {
     // Apply library filter (using apiClass field)
     if (library) {
       nonScriptHits = nonScriptHits.filter(hit => hit.document.apiClass === library);
-    }
-
-    // Apply scope filter (only affects K8s methods)
-    if (scope === 'namespaced') {
-      nonScriptHits = nonScriptHits.filter(hit =>
-        hit.document.documentType !== 'kubernetes' || hit.document.scope === 'namespaced'
-      );
-    } else if (scope === 'cluster') {
-      nonScriptHits = nonScriptHits.filter(hit =>
-        hit.document.documentType !== 'kubernetes' ||
-        hit.document.scope === 'cluster' || hit.document.scope === 'forAllNamespaces'
-      );
     }
 
     // Apply exclusions
@@ -1338,7 +1316,6 @@ class SearchToolsService {
       documentType: {} as Record<string, number>,
       apiClass: {} as Record<string, number>,
       action: {} as Record<string, number>,
-      scope: {} as Record<string, number>,
     };
 
     if (searchResult.facets) {
@@ -1358,13 +1335,6 @@ class SearchToolsService {
         for (const [key, value] of Object.entries(searchResult.facets.action.values)) {
           if (key !== 'script') {
             facets.action[key] = value as number;
-          }
-        }
-      }
-      if (searchResult.facets.scope?.values) {
-        for (const [key, value] of Object.entries(searchResult.facets.scope.values)) {
-          if (key !== 'script') {
-            facets.scope[key] = value as number;
           }
         }
       }
@@ -3043,7 +3013,6 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
     documentType = 'all',
     action,
     library,
-    scope = 'all',
     exclude,
     limit = 10,
     offset = 0
@@ -3058,7 +3027,6 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
     documentType,
     action,
     library,
-    scope,
     exclude,
     limit,
     offset,
@@ -3147,7 +3115,6 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
   if (documentType !== 'all') summary += ` (type: ${documentType})`;
   if (action) summary += ` (action: ${action})`;
   if (library) summary += ` (library: ${library})`;
-  if (scope !== 'all') summary += ` (scope: ${scope})`;
   summary += `\n\nFound ${searchResult.totalMatches} result(s) (search: ${searchResult.searchTime.toFixed(2)}ms)`;
   if (offset > 0 || hasMore) {
     summary += ` | Page ${Math.floor(offset / limit) + 1}, showing ${offset + 1}-${offset + results.length} of ${searchResult.totalMatches}`;
@@ -3224,7 +3191,6 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
       documentType: searchResult.facets.documentType,
       library: searchResult.facets.apiClass,
       action: searchResult.facets.action,
-      scope: searchResult.facets.scope,
     },
     pagination: {
       offset,
@@ -3269,7 +3235,7 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     'MODES: ' +
     '• search (default): Search all indexed methods - K8s API, Prometheus, Loki, Analytics. ' +
     'Mix and match libraries in sandbox scripts. ' +
-    'Filters: query, documentType (kubernetes/prometheus/loki/analytics/script/all), action, library, scope, exclude. ' +
+    'Filters: query, documentType (kubernetes/prometheus/loki/analytics/script/all), action, library, exclude. ' +
     'Example: { query: "Pod" } or { query: "query", documentType: "loki" } or { documentType: "kubernetes", action: "list" } ' +
     '• types: Get TypeScript type definitions with path navigation. ' +
     'Params: types (required), depth. ' +
@@ -3284,7 +3250,6 @@ export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToo
     'FILTERS: ' +
     'action: K8s actions (list, create, read, delete, patch) or library categories (query, labels, descriptive, regression). ' +
     'library: Filter by specific library/API class. ' +
-    'scope: namespaced, cluster, all (K8s methods only). ' +
     'exclude: { actions: [...], libraries: [...] } ' +
     'Docs: https://github.com/harche/ProDisco/blob/main/docs/search-tools.md',
   schema: SearchToolsInputSchema,
