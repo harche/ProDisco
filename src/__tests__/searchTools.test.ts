@@ -2871,8 +2871,6 @@ describe('kubernetes.searchTools - Loki Mode', () => {
     });
 
     it('sets hasMore to false on last page', async () => {
-      const allMethods = await searchLoki({ mode: 'loki', limit: 100 });
-
       // Request all methods at once
       const result = await searchLoki({ mode: 'loki', limit: 100 });
 
