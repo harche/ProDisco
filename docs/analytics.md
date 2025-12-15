@@ -34,20 +34,20 @@ The sandbox provides four pre-installed analytics libraries:
 
 ## Discovering Analytics Functions
 
-Use `searchTools` with `mode: "analytics"` to discover available functions:
+Use `searchTools` with `documentType: "analytics"` to discover available functions:
 
 ```typescript
 // List all analytics functions
-{ mode: "analytics" }
+{ documentType: "analytics" }
 
 // Filter by library
-{ mode: "analytics", library: "simple-statistics" }
+{ documentType: "analytics", library: "simple-statistics" }
 
 // Search for specific functions
-{ mode: "analytics", functionPattern: "regression" }
+{ documentType: "analytics", query: "regression" }
 
 // Find correlation functions
-{ mode: "analytics", functionPattern: "correlation" }
+{ documentType: "analytics", query: "correlation" }
 ```
 
 ---

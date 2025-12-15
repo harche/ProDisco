@@ -119,37 +119,20 @@ server.registerTool(
     const parsedArgs = await searchToolsTool.schema.parseAsync(args);
     const result = await searchToolsTool.execute(parsedArgs);
 
-    // Handle different result modes
-    if (result.mode === 'types') {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: result.summary,
-          },
-          {
-            type: 'text',
-            text: JSON.stringify(result.types, null, 2),
-          },
-        ],
-        structuredContent: result,
-      };
-    } else {
-      // mode === 'search' - unified search results
-      return {
-        content: [
-          {
-            type: 'text',
-            text: result.summary,
-          },
-          {
-            type: 'text',
-            text: JSON.stringify(result.results, null, 2),
-          },
-        ],
-        structuredContent: result,
-      };
-    }
+    // Unified search results (includes methods and types)
+    return {
+      content: [
+        {
+          type: 'text',
+          text: result.summary,
+        },
+        {
+          type: 'text',
+          text: JSON.stringify(result.results, null, 2),
+        },
+      ],
+      structuredContent: result,
+    };
   },
 );
 

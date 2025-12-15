@@ -136,13 +136,13 @@ else
     exit 1
 fi
 
-# Test tool call - searchTools
+# Test tool call - searchTools (using unified schema: query, documentType, category)
 log_info "Testing kubernetes.searchTools..."
 SEARCH_RESPONSE=$(curl -s -X POST http://localhost:3000/mcp \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -H "mcp-session-id: $SESSION_ID" \
-    -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kubernetes.searchTools","arguments":{"resourceType":"Pod","action":"list","limit":5}}}')
+    -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kubernetes.searchTools","arguments":{"query":"Pod","documentType":"kubernetes","category":"list","limit":5}}}')
 
 echo "Search tools response:"
 echo "$SEARCH_RESPONSE" | head -30
