@@ -52,12 +52,13 @@ log "Writing kubeconfig to ${KUBECONFIG_PATH}"
 "$KIND_BIN" get kubeconfig --name "$CLUSTER_NAME" >"$KUBECONFIG_PATH"
 export KUBECONFIG="$KUBECONFIG_PATH"
 
-# Step 2: Build the sandbox-server (skip if already built)
+# Step 2: Build the packages (skip if already built)
 cd "$ROOT_DIR"
 if [ -d "packages/sandbox-server/dist" ] && [ -f "packages/sandbox-server/dist/server/index.js" ]; then
   log "sandbox-server already built, skipping build step"
 else
-  log "Building sandbox-server package"
+  log "Building packages"
+  npm run build -w @prodisco/loki-client
   npm run build -w @prodisco/sandbox-server
 fi
 
