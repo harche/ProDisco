@@ -1,341 +1,206 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 
-import { searchToolsTool } from '../tools/kubernetes/searchTools.js';
+import { searchToolsTool, searchToolsService } from '../tools/kubernetes/searchTools.js';
 
-// Helper to execute in types mode
-async function executeTypesMode(types: string[], depth?: number) {
+// Helper to execute type search using the new unified approach
+async function executeTypeSearch(query: string, options?: { library?: string; limit?: number }) {
   const result = await searchToolsTool.execute({
-    mode: 'types',
-    types,
-    depth,
+    query,
+    documentType: 'type',
+    library: options?.library,
+    limit: options?.limit || 10,
   });
-
-  if (result.mode !== 'types') {
-    throw new Error('Expected types mode result');
-  }
 
   return result;
 }
 
-describe('kubernetes.searchTools (types mode)', () => {
+describe('kubernetes.searchTools (type documents in Orama)', () => {
+  beforeAll(async () => {
+    // Ensure the search index is initialized
+    await searchToolsService.initialize();
+  });
+
+  afterAll(async () => {
+    await searchToolsService.shutdown();
+  });
+
   describe('Basic Type Queries', () => {
     it('retrieves V1Pod type definition', async () => {
-      const result = await executeTypesMode(['V1Pod']);
+      const result = await executeTypeSearch('V1Pod');
 
-      expect(result.types).toHaveProperty('V1Pod');
-      expect(result.types['V1Pod'].name).toBe('V1Pod');
-      expect(result.types['V1Pod'].definition).toContain('V1Pod');
-      expect(result.types['V1Pod'].nestedTypes).toBeDefined();
+      expect(result.results.length).toBeGreaterThan(0);
+      const podType = result.results.find(r => r.name === 'V1Pod');
+      expect(podType).toBeDefined();
+      expect(podType?.documentType).toBe('type');
+      expect(podType?.typeKind).toBe('class');
+      expect(podType?.typeDefinition).toContain('V1Pod');
     });
 
     it('retrieves V1Deployment type definition', async () => {
-      const result = await executeTypesMode(['V1Deployment']);
+      const result = await executeTypeSearch('V1Deployment');
 
-      expect(result.types).toHaveProperty('V1Deployment');
-      expect(result.types['V1Deployment'].name).toBe('V1Deployment');
-      expect(result.types['V1Deployment'].definition).toContain('V1Deployment');
+      expect(result.results.length).toBeGreaterThan(0);
+      const deployType = result.results.find(r => r.name === 'V1Deployment');
+      expect(deployType).toBeDefined();
+      expect(deployType?.documentType).toBe('type');
+      expect(deployType?.typeDefinition).toContain('V1Deployment');
     });
 
-    it('retrieves multiple types at once', async () => {
-      const result = await executeTypesMode(['V1Pod', 'V1Service', 'V1ConfigMap']);
+    it('finds multiple Pod-related types', async () => {
+      const result = await executeTypeSearch('Pod', { limit: 100 });
 
-      expect(result.types).toHaveProperty('V1Pod');
-      expect(result.types).toHaveProperty('V1Service');
-      expect(result.types).toHaveProperty('V1ConfigMap');
-    });
-  });
-
-  describe('Dot Notation Support (README Examples)', () => {
-    it('navigates to nested type using V1Deployment.spec', async () => {
-      const result = await executeTypesMode(['V1Deployment.spec']);
-
-      expect(result.types).toHaveProperty('V1Deployment.spec');
-      const typeInfo = result.types['V1Deployment.spec'];
-      expect(typeInfo.name).toBe('V1DeploymentSpec');
-      expect(typeInfo.definition).toContain('V1DeploymentSpec');
-    });
-
-    it('navigates to array element type using V1Pod.spec.containers', async () => {
-      const result = await executeTypesMode(['V1Pod.spec.containers']);
-
-      expect(result.types).toHaveProperty('V1Pod.spec.containers');
-      const typeInfo = result.types['V1Pod.spec.containers'];
-      // Should resolve to V1Container (array element type)
-      expect(typeInfo.name).toBe('V1Container');
-      expect(typeInfo.definition).toContain('V1Container');
-    });
-
-    it('navigates to status conditions using V1Pod.status.conditions', async () => {
-      const result = await executeTypesMode(['V1Pod.status.conditions']);
-
-      expect(result.types).toHaveProperty('V1Pod.status.conditions');
-      const typeInfo = result.types['V1Pod.status.conditions'];
-      // Should resolve to V1PodCondition (array element type)
-      expect(typeInfo.name).toBe('V1PodCondition');
-      expect(typeInfo.definition).toContain('V1PodCondition');
-    });
-  });
-
-  describe('Depth Control', () => {
-    it('respects depth parameter', async () => {
-      const result = await executeTypesMode(['V1Pod'], 1);
-
-      // At depth 1, should only include the main type
-      expect(result.types).toHaveProperty('V1Pod');
-    });
-
-    it('includes nested types at depth 2', async () => {
-      const result = await executeTypesMode(['V1Pod'], 2);
-
-      // Should include V1Pod and potentially nested types
-      expect(result.types).toHaveProperty('V1Pod');
-      const v1Pod = result.types['V1Pod'];
-
-      // Should have nested types referenced
-      expect(v1Pod.nestedTypes).toBeDefined();
-      expect(Array.isArray(v1Pod.nestedTypes)).toBe(true);
+      expect(result.results.length).toBeGreaterThan(1);
+      // Should find Pod-related types (V1Pod, V1PodSpec, V1PodStatus, etc.)
+      const typeNames = result.results.map(r => r.name);
+      // Check that we find Pod-related types (the search may rank them differently)
+      const podRelatedTypes = typeNames.filter(name => name.includes('Pod'));
+      expect(podRelatedTypes.length).toBeGreaterThan(1);
     });
   });
 
   describe('Type Resolution', () => {
     it('resolves V1PodSpec type', async () => {
-      const result = await executeTypesMode(['V1PodSpec']);
+      const result = await executeTypeSearch('V1PodSpec');
 
-      expect(result.types).toHaveProperty('V1PodSpec');
-      expect(result.types['V1PodSpec'].definition).toContain('V1PodSpec');
+      const typeInfo = result.results.find(r => r.name === 'V1PodSpec');
+      expect(typeInfo).toBeDefined();
+      expect(typeInfo?.typeDefinition).toContain('V1PodSpec');
     });
 
     it('resolves V1Container type', async () => {
-      const result = await executeTypesMode(['V1Container']);
+      const result = await executeTypeSearch('V1Container');
 
-      expect(result.types).toHaveProperty('V1Container');
-      expect(result.types['V1Container'].definition).toContain('V1Container');
+      const typeInfo = result.results.find(r => r.name === 'V1Container');
+      expect(typeInfo).toBeDefined();
+      expect(typeInfo?.typeDefinition).toContain('V1Container');
     });
 
     it('resolves V1ObjectMeta type', async () => {
-      const result = await executeTypesMode(['V1ObjectMeta']);
+      const result = await executeTypeSearch('V1ObjectMeta');
 
-      expect(result.types).toHaveProperty('V1ObjectMeta');
-      expect(result.types['V1ObjectMeta'].definition).toContain('V1ObjectMeta');
+      const typeInfo = result.results.find(r => r.name === 'V1ObjectMeta');
+      expect(typeInfo).toBeDefined();
+      expect(typeInfo?.typeDefinition).toContain('V1ObjectMeta');
     });
   });
 
   describe('List Types', () => {
     it('resolves V1PodList type', async () => {
-      const result = await executeTypesMode(['V1PodList']);
+      const result = await executeTypeSearch('V1PodList');
 
-      expect(result.types).toHaveProperty('V1PodList');
-      const definition = result.types['V1PodList'].definition;
-      expect(definition).toContain('V1PodList');
+      const typeInfo = result.results.find(r => r.name === 'V1PodList');
+      expect(typeInfo).toBeDefined();
+      expect(typeInfo?.typeDefinition).toContain('V1PodList');
       // List types should have items property
-      expect(definition).toContain('items');
+      expect(typeInfo?.typeDefinition).toContain('items');
     });
 
     it('resolves V1DeploymentList type', async () => {
-      const result = await executeTypesMode(['V1DeploymentList']);
+      const result = await executeTypeSearch('V1DeploymentList');
 
-      expect(result.types).toHaveProperty('V1DeploymentList');
-      expect(result.types['V1DeploymentList'].definition).toContain('V1DeploymentList');
+      const typeInfo = result.results.find(r => r.name === 'V1DeploymentList');
+      expect(typeInfo).toBeDefined();
+      expect(typeInfo?.typeDefinition).toContain('V1DeploymentList');
     });
   });
 
   describe('Output Structure', () => {
     it('includes required fields in results', async () => {
-      const result = await executeTypesMode(['V1Pod']);
+      const result = await executeTypeSearch('V1Pod');
 
-      expect(result).toHaveProperty('mode', 'types');
       expect(result).toHaveProperty('summary');
-      expect(result).toHaveProperty('types');
+      expect(result).toHaveProperty('results');
+      expect(result).toHaveProperty('totalMatches');
 
       expect(typeof result.summary).toBe('string');
-      expect(typeof result.types).toBe('object');
+      expect(Array.isArray(result.results)).toBe(true);
     });
 
     it('includes complete type information', async () => {
-      const result = await executeTypesMode(['V1Pod']);
+      const result = await executeTypeSearch('V1Pod');
 
-      const typeInfo = result.types['V1Pod'];
+      const typeInfo = result.results.find(r => r.name === 'V1Pod');
+      expect(typeInfo).toBeDefined();
       expect(typeInfo).toHaveProperty('name');
-      expect(typeInfo).toHaveProperty('definition');
-      expect(typeInfo).toHaveProperty('file');
+      expect(typeInfo).toHaveProperty('description');
+      expect(typeInfo).toHaveProperty('library');
+      expect(typeInfo).toHaveProperty('typeDefinition');
       expect(typeInfo).toHaveProperty('nestedTypes');
+      expect(typeInfo).toHaveProperty('typeKind');
 
-      expect(typeof typeInfo.name).toBe('string');
-      expect(typeof typeInfo.definition).toBe('string');
-      expect(typeof typeInfo.file).toBe('string');
-      expect(Array.isArray(typeInfo.nestedTypes)).toBe(true);
-    });
-  });
-
-  describe('Error Handling', () => {
-    it('handles non-existent types gracefully', async () => {
-      const result = await executeTypesMode(['NonExistentType']);
-
-      expect(result.types).toHaveProperty('NonExistentType');
-      expect(result.types['NonExistentType'].file).toBe('not found');
-    });
-
-    it('handles invalid dot notation paths gracefully', async () => {
-      const result = await executeTypesMode(['V1Pod.nonexistent.path']);
-
-      expect(result.types).toHaveProperty('V1Pod.nonexistent.path');
-      // Should indicate it couldn't resolve the path
-      expect(result.types['V1Pod.nonexistent.path'].definition).toContain('Could not resolve');
-    });
-
-    it('handles missing types parameter in types mode', async () => {
-      const result = await searchToolsTool.execute({
-        mode: 'types',
-      });
-
-      if (result.mode !== 'types') {
-        throw new Error('Expected types mode result');
-      }
-
-      expect(result.summary).toContain('Error');
-    });
-
-    it('handles mixed valid and invalid types', async () => {
-      const result = await executeTypesMode(['V1Pod', 'NonExistentType', 'V1Service']);
-
-      // Valid types should be found
-      expect(result.types['V1Pod'].file).not.toBe('not found');
-      expect(result.types['V1Service'].file).not.toBe('not found');
-
-      // Invalid type should indicate not found
-      expect(result.types['NonExistentType'].file).toBe('not found');
-    });
-  });
-
-  describe('Default Behavior', () => {
-    it('uses default depth of 1 when not specified', async () => {
-      const result = await executeTypesMode(['V1Pod']);
-
-      // Should work without depth parameter
-      expect(result.types).toHaveProperty('V1Pod');
-      expect(result.types['V1Pod'].definition).toContain('V1Pod');
-    });
-  });
-
-  describe('Deep Nested Paths', () => {
-    it('navigates deeply nested paths (3+ levels)', async () => {
-      const result = await executeTypesMode(['V1Deployment.spec.template.spec']);
-
-      expect(result.types).toHaveProperty('V1Deployment.spec.template.spec');
-      const typeInfo = result.types['V1Deployment.spec.template.spec'];
-      // Should resolve to V1PodSpec (the spec of the pod template)
-      expect(typeInfo.name).toBe('V1PodSpec');
-    });
-
-    it('navigates to container ports in pod spec', async () => {
-      const result = await executeTypesMode(['V1Pod.spec.containers']);
-
-      expect(result.types).toHaveProperty('V1Pod.spec.containers');
-      // Should resolve to V1Container
-      expect(result.types['V1Pod.spec.containers'].name).toBe('V1Container');
+      expect(typeof typeInfo?.name).toBe('string');
+      expect(typeof typeInfo?.typeDefinition).toBe('string');
+      expect(Array.isArray(typeInfo?.nestedTypes)).toBe(true);
     });
   });
 
   describe('Types from Different API Groups', () => {
     it('resolves Batch API types (V1Job)', async () => {
-      const result = await executeTypesMode(['V1Job']);
+      const result = await executeTypeSearch('V1Job');
 
-      expect(result.types).toHaveProperty('V1Job');
-      expect(result.types['V1Job'].definition).toContain('V1Job');
-      expect(result.types['V1Job'].file).not.toBe('not found');
+      const typeInfo = result.results.find(r => r.name === 'V1Job');
+      expect(typeInfo).toBeDefined();
+      expect(typeInfo?.typeDefinition).toContain('V1Job');
     });
 
     it('resolves Apps API types (V1StatefulSet)', async () => {
-      const result = await executeTypesMode(['V1StatefulSet']);
+      const result = await executeTypeSearch('V1StatefulSet');
 
-      expect(result.types).toHaveProperty('V1StatefulSet');
-      expect(result.types['V1StatefulSet'].definition).toContain('V1StatefulSet');
+      const typeInfo = result.results.find(r => r.name === 'V1StatefulSet');
+      expect(typeInfo).toBeDefined();
+      expect(typeInfo?.typeDefinition).toContain('V1StatefulSet');
     });
 
     it('resolves Networking API types (V1Ingress)', async () => {
-      const result = await executeTypesMode(['V1Ingress']);
+      const result = await executeTypeSearch('V1Ingress');
 
-      expect(result.types).toHaveProperty('V1Ingress');
-      expect(result.types['V1Ingress'].definition).toContain('V1Ingress');
+      const typeInfo = result.results.find(r => r.name === 'V1Ingress');
+      expect(typeInfo).toBeDefined();
+      expect(typeInfo?.typeDefinition).toContain('V1Ingress');
     });
 
     it('resolves RBAC types (V1Role)', async () => {
-      const result = await executeTypesMode(['V1Role']);
+      const result = await executeTypeSearch('V1Role');
 
-      expect(result.types).toHaveProperty('V1Role');
-      expect(result.types['V1Role'].definition).toContain('V1Role');
+      const typeInfo = result.results.find(r => r.name === 'V1Role');
+      expect(typeInfo).toBeDefined();
+      expect(typeInfo?.typeDefinition).toContain('V1Role');
     });
   });
 
   describe('Nested Types Array', () => {
     it('nestedTypes contains referenced type names', async () => {
-      const result = await executeTypesMode(['V1Pod'], 1);
+      const result = await executeTypeSearch('V1Pod');
 
-      const nestedTypes = result.types['V1Pod'].nestedTypes;
-      expect(Array.isArray(nestedTypes)).toBe(true);
+      const typeInfo = result.results.find(r => r.name === 'V1Pod');
+      expect(typeInfo).toBeDefined();
+      expect(Array.isArray(typeInfo?.nestedTypes)).toBe(true);
 
       // V1Pod should reference common types
-      expect(nestedTypes.length).toBeGreaterThan(0);
+      expect(typeInfo?.nestedTypes?.length).toBeGreaterThan(0);
     });
 
     it('nestedTypes are valid Kubernetes type names', async () => {
-      const result = await executeTypesMode(['V1Deployment'], 1);
+      const result = await executeTypeSearch('V1Deployment');
 
-      const nestedTypes = result.types['V1Deployment'].nestedTypes;
+      const typeInfo = result.results.find(r => r.name === 'V1Deployment');
+      expect(typeInfo).toBeDefined();
 
-      // All nested types should follow K8s naming convention (V1*, K8s*)
-      for (const typeName of nestedTypes) {
-        expect(typeName).toMatch(/^[VK]\d+[A-Z]/);
+      // All nested types should follow K8s naming convention (V1*, K8s*, Core*)
+      for (const typeName of typeInfo?.nestedTypes || []) {
+        expect(typeName).toMatch(/^[VKC]/);
       }
-    });
-  });
-
-  describe('File Path Format', () => {
-    it('file path is relative (starts with dot)', async () => {
-      const result = await executeTypesMode(['V1Pod']);
-
-      const filePath = result.types['V1Pod'].file;
-      expect(filePath).toMatch(/^\./);
-    });
-
-    it('file path contains kubernetes client-node path', async () => {
-      const result = await executeTypesMode(['V1Pod']);
-
-      const filePath = result.types['V1Pod'].file;
-      expect(filePath).toContain('@kubernetes/client-node');
-      expect(filePath).toContain('.d.ts');
-    });
-  });
-
-  describe('Summary Content', () => {
-    it('summary mentions fetched count', async () => {
-      const result = await executeTypesMode(['V1Pod', 'V1Service']);
-
-      expect(result.summary).toContain('Fetched');
-      expect(result.summary).toContain('type definition');
-    });
-
-    it('summary mentions nested types when depth > 1', async () => {
-      const result = await executeTypesMode(['V1Pod'], 2);
-
-      // Summary should mention the requested type
-      expect(result.summary).toContain('V1Pod');
-    });
-
-    it('summary lists requested types with nested count', async () => {
-      const result = await executeTypesMode(['V1Deployment']);
-
-      expect(result.summary).toContain('V1Deployment');
-      expect(result.summary).toContain('nested type');
     });
   });
 
   describe('Definition Content', () => {
     it('definition shows property types', async () => {
-      const result = await executeTypesMode(['V1Pod']);
+      const result = await executeTypeSearch('V1Pod');
 
-      const definition = result.types['V1Pod'].definition;
+      const typeInfo = result.results.find(r => r.name === 'V1Pod');
+      expect(typeInfo).toBeDefined();
 
+      const definition = typeInfo?.typeDefinition || '';
       // Should contain common V1Pod properties
       expect(definition).toContain('metadata');
       expect(definition).toContain('spec');
@@ -343,22 +208,120 @@ describe('kubernetes.searchTools (types mode)', () => {
     });
 
     it('definition shows optional markers', async () => {
-      const result = await executeTypesMode(['V1Pod']);
+      const result = await executeTypeSearch('V1Pod');
 
-      const definition = result.types['V1Pod'].definition;
+      const typeInfo = result.results.find(r => r.name === 'V1Pod');
+      const definition = typeInfo?.typeDefinition || '';
 
       // Optional properties should have ? marker
       expect(definition).toContain('?:');
     });
 
     it('definition uses proper formatting with braces', async () => {
-      const result = await executeTypesMode(['V1Container']);
+      const result = await executeTypeSearch('V1Container');
 
-      const definition = result.types['V1Container'].definition;
+      const typeInfo = result.results.find(r => r.name === 'V1Container');
+      const definition = typeInfo?.typeDefinition || '';
 
       // Should have proper structure
       expect(definition).toContain('V1Container {');
       expect(definition).toContain('}');
+    });
+  });
+
+  describe('Library Filtering', () => {
+    it('filters by @kubernetes/client-node library', async () => {
+      const result = await searchToolsTool.execute({
+        query: 'Pod',
+        documentType: 'type',
+        library: '@kubernetes/client-node',
+        limit: 20,
+      });
+
+      expect(result.results.length).toBeGreaterThan(0);
+      for (const typeInfo of result.results) {
+        expect(typeInfo.library).toBe('@kubernetes/client-node');
+      }
+    });
+
+    it('filters by prometheus-query library', async () => {
+      const result = await searchToolsTool.execute({
+        query: '',
+        documentType: 'type',
+        library: 'prometheus-query',
+        limit: 20,
+      });
+
+      // Should find prometheus types if any match
+      for (const typeInfo of result.results) {
+        expect(typeInfo.library).toBe('prometheus-query');
+      }
+    });
+  });
+
+  describe('Type Kinds', () => {
+    it('includes class types', async () => {
+      const result = await executeTypeSearch('V1Pod');
+
+      const classType = result.results.find(r => r.typeKind === 'class');
+      expect(classType).toBeDefined();
+    });
+
+    it('can filter by category (type kind)', async () => {
+      const result = await searchToolsTool.execute({
+        query: '',
+        documentType: 'type',
+        category: 'interface',
+        library: '@prodisco/loki-client',
+        limit: 20,
+      });
+
+      // All results should be interfaces
+      for (const typeInfo of result.results) {
+        expect(typeInfo.typeKind).toBe('interface');
+      }
+    });
+  });
+
+  describe('Unified Search', () => {
+    it('returns types when searching without documentType filter', async () => {
+      const result = await searchToolsTool.execute({
+        query: 'Deployment',
+        limit: 20,
+      });
+
+      // Should include both types and methods
+      const typeResults = result.results.filter(r => r.documentType === 'type');
+      const methodResults = result.results.filter(r => r.documentType === 'kubernetes');
+
+      // Deployment should match both types and methods
+      expect(typeResults.length + methodResults.length).toBeGreaterThan(0);
+    });
+
+    it('facets include type document counts', async () => {
+      const result = await searchToolsTool.execute({
+        query: 'Pod',
+        limit: 10,
+      });
+
+      expect(result.facets).toBeDefined();
+      expect(result.facets.documentType).toHaveProperty('type');
+    });
+  });
+
+  describe('Navigation via Nested Types', () => {
+    it('can navigate to nested types by querying them', async () => {
+      // First, get V1Deployment to see its nested types
+      const deployResult = await executeTypeSearch('V1Deployment');
+      const deployType = deployResult.results.find(r => r.name === 'V1Deployment');
+      expect(deployType).toBeDefined();
+      expect(deployType?.nestedTypes).toContain('V1DeploymentSpec');
+
+      // Then query the nested type directly
+      const specResult = await executeTypeSearch('V1DeploymentSpec');
+      const specType = specResult.results.find(r => r.name === 'V1DeploymentSpec');
+      expect(specType).toBeDefined();
+      expect(specType?.typeDefinition).toContain('V1DeploymentSpec');
     });
   });
 });

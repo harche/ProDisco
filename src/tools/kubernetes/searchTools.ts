@@ -31,63 +31,42 @@ const DEFAULT_MAX_TYPE_PROPERTIES = 20;
 // ============================================================================
 
 const SearchToolsInputSchema = z.object({
-  // === Search parameters (work for all modes) ===
+  // === Search parameters ===
   query: z
     .string()
     .optional()
-    .describe('Search term - searches method names, descriptions, and resource types'),
+    .describe('Search term - searches names, descriptions, and types'),
 
-  // === Filter parameters (work for all document types) ===
+  // === Filter parameters ===
   documentType: z
-    .enum(['kubernetes', 'prometheus', 'prometheus-metric', 'loki', 'analytics', 'script', 'all'])
+    .enum(['kubernetes', 'prometheus', 'prometheus-metric', 'loki', 'analytics', 'script', 'type', 'all'])
     .optional()
     .default('all')
-    .describe('Filter by document type: "kubernetes" (K8s API methods), "prometheus" (Prometheus client methods), "prometheus-metric" (live Prometheus metrics - requires PROMETHEUS_URL), "loki", "analytics", "script", or "all"'),
+    .describe('Filter by document type: "kubernetes" (K8s API methods), "prometheus" (Prometheus client methods), "prometheus-metric" (live metrics), "loki", "analytics", "script", "type" (TypeScript type definitions), or "all"'),
 
-  action: z
+  category: z
     .string()
     .optional()
-    .describe('Filter by action/category: K8s actions (list, create, read, delete, patch, replace, connect, watch) or library categories (query, metadata, alerts, descriptive, regression, etc.)'),
+    .describe('Filter by category: Method actions (list, create, read, delete, patch, replace, connect, watch) or type kinds (class, interface, enum) or library categories (query, metadata, alerts, descriptive, regression, etc.)'),
 
   library: z
     .string()
     .optional()
-    .describe('Filter by library/API class: K8s (CoreV1Api, AppsV1Api, etc.) or libraries (prometheus-query, @prodisco/loki-client, simple-statistics, ml-regression, mathjs, fft-js)'),
+    .describe('Filter by library: @kubernetes/client-node, prometheus-query, @prodisco/loki-client, mathjs, simple-statistics, ml-regression, fft-js'),
 
   exclude: z
     .object({
-      actions: z
+      categories: z
         .array(z.string())
         .optional()
-        .describe('Actions/categories to exclude'),
+        .describe('Categories to exclude'),
       libraries: z
         .array(z.string())
         .optional()
-        .describe('Libraries/API classes to exclude'),
+        .describe('Libraries to exclude'),
     })
     .optional()
-    .describe('Exclusion criteria - works for all document types'),
-
-  // === Special modes ===
-  mode: z
-    .enum(['search', 'types'])
-    .optional()
-    .default('search')
-    .describe('Mode: "search" (default) searches all indexed documents, "types" fetches TypeScript type definitions. For Prometheus metrics use documentType: "prometheus-metric"'),
-
-  // === Type mode parameters ===
-  types: z
-    .array(z.string())
-    .optional()
-    .describe('(types mode) Type names or paths (e.g., ["V1Pod", "V1Deployment.spec.template.spec"])'),
-  depth: z
-    .number()
-    .int()
-    .positive()
-    .max(2)
-    .default(1)
-    .optional()
-    .describe('(types mode) Depth of nested type definitions (1-2, default: 1)'),
+    .describe('Exclusion criteria'),
 
   // === Pagination ===
   limit: z
@@ -140,16 +119,20 @@ type KubernetesApiMethod = {
   };
 };
 
-// Result type for types mode
-type TypeModeResult = {
-  mode: 'types';
-  summary: string;
-  types: Record<string, {
+// ExtractedType for type extraction
+type ExtractedType = {
+  name: string;
+  kind: 'class' | 'interface' | 'enum' | 'type-alias';
+  description: string;
+  properties: Array<{
     name: string;
-    definition: string;
-    file: string;
-    nestedTypes: string[];
+    type: string;
+    optional: boolean;
+    description?: string;
   }>;
+  nestedTypes: string[];
+  sourceFile: string;
+  library: string;
 };
 
 // Cached script metadata for indexing
@@ -230,9 +213,8 @@ type LokiMethod = {
   example: string;
 };
 
-// Unified search result type for the new search mode
-type SearchModeResult = {
-  mode: 'search';
+// Unified search result type
+type SearchToolsResult = {
   summary: string;
   results: Array<{
     id: string;
@@ -240,17 +222,23 @@ type SearchModeResult = {
     name: string;
     description: string;
     library: string;
-    action: string;
+    category: string;
+    // Method-specific
     parameters?: Array<{ name: string; type: string; optional: boolean; description?: string }>;
     returnType?: string;
     example?: string;
+    // Type-specific
+    properties?: Array<{ name: string; type: string; optional: boolean; description?: string }>;
+    typeDefinition?: string;
+    nestedTypes?: string[];
+    typeKind?: string;
   }>;
   totalMatches: number;
   relevantScripts: RelevantScript[];
   facets: {
     documentType: Record<string, number>;
     library: Record<string, number>;
-    action: Record<string, number>;
+    category: Record<string, number>;
   };
   pagination: {
     offset: number;
@@ -263,9 +251,6 @@ type SearchModeResult = {
     scriptsDirectory: string;
   };
 };
-
-// Union type for all modes
-type SearchToolsResult = SearchModeResult | TypeModeResult;
 
 // ============================================================================
 // Type Definition Helper Types and Functions (from typeDefinitions.ts)
@@ -326,112 +311,6 @@ function extractNestedTypeRefsFromNode(typeNode: ts.TypeNode | undefined): strin
 }
 
 /**
- * Extract type definition from TypeScript declaration file using TypeScript compiler API
- */
-function extractTypeDefinitionWithTS(typeName: string, filePath: string): { typeInfo: TypeInfo; nestedTypes: string[] } | null {
-  const sourceCode = readFileSync(filePath, 'utf-8');
-  const sourceFile = ts.createSourceFile(
-    filePath,
-    sourceCode,
-    ts.ScriptTarget.Latest,
-    true
-  );
-
-  let typeInfo: TypeInfo | null = null;
-  const nestedTypes = new Set<string>();
-
-  function visit(node: ts.Node) {
-    if ((ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) && node.name && node.name.text === typeName) {
-      const properties: PropertyInfo[] = [];
-      const description = getJSDocDescription(node);
-
-      node.members?.forEach((member) => {
-        if (ts.isPropertySignature(member) || ts.isPropertyDeclaration(member)) {
-          if (member.name) {
-            const propName = member.name.getText(sourceFile);
-            const propType = member.type?.getText(sourceFile) || 'any';
-            const isOptional = !!member.questionToken;
-            const propDescription = getJSDocDescription(member);
-
-            properties.push({
-              name: propName.replace(/['"]/g, ''),
-              type: propType,
-              optional: isOptional,
-              description: propDescription,
-            });
-
-            const typeRefs = extractNestedTypeRefsFromNode(member.type);
-            for (const ref of typeRefs) {
-              if (ref !== typeName) {
-                nestedTypes.add(ref);
-              }
-            }
-          }
-        }
-      });
-
-      typeInfo = {
-        name: typeName,
-        properties,
-        description,
-      };
-    }
-
-    ts.forEachChild(node, visit);
-  }
-
-  visit(sourceFile);
-
-  if (!typeInfo) {
-    return null;
-  }
-
-  return {
-    typeInfo,
-    nestedTypes: Array.from(nestedTypes),
-  };
-}
-
-/**
- * Extract the main type identifier from a TypeScript type node
- * Handles: Array<V1Pod>, V1PodSpec | undefined, V1Container[], etc.
- */
-function extractTypeIdentifier(typeNode: ts.TypeNode): string | null {
-  if (ts.isUnionTypeNode(typeNode)) {
-    for (const type of typeNode.types) {
-      if (type.kind === ts.SyntaxKind.UndefinedKeyword || type.kind === ts.SyntaxKind.NullKeyword) {
-        continue;
-      }
-      return extractTypeIdentifier(type);
-    }
-    return null;
-  }
-
-  if (ts.isArrayTypeNode(typeNode)) {
-    return extractTypeIdentifier(typeNode.elementType);
-  }
-
-  if (ts.isTypeReferenceNode(typeNode)) {
-    const typeName = typeNode.typeName.getText();
-
-    if (typeName === 'Array' && typeNode.typeArguments && typeNode.typeArguments.length > 0) {
-      const firstArg = typeNode.typeArguments[0];
-      if (firstArg) {
-        return extractTypeIdentifier(firstArg);
-      }
-    }
-
-    return typeName;
-  }
-
-  if (ts.isTypeLiteralNode(typeNode)) {
-    return null;
-  }
-
-  return null;
-}
-
-/**
  * Format type info as a readable string
  */
 function formatTypeInfo(typeInfo: TypeInfo, maxProperties: number = DEFAULT_MAX_TYPE_PROPERTIES): string {
@@ -453,222 +332,310 @@ function formatTypeInfo(typeInfo: TypeInfo, maxProperties: number = DEFAULT_MAX_
   return result;
 }
 
-/**
- * Find type definition file in Kubernetes client-node package
- */
-function findTypeDefinitionFile(typeName: string, basePath: string): string | null {
-  const k8sPath = join(basePath, 'node_modules', '@kubernetes', 'client-node', 'dist', 'gen', 'models');
-  const filePath = join(k8sPath, `${typeName}.d.ts`);
+// ============================================================================
+// Type Extractors for All Libraries
+// ============================================================================
 
-  if (existsSync(filePath)) {
-    return filePath;
+/**
+ * Extract all types from a TypeScript file (classes, interfaces, enums, type aliases)
+ */
+function extractAllTypesFromFile(filePath: string, libraryName: string): ExtractedType[] {
+  if (!existsSync(filePath)) {
+    return [];
   }
 
-  return null;
+  const sourceCode = readFileSync(filePath, 'utf-8');
+  const sourceFile = ts.createSourceFile(filePath, sourceCode, ts.ScriptTarget.Latest, true);
+
+  const types: ExtractedType[] = [];
+
+  function visit(node: ts.Node) {
+    // Extract classes
+    if (ts.isClassDeclaration(node) && node.name) {
+      const extracted = extractClassOrInterface(node, sourceFile, libraryName, filePath, 'class');
+      if (extracted) types.push(extracted);
+    }
+    // Extract interfaces
+    if (ts.isInterfaceDeclaration(node) && node.name) {
+      const extracted = extractClassOrInterface(node, sourceFile, libraryName, filePath, 'interface');
+      if (extracted) types.push(extracted);
+    }
+    // Extract enums
+    if (ts.isEnumDeclaration(node) && node.name) {
+      const extracted = extractEnum(node, sourceFile, libraryName, filePath);
+      if (extracted) types.push(extracted);
+    }
+    // Extract type aliases (skip complex utility types)
+    if (ts.isTypeAliasDeclaration(node) && node.name) {
+      const extracted = extractTypeAlias(node, sourceFile, libraryName, filePath);
+      if (extracted) types.push(extracted);
+    }
+
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return types;
 }
 
 /**
- * Parse a type path into base type and property path
- * e.g., "V1Deployment.spec.template" -> { baseType: "V1Deployment", path: ["spec", "template"] }
+ * Extract a class or interface declaration
  */
-function parseTypePath(typePath: string): { baseType: string; path: string[] } | null {
-  const parts = typePath.split('.');
-  const baseType = parts[0];
-  if (!baseType) {
-    return null;
-  }
-  const path = parts.slice(1);
-  return { baseType, path };
-}
+function extractClassOrInterface(
+  node: ts.ClassDeclaration | ts.InterfaceDeclaration,
+  sourceFile: ts.SourceFile,
+  libraryName: string,
+  filePath: string,
+  kind: 'class' | 'interface'
+): ExtractedType | null {
+  if (!node.name) return null;
 
-/**
- * Navigate through type properties to find a subtype
- */
-function navigateToSubtype(
-  typeInfo: TypeInfo,
-  propertyPath: string[],
-  basePath: string,
-  cache: Map<string, TypeInfo>
-): { typeInfo: TypeInfo; propertyPath: string; typeName: string } | null {
-  if (propertyPath.length === 0) {
-    return null;
-  }
+  const name = node.name.text;
+  const description = getJSDocDescription(node) || `${kind} ${name}`;
+  const properties: ExtractedType['properties'] = [];
+  const nestedTypes = new Set<string>();
 
-  let currentTypeInfo = typeInfo;
-  let currentTypeName = typeInfo.name;
-  const pathSegments: string[] = [currentTypeName];
+  node.members?.forEach((member) => {
+    if (ts.isPropertySignature(member) || ts.isPropertyDeclaration(member)) {
+      if (member.name) {
+        const propName = member.name.getText(sourceFile).replace(/['"]/g, '');
+        const propType = member.type?.getText(sourceFile) || 'any';
+        const isOptional = !!member.questionToken;
+        const propDescription = getJSDocDescription(member);
 
-  for (let i = 0; i < propertyPath.length; i++) {
-    const propertyName = propertyPath[i];
-    if (!propertyName) {
-      return null;
-    }
+        // Skip internal/static fields
+        if (propName === 'discriminator' || propName === 'mapping' || propName === 'attributeTypeMap') {
+          return;
+        }
 
-    const property = currentTypeInfo.properties.find(p => p.name === propertyName);
-
-    if (!property) {
-      return null;
-    }
-
-    pathSegments.push(propertyName);
-
-    const filePath = findTypeDefinitionFile(currentTypeName, basePath);
-    if (!filePath) {
-      return null;
-    }
-
-    const sourceCode = readFileSync(filePath, 'utf-8');
-    const sourceFile = ts.createSourceFile(filePath, sourceCode, ts.ScriptTarget.Latest, true);
-
-    let propertyTypeNode: ts.TypeNode | null = null;
-
-    function findPropertyType(node: ts.Node) {
-      if ((ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) &&
-          node.name && node.name.text === currentTypeName) {
-        node.members?.forEach((member) => {
-          if ((ts.isPropertySignature(member) || ts.isPropertyDeclaration(member)) &&
-              member.name && member.type) {
-            const memberName = member.name.getText(sourceFile).replace(/['"]/g, '');
-            if (memberName === propertyName) {
-              propertyTypeNode = member.type;
-            }
-          }
+        properties.push({
+          name: propName,
+          type: propType,
+          optional: isOptional,
+          description: propDescription,
         });
-      }
-      if (!propertyTypeNode) {
-        ts.forEachChild(node, findPropertyType);
-      }
-    }
 
-    findPropertyType(sourceFile);
-
-    if (!propertyTypeNode) {
-      return null;
-    }
-
-    const nextTypeName = extractTypeIdentifier(propertyTypeNode);
-    if (!nextTypeName) {
-      return null;
-    }
-
-    if (i === propertyPath.length - 1) {
-      return {
-        typeInfo: currentTypeInfo,
-        propertyPath: pathSegments.join('.'),
-        typeName: nextTypeName,
-      };
-    }
-
-    let nextTypeInfo = cache.get(nextTypeName);
-
-    if (!nextTypeInfo) {
-      const filePath = findTypeDefinitionFile(nextTypeName, basePath);
-      if (!filePath) {
-        return null;
-      }
-
-      const extracted = extractTypeDefinitionWithTS(nextTypeName, filePath);
-      if (!extracted) {
-        return null;
-      }
-
-      nextTypeInfo = extracted.typeInfo;
-      cache.set(nextTypeName, nextTypeInfo);
-    }
-
-    currentTypeInfo = nextTypeInfo;
-    currentTypeName = nextTypeName;
-  }
-
-  return null;
-}
-
-/**
- * Get type information for a subtype at a specific path
- */
-function getSubtypeInfo(
-  baseTypeName: string,
-  propertyPath: string[],
-  basePath: string,
-  cache: Map<string, TypeInfo>
-): { typeInfo: TypeInfo; fullPath: string; originalType: string } | null {
-  let baseTypeInfo = cache.get(baseTypeName);
-
-  if (!baseTypeInfo) {
-    const filePath = findTypeDefinitionFile(baseTypeName, basePath);
-    if (!filePath) {
-      return null;
-    }
-
-    const extracted = extractTypeDefinitionWithTS(baseTypeName, filePath);
-    if (!extracted) {
-      return null;
-    }
-
-    baseTypeInfo = extracted.typeInfo;
-    cache.set(baseTypeName, baseTypeInfo);
-  }
-
-  if (propertyPath.length === 0) {
-    return {
-      typeInfo: baseTypeInfo,
-      fullPath: baseTypeName,
-      originalType: baseTypeName,
-    };
-  }
-
-  const result = navigateToSubtype(baseTypeInfo, propertyPath, basePath, cache);
-  if (!result) {
-    return null;
-  }
-
-  const targetTypeName = result.typeName;
-  let targetTypeInfo = cache.get(targetTypeName);
-
-  if (!targetTypeInfo) {
-    const filePath = findTypeDefinitionFile(targetTypeName, basePath);
-    if (filePath) {
-      const extracted = extractTypeDefinitionWithTS(targetTypeName, filePath);
-      if (extracted) {
-        targetTypeInfo = extracted.typeInfo;
-        cache.set(targetTypeName, targetTypeInfo);
+        // Extract nested type references
+        const typeRefs = extractNestedTypeRefsFromNode(member.type);
+        for (const ref of typeRefs) {
+          if (ref !== name) {
+            nestedTypes.add(ref);
+          }
+        }
       }
     }
-  }
-
-  if (!targetTypeInfo) {
-    const lastProp = propertyPath[propertyPath.length - 1];
-    if (!lastProp) {
-      return null;
-    }
-
-    const property = result.typeInfo.properties.find(p => p.name === lastProp);
-    if (property) {
-      targetTypeInfo = {
-        name: `${result.propertyPath}`,
-        properties: [{
-          name: lastProp,
-          type: property.type,
-          optional: property.optional,
-          description: property.description || undefined,
-        }],
-        description: `Property type: ${property.type}`,
-      };
-    } else {
-      return null;
-    }
-  }
+  });
 
   return {
-    typeInfo: targetTypeInfo,
-    fullPath: result.propertyPath,
-    originalType: targetTypeName,
+    name,
+    kind,
+    description,
+    properties,
+    nestedTypes: Array.from(nestedTypes),
+    sourceFile: filePath,
+    library: libraryName,
   };
 }
 
-// ============================================================================
-// End Type Definition Helper Functions
-// ============================================================================
+/**
+ * Extract an enum declaration
+ */
+function extractEnum(
+  node: ts.EnumDeclaration,
+  sourceFile: ts.SourceFile,
+  libraryName: string,
+  filePath: string
+): ExtractedType | null {
+  if (!node.name) return null;
+
+  const name = node.name.text;
+  const description = getJSDocDescription(node) || `enum ${name}`;
+  const properties: ExtractedType['properties'] = [];
+
+  node.members.forEach((member) => {
+    const memberName = member.name.getText(sourceFile);
+    const memberValue = member.initializer?.getText(sourceFile) || memberName;
+
+    properties.push({
+      name: memberName,
+      type: memberValue,
+      optional: false,
+    });
+  });
+
+  return {
+    name,
+    kind: 'enum',
+    description,
+    properties,
+    nestedTypes: [],
+    sourceFile: filePath,
+    library: libraryName,
+  };
+}
+
+/**
+ * Extract a type alias declaration
+ */
+function extractTypeAlias(
+  node: ts.TypeAliasDeclaration,
+  sourceFile: ts.SourceFile,
+  libraryName: string,
+  filePath: string
+): ExtractedType | null {
+  if (!node.name) return null;
+
+  const name = node.name.text;
+
+  // Skip complex utility types and generics
+  if (node.typeParameters && node.typeParameters.length > 0) {
+    return null;
+  }
+
+  const description = getJSDocDescription(node) || `type ${name}`;
+  const typeText = node.type.getText(sourceFile);
+
+  // For union types, extract each option as a "property"
+  const properties: ExtractedType['properties'] = [];
+  if (ts.isUnionTypeNode(node.type)) {
+    node.type.types.forEach((t) => {
+      const typeStr = t.getText(sourceFile);
+      properties.push({
+        name: typeStr.replace(/['"]/g, ''),
+        type: typeStr,
+        optional: false,
+      });
+    });
+  } else {
+    properties.push({
+      name: 'value',
+      type: typeText,
+      optional: false,
+    });
+  }
+
+  return {
+    name,
+    kind: 'type-alias',
+    description,
+    properties,
+    nestedTypes: [],
+    sourceFile: filePath,
+    library: libraryName,
+  };
+}
+
+/**
+ * Extract Kubernetes types from @kubernetes/client-node
+ */
+function extractK8sTypes(): ExtractedType[] {
+  const modelsPath = join(process.cwd(), 'node_modules', '@kubernetes', 'client-node', 'dist', 'gen', 'models');
+
+  if (!existsSync(modelsPath)) {
+    logger.warn('K8s models path not found');
+    return [];
+  }
+
+  const files = readdirSync(modelsPath).filter(f => f.endsWith('.d.ts') && f !== 'all.d.ts');
+  const types: ExtractedType[] = [];
+
+  for (const file of files) {
+    const typeName = file.replace('.d.ts', '');
+    const filePath = join(modelsPath, file);
+
+    const extracted = extractAllTypesFromFile(filePath, '@kubernetes/client-node');
+    // Filter to only the type matching the filename
+    const matchingType = extracted.find(t => t.name === typeName);
+    if (matchingType) {
+      types.push(matchingType);
+    }
+  }
+
+  return types;
+}
+
+/**
+ * Extract Prometheus types from prometheus-query
+ */
+function extractPrometheusTypes(): ExtractedType[] {
+  const typesPath = join(process.cwd(), 'node_modules', 'prometheus-query', 'dist', 'types.d.ts');
+  return extractAllTypesFromFile(typesPath, 'prometheus-query');
+}
+
+/**
+ * Extract Loki types from @prodisco/loki-client
+ */
+function extractLokiTypes(): ExtractedType[] {
+  // Try installed package first
+  let sourcePath = join(process.cwd(), 'node_modules', '@prodisco', 'loki-client', 'dist', 'index.d.ts');
+
+  if (!existsSync(sourcePath)) {
+    // Fall back to local package source
+    sourcePath = join(process.cwd(), 'packages', 'loki-client', 'src', 'index.ts');
+  }
+
+  return extractAllTypesFromFile(sourcePath, '@prodisco/loki-client');
+}
+
+/**
+ * Key mathjs types to extract (not all - it has hundreds)
+ */
+const MATHJS_KEY_TYPES = new Set([
+  'MathNumericType', 'MathScalarType', 'MathCollection', 'MathType', 'MathExpression',
+  'Matrix', 'BigNumber', 'Complex', 'Unit', 'Fraction',
+  'MathNode', 'ParseOptions', 'EvalFunction',
+]);
+
+/**
+ * Extract key MathJS types
+ */
+function extractMathjsTypes(): ExtractedType[] {
+  const typesPath = join(process.cwd(), 'node_modules', 'mathjs', 'types', 'index.d.ts');
+
+  if (!existsSync(typesPath)) {
+    return [];
+  }
+
+  const allTypes = extractAllTypesFromFile(typesPath, 'mathjs');
+  return allTypes.filter(t => MATHJS_KEY_TYPES.has(t.name));
+}
+
+/**
+ * Build an OramaDocument from an ExtractedType
+ */
+function buildTypeDocument(type: ExtractedType): OramaDocument {
+  const searchTokens = [
+    type.name,
+    splitCamelCase(type.name),
+    type.kind,
+    type.description,
+    ...type.properties.map(p => p.name),
+    ...type.nestedTypes,
+  ].join(' ');
+
+  return {
+    id: `type:${type.library}:${type.name}`,
+    documentType: 'type',
+    name: type.name,
+    description: type.description,
+    searchTokens,
+    library: type.library,
+    category: type.kind,
+    // Method fields (empty for types)
+    resourceType: '',
+    scope: '',
+    filePath: '',
+    // Type-specific fields
+    properties: JSON.stringify(type.properties),
+    typeDefinition: formatTypeInfo({
+      name: type.name,
+      properties: type.properties,
+      description: type.description,
+    }),
+    nestedTypes: type.nestedTypes.join(','),
+    typeKind: type.kind,
+  };
+}
 
 // ============================================================================
 // SearchToolsService Class - Encapsulates All Module State
@@ -830,14 +797,20 @@ class SearchToolsService {
     const doc: OramaDocument = {
       id: entryId,
       documentType: 'script',
-      resourceType: '',
-      methodName: 'sandbox-script',
+      name: 'sandbox-script',
       description: entry.description,
       searchTokens,
-      action: 'script',
+      library: 'CachedScript',
+      category: 'script',
+      // Method-specific
+      resourceType: '',
       scope: 'script',
-      apiClass: 'CachedScript',
       filePath: entry.name, // Use name as path since cache is remote
+      // Type fields (empty for scripts)
+      properties: '',
+      typeDefinition: '',
+      nestedTypes: '',
+      typeKind: '',
     };
 
     await insert(this.oramaDb, doc);
@@ -860,7 +833,7 @@ class SearchToolsService {
         tokenizer: {
           stemming: true,
           // Skip stemming for code identifiers - they should match exactly
-          stemmerSkipProperties: ['methodName', 'resourceType', 'apiClass', 'id'],
+          stemmerSkipProperties: ['name', 'resourceType', 'library', 'id', 'typeKind'],
         },
       },
     });
@@ -879,19 +852,26 @@ class SearchToolsService {
         method.resourceType,
         method.methodName,
         method.apiClass,
+        splitCamelCase(method.methodName),
       ].join(' ');
 
       const doc: OramaDocument = {
         id: `${method.apiClass}.${method.methodName}`,
         documentType: 'kubernetes',
-        resourceType: method.resourceType,
-        methodName: method.methodName,
+        name: method.methodName,
         description: method.description,
         searchTokens,
-        action: extractAction(method.methodName),
+        library: method.apiClass,
+        category: extractAction(method.methodName),
+        // Method-specific
+        resourceType: method.resourceType,
         scope: extractScope(method.methodName),
-        apiClass: method.apiClass,
         filePath: '',
+        // Type fields (empty for methods)
+        properties: '',
+        typeDefinition: '',
+        nestedTypes: '',
+        typeKind: '',
       };
 
       await insert(db, doc);
@@ -909,9 +889,58 @@ class SearchToolsService {
     // Index analytics library methods
     const analyticsCount = await this.indexAnalyticsMethods(db);
 
+    // Index types from all libraries
+    const typeCount = await this.indexTypes(db);
+
     this.oramaDb = db;
-    logger.info(`Orama: Indexed ${methods.length} API methods, ${scriptCount} cached scripts, ${prometheusCount} prometheus methods, ${lokiCount} loki methods, and ${analyticsCount} analytics functions`);
+    logger.info(`Orama: Indexed ${methods.length} K8s methods, ${prometheusCount} prometheus, ${lokiCount} loki, ${analyticsCount} analytics, ${scriptCount} scripts, ${typeCount} types`);
     return db;
+  }
+
+  /**
+   * Index types from all libraries into the Orama database.
+   */
+  private async indexTypes(db: Orama<typeof oramaSchema>): Promise<number> {
+    let indexedCount = 0;
+
+    try {
+      // Extract and index K8s types
+      const k8sTypes = extractK8sTypes();
+      for (const type of k8sTypes) {
+        await insert(db, buildTypeDocument(type));
+        indexedCount++;
+      }
+      logger.debug(`Indexed ${k8sTypes.length} K8s types`);
+
+      // Extract and index Prometheus types
+      const prometheusTypes = extractPrometheusTypes();
+      for (const type of prometheusTypes) {
+        await insert(db, buildTypeDocument(type));
+        indexedCount++;
+      }
+      logger.debug(`Indexed ${prometheusTypes.length} Prometheus types`);
+
+      // Extract and index Loki types
+      const lokiTypes = extractLokiTypes();
+      for (const type of lokiTypes) {
+        await insert(db, buildTypeDocument(type));
+        indexedCount++;
+      }
+      logger.debug(`Indexed ${lokiTypes.length} Loki types`);
+
+      // Extract and index MathJS types
+      const mathjsTypes = extractMathjsTypes();
+      for (const type of mathjsTypes) {
+        await insert(db, buildTypeDocument(type));
+        indexedCount++;
+      }
+      logger.debug(`Indexed ${mathjsTypes.length} MathJS types`);
+
+    } catch (error) {
+      logger.error('Error indexing types', error);
+    }
+
+    return indexedCount;
   }
 
   /**
@@ -962,7 +991,6 @@ class SearchToolsService {
 
     for (const method of methods) {
       // Build searchTokens from identifiers for better matching
-      // Include 'prometheus' so searching with documentType finds all methods
       const searchTokens = [
         'prometheus',
         method.methodName,
@@ -970,19 +998,26 @@ class SearchToolsService {
         method.library,
         method.category,
         method.description,
+        splitCamelCase(method.methodName),
       ].join(' ');
 
       const doc: OramaDocument = {
         id: `prometheus:${method.library}:${method.className || 'fn'}:${method.methodName}`,
         documentType: 'prometheus',
-        resourceType: method.category,
-        methodName: method.methodName,
+        name: method.methodName,
         description: method.description,
         searchTokens,
-        action: method.category,      // Use category as action for unified filtering
+        library: method.library,
+        category: method.category,
+        // Method-specific
+        resourceType: method.category,
         scope: 'library',
-        apiClass: method.library,     // Use library as apiClass for unified filtering
         filePath: '',
+        // Type fields (empty for methods)
+        properties: '',
+        typeDefinition: '',
+        nestedTypes: '',
+        typeKind: '',
       };
 
       await insert(db, doc);
@@ -1000,9 +1035,6 @@ class SearchToolsService {
     let indexedCount = 0;
 
     for (const method of methods) {
-      // Build searchTokens from identifiers for better matching
-      // Include 'loki' so searching with documentType finds all methods
-      // Split camelCase method names for partial matching (e.g., "queryRange" -> "query Range")
       const searchTokens = [
         'loki',
         method.methodName,
@@ -1016,14 +1048,20 @@ class SearchToolsService {
       const doc: OramaDocument = {
         id: `loki:${method.library}:${method.className || 'fn'}:${method.methodName}`,
         documentType: 'loki',
-        resourceType: method.category, // Use category as resourceType for search
-        methodName: method.methodName,
+        name: method.methodName,
         description: method.description,
         searchTokens,
-        action: method.category,      // Use category as action for unified filtering
+        library: method.library,
+        category: method.category,
+        // Method-specific
+        resourceType: method.category,
         scope: 'library',
-        apiClass: method.library,     // Use library as apiClass for unified filtering
         filePath: '',
+        // Type fields (empty for methods)
+        properties: '',
+        typeDefinition: '',
+        nestedTypes: '',
+        typeKind: '',
       };
 
       await insert(db, doc);
@@ -1041,11 +1079,10 @@ class SearchToolsService {
     let indexedCount = 0;
 
     for (const func of functions) {
-      // Build searchTokens from identifiers for better matching
-      // Include 'analytics' so searching with documentType finds all methods
       const searchTokens = [
         'analytics',
         func.functionName,
+        splitCamelCase(func.functionName),
         func.library,
         func.category,
         func.description,
@@ -1054,14 +1091,20 @@ class SearchToolsService {
       const doc: OramaDocument = {
         id: `analytics:${func.library}:${func.functionName}`,
         documentType: 'analytics',
-        resourceType: func.category, // Use category as resourceType for search
-        methodName: func.functionName,
+        name: func.functionName,
         description: func.description,
         searchTokens,
-        action: func.category,        // Use category as action for unified filtering
+        library: func.library,
+        category: func.category,
+        // Method-specific
+        resourceType: func.category,
         scope: 'library',
-        apiClass: func.library,       // Use library as apiClass for unified filtering
         filePath: '',
+        // Type fields (empty for methods)
+        properties: '',
+        typeDefinition: '',
+        nestedTypes: '',
+        typeKind: '',
       };
 
       await insert(db, doc);
@@ -1118,14 +1161,20 @@ class SearchToolsService {
       const doc: OramaDocument = {
         id: `metric:${name}`,
         documentType: 'prometheus-metric',
-        resourceType: '',
-        methodName: name,
+        name,
         description,
         searchTokens: `${name.replace(/_/g, ' ')} ${metricType} ${description}`,
-        action: 'metric',
+        library: 'prometheus-metric',
+        category: 'metric',
+        // Method-specific
+        resourceType: '',
         scope: 'prometheus',
-        apiClass: 'prometheus-metric',
         filePath: '',
+        // Type fields (empty for metrics)
+        properties: '',
+        typeDefinition: '',
+        nestedTypes: '',
+        typeKind: '',
         metricType,
       };
 
@@ -1158,14 +1207,14 @@ class SearchToolsService {
       // Get existing indexed metrics
       const existingResults = await search(db, {
         term: '',
-        properties: ['methodName'],
+        properties: ['name'],
         limit: 10000,
       });
 
       const existingMetrics = new Map<string, string>();
       for (const hit of existingResults.hits) {
         if (hit.document.documentType === 'prometheus-metric') {
-          existingMetrics.set(hit.document.methodName, hit.document.id);
+          existingMetrics.set(hit.document.name, hit.document.id);
         }
       }
 
@@ -1182,14 +1231,20 @@ class SearchToolsService {
           const doc: OramaDocument = {
             id: `metric:${name}`,
             documentType: 'prometheus-metric',
-            resourceType: '',
-            methodName: name,
+            name,
             description,
             searchTokens: `${name.replace(/_/g, ' ')} ${metricType} ${description}`,
-            action: 'metric',
+            library: 'prometheus-metric',
+            category: 'metric',
+            // Method-specific
+            resourceType: '',
             scope: 'prometheus',
-            apiClass: 'prometheus-metric',
             filePath: '',
+            // Type fields (empty for metrics)
+            properties: '',
+            typeDefinition: '',
+            nestedTypes: '',
+            typeKind: '',
             metricType,
           };
 
@@ -1219,14 +1274,14 @@ class SearchToolsService {
   }
 
   /**
-   * Unified search using Orama - works for all document types
+   * Unified search using Orama - works for all document types including types
    */
   async searchWithOrama(options: {
     query: string;
-    documentType?: 'kubernetes' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics' | 'script' | 'all';
-    action?: string;
+    documentType?: 'kubernetes' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics' | 'script' | 'type' | 'all';
+    category?: string;
     library?: string;
-    exclude?: { actions?: string[]; libraries?: string[] };
+    exclude?: { categories?: string[]; libraries?: string[] };
     limit: number;
     offset: number;
   }): Promise<{
@@ -1235,29 +1290,30 @@ class SearchToolsService {
     totalMatches: number;
     facets: {
       documentType: Record<string, number>;
-      apiClass: Record<string, number>;
-      action: Record<string, number>;
+      library: Record<string, number>;
+      category: Record<string, number>;
     };
     searchTime: number;
   }> {
-    const { query, documentType = 'all', action, library, exclude, limit, offset } = options;
+    const { query, documentType = 'all', category, library, exclude, limit, offset } = options;
     const db = await this.getOramaDb();
 
     const searchParams: SearchParams<Orama<typeof oramaSchema>, OramaDocument> = {
       term: query,
-      properties: ['resourceType', 'methodName', 'description', 'searchTokens'],
+      properties: ['name', 'resourceType', 'description', 'searchTokens', 'properties'],
       boost: {
-        resourceType: 3,
-        searchTokens: 2.5,
-        methodName: 2,
+        name: 3,
+        resourceType: 2.5,
+        searchTokens: 2,
         description: 1,
+        properties: 0.5,
       },
       tolerance: 1,
       limit: Math.max((offset + limit) * SEARCH_RESULTS_MULTIPLIER, MIN_SEARCH_RESULTS),
       facets: {
         documentType: {},
-        apiClass: {},
-        action: {},
+        library: {},
+        category: {},
       },
     };
 
@@ -1275,37 +1331,37 @@ class SearchToolsService {
     const scriptHits = hits.filter(hit => hit.document.documentType === 'script');
     let nonScriptHits = hits.filter(hit => hit.document.documentType !== 'script');
 
-    // Apply action filter
-    if (action) {
-      const lowerAction = action.toLowerCase();
-      nonScriptHits = nonScriptHits.filter(hit => hit.document.action === lowerAction);
+    // Apply category filter
+    if (category) {
+      const lowerCategory = category.toLowerCase();
+      nonScriptHits = nonScriptHits.filter(hit => hit.document.category === lowerCategory);
     }
 
-    // Apply library filter (using apiClass field)
+    // Apply library filter
     if (library) {
-      nonScriptHits = nonScriptHits.filter(hit => hit.document.apiClass === library);
+      nonScriptHits = nonScriptHits.filter(hit => hit.document.library === library);
     }
 
     // Apply exclusions
     if (exclude) {
       nonScriptHits = nonScriptHits.filter(hit => {
         const doc = hit.document;
-        const hasActions = exclude.actions && exclude.actions.length > 0;
+        const hasCategories = exclude.categories && exclude.categories.length > 0;
         const hasLibraries = exclude.libraries && exclude.libraries.length > 0;
 
-        if (hasActions && hasLibraries) {
-          const matchesAction = exclude.actions!.some(a =>
-            doc.action === a.toLowerCase() || doc.methodName.toLowerCase().includes(a.toLowerCase())
+        if (hasCategories && hasLibraries) {
+          const matchesCategory = exclude.categories!.some(c =>
+            doc.category === c.toLowerCase() || doc.name.toLowerCase().includes(c.toLowerCase())
           );
-          const matchesLibrary = exclude.libraries!.includes(doc.apiClass);
-          return !(matchesAction && matchesLibrary);
-        } else if (hasActions) {
-          const matchesAction = exclude.actions!.some(a =>
-            doc.action === a.toLowerCase() || doc.methodName.toLowerCase().includes(a.toLowerCase())
+          const matchesLibrary = exclude.libraries!.includes(doc.library);
+          return !(matchesCategory && matchesLibrary);
+        } else if (hasCategories) {
+          const matchesCategory = exclude.categories!.some(c =>
+            doc.category === c.toLowerCase() || doc.name.toLowerCase().includes(c.toLowerCase())
           );
-          return !matchesAction;
+          return !matchesCategory;
         } else if (hasLibraries) {
-          return !exclude.libraries!.includes(doc.apiClass);
+          return !exclude.libraries!.includes(doc.library);
         }
         return true;
       });
@@ -1314,8 +1370,8 @@ class SearchToolsService {
     // Extract facets
     const facets = {
       documentType: {} as Record<string, number>,
-      apiClass: {} as Record<string, number>,
-      action: {} as Record<string, number>,
+      library: {} as Record<string, number>,
+      category: {} as Record<string, number>,
     };
 
     if (searchResult.facets) {
@@ -1324,17 +1380,17 @@ class SearchToolsService {
           facets.documentType[key] = value as number;
         }
       }
-      if (searchResult.facets.apiClass?.values) {
-        for (const [key, value] of Object.entries(searchResult.facets.apiClass.values)) {
+      if (searchResult.facets.library?.values) {
+        for (const [key, value] of Object.entries(searchResult.facets.library.values)) {
           if (key !== 'CachedScript') {
-            facets.apiClass[key] = value as number;
+            facets.library[key] = value as number;
           }
         }
       }
-      if (searchResult.facets.action?.values) {
-        for (const [key, value] of Object.entries(searchResult.facets.action.values)) {
+      if (searchResult.facets.category?.values) {
+        for (const [key, value] of Object.entries(searchResult.facets.category.values)) {
           if (key !== 'script') {
-            facets.action[key] = value as number;
+            facets.category[key] = value as number;
           }
         }
       }
@@ -1343,9 +1399,9 @@ class SearchToolsService {
     // Sort by relevance, prioritizing exact matches
     const sortedNonScriptHits = nonScriptHits.sort((a, b) => {
       const aExact = a.document.resourceType.toLowerCase() === query.toLowerCase() ||
-                     a.document.methodName.toLowerCase() === query.toLowerCase();
+                     a.document.name.toLowerCase() === query.toLowerCase();
       const bExact = b.document.resourceType.toLowerCase() === query.toLowerCase() ||
-                     b.document.methodName.toLowerCase() === query.toLowerCase();
+                     b.document.name.toLowerCase() === query.toLowerCase();
 
       if (aExact && !bExact) return -1;
       if (!aExact && bExact) return 1;
@@ -1459,51 +1515,57 @@ export { SearchToolsService };
 // ============================================================================
 
 /**
- * Orama schema for Kubernetes API methods and Prometheus library methods
+ * Orama schema for methods, types, and other documents
  *
  * Design decisions based on Orama best practices:
- * - `string` types for full-text searchable fields (resourceType, methodName, description)
- * - `enum` types for exact-match filterable fields (action, scope, apiClass)
+ * - `string` types for full-text searchable fields (name, description, searchTokens)
+ * - `enum` types for exact-match filterable fields (category, library)
  * - stemmerSkipProperties for code identifiers that shouldn't be stemmed
  * - Boosting configured at search time for relevance tuning
  */
 const oramaSchema = {
-  // Document type discriminator
-  documentType: 'enum',          // "kubernetes" | "script" | "prometheus" | "prometheus-metric" | "loki" | "analytics"
+  // === Common fields (all document types) ===
+  id: 'string',                  // Unique identifier
+  documentType: 'enum',          // "kubernetes" | "prometheus" | "loki" | "analytics" | "script" | "prometheus-metric" | "type"
+  name: 'string',                // Method name OR type name (unified)
+  description: 'string',         // Full description text
+  searchTokens: 'string',        // CamelCase split tokens for better matching
+  library: 'enum',               // Package/API class: "@kubernetes/client-node", "prometheus-query", etc.
+  category: 'enum',              // Action (list, create) OR type kind (class, interface) OR category (query, descriptive)
 
-  // Full-text searchable fields
-  resourceType: 'string',        // "Pod", "Deployment" - boosted 3x
-  methodName: 'string',          // "listNamespacedPod" or script filename - boosted 2x
-  description: 'string',         // Full description text - boosted 1x
+  // === Method-specific fields ===
+  resourceType: 'string',        // K8s resource type: "Pod", "Deployment"
+  scope: 'enum',                 // "namespaced", "cluster", "forAllNamespaces"
+  filePath: 'string',            // Script file path (empty for methods/types)
 
-  // Enhanced search field: CamelCase split for better matching
-  // e.g., "PodExec" becomes "Pod Exec", "ServiceAccountToken" becomes "Service Account Token"
-  searchTokens: 'string',
+  // === Type-specific fields ===
+  properties: 'string',          // JSON array: [{name, type, optional, description}]
+  typeDefinition: 'string',      // Formatted type definition for display
+  nestedTypes: 'string',         // Comma-separated referenced type names
+  typeKind: 'enum',              // "class" | "interface" | "enum" | "type-alias"
 
-  // Filterable enum fields (exact match, used in where clause)
-  action: 'enum',                // "list", "create", "read", "delete", "patch", "replace", "connect", "watch", "script", "prometheus"
-  scope: 'enum',                 // "namespaced", "cluster", "forAllNamespaces", "script", "prometheus"
-  apiClass: 'enum',              // "CoreV1Api", "AppsV1Api", "CachedScript", "prometheus-query"
-
-  // Stored metadata
-  id: 'string',                  // Unique identifier: apiClass.methodName or script:filename
-  filePath: 'string',            // Full path for scripts (empty for methods)
-
-  // Prometheus metric fields (for prometheus-metric documentType)
+  // === Prometheus metric fields ===
   metricType: 'enum',            // "gauge" | "counter" | "histogram" | "summary" | "unknown"
 } as const;
 
 type OramaDocument = {
   id: string;
-  documentType: 'kubernetes' | 'script' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics';
-  resourceType: string;
-  methodName: string;
+  documentType: 'kubernetes' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics' | 'script' | 'type';
+  name: string;
   description: string;
   searchTokens: string;
-  action: string;       // K8s action (list, create, etc.) OR library category (query, metadata, descriptive, etc.)
+  library: string;
+  category: string;
+  // Method-specific
+  resourceType: string;
   scope: string;
-  apiClass: string;     // K8s API class OR library name (unified for filtering)
   filePath: string;
+  // Type-specific
+  properties: string;
+  typeDefinition: string;
+  nestedTypes: string;
+  typeKind: string;
+  // Prometheus metrics
   metricType?: string;
 };
 
@@ -2540,17 +2602,22 @@ function buildScriptDocument(script: CachedScript): OramaDocument {
   return {
     id: `script:${script.filename}`,
     documentType: 'script',
-    resourceType: script.resourceTypes.join(' '),
-    // For auto-generated scripts, use first API class or 'sandbox-script' as display name
-    methodName: isAutoGenerated
+    name: isAutoGenerated
       ? (script.apiClasses.length > 0 ? script.apiClasses[0]!.toLowerCase() : 'sandbox-script')
       : script.filename.replace(/\.ts$/, ''),
     description: script.description,
     searchTokens,
-    action: 'script',
+    library: script.apiClasses.length > 0 ? script.apiClasses[0]! : 'CachedScript',
+    category: 'script',
+    // Method-specific
+    resourceType: script.resourceTypes.join(' '),
     scope: 'script',
-    apiClass: script.apiClasses.length > 0 ? script.apiClasses[0]! : 'CachedScript',
     filePath: script.filePath,
+    // Type fields (empty for scripts)
+    properties: '',
+    typeDefinition: '',
+    nestedTypes: '',
+    typeKind: '',
   };
 }
 
@@ -2849,169 +2916,17 @@ function generateUsageExample(apiClass: string, methodName: string, parameters: 
 }
 
 // ============================================================================
-// Execute Functions for Each Mode
-// ============================================================================
-
-/**
- * Execute type definition lookup mode
- */
-async function executeTypeMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<TypeModeResult> {
-  const { types, depth = 1 } = input;
-
-  if (!types || types.length === 0) {
-    return {
-      mode: 'types',
-      summary: 'Error: types parameter is required when mode is "types"',
-      types: {},
-    };
-  }
-
-  const basePath = process.cwd();
-
-  const results: Record<string, {
-    name: string;
-    definition: string;
-    file: string;
-    nestedTypes: string[];
-  }> = {};
-
-  const typesToProcess = new Set(types);
-  const processedTypes = new Set<string>();
-  let currentDepth = 0;
-
-  while (typesToProcess.size > 0 && currentDepth < depth) {
-    const currentBatch = Array.from(typesToProcess);
-    typesToProcess.clear();
-
-    for (const typePath of currentBatch) {
-      if (processedTypes.has(typePath)) {
-        continue;
-      }
-
-      processedTypes.add(typePath);
-
-      const parsedPath = parseTypePath(typePath);
-      if (!parsedPath) {
-        results[typePath] = {
-          name: typePath,
-          definition: `// Invalid type path: ${typePath}`,
-          file: 'error',
-          nestedTypes: [],
-        };
-        continue;
-      }
-
-      const { baseType, path: propertyPath } = parsedPath;
-
-      if (propertyPath.length > 0) {
-        const cache = new Map<string, TypeInfo>();
-        const subtypeInfo = getSubtypeInfo(baseType, propertyPath, basePath, cache);
-
-        if (subtypeInfo) {
-          const definition = formatTypeInfo(subtypeInfo.typeInfo);
-          results[typePath] = {
-            name: subtypeInfo.typeInfo.name,
-            definition,
-            file: findTypeDefinitionFile(subtypeInfo.originalType, basePath)?.replace(basePath, '.') || 'resolved',
-            nestedTypes: [],
-          };
-        } else {
-          results[typePath] = {
-            name: typePath,
-            definition: `// Could not resolve property path: ${typePath}`,
-            file: 'not found',
-            nestedTypes: [],
-          };
-        }
-      } else {
-        const filePath = findTypeDefinitionFile(baseType, basePath);
-
-        if (filePath) {
-          try {
-            const extracted = extractTypeDefinitionWithTS(baseType, filePath);
-
-            if (extracted) {
-              const definition = formatTypeInfo(extracted.typeInfo);
-              results[typePath] = {
-                name: baseType,
-                definition,
-                file: filePath.replace(basePath, '.'),
-                nestedTypes: extracted.nestedTypes,
-              };
-
-              if (currentDepth < depth - 1) {
-                for (const nestedType of extracted.nestedTypes) {
-                  if (!processedTypes.has(nestedType)) {
-                    typesToProcess.add(nestedType);
-                  }
-                }
-              }
-            } else {
-              results[typePath] = {
-                name: baseType,
-                definition: `// Type ${baseType} not found in file ${filePath}`,
-                file: filePath.replace(basePath, '.'),
-                nestedTypes: [],
-              };
-            }
-          } catch (error) {
-            results[typePath] = {
-              name: baseType,
-              definition: `// Error extracting type ${baseType}: ${error instanceof Error ? error.message : String(error)}`,
-              file: filePath.replace(basePath, '.'),
-              nestedTypes: [],
-            };
-          }
-        } else {
-          results[typePath] = {
-            name: baseType,
-            definition: `// Type ${baseType} not found in @kubernetes/client-node type definitions`,
-            file: 'not found',
-            nestedTypes: [],
-          };
-        }
-      }
-    }
-
-    currentDepth++;
-  }
-
-  const foundCount = Object.values(results).filter(r => r.file !== 'not found').length;
-  const totalTypes = Object.keys(results).length;
-
-  let summary = `Fetched ${foundCount} type definition(s)`;
-  if (totalTypes > types.length) {
-    summary += ` (${types.length} requested, ${totalTypes - types.length} nested)\n\n`;
-  } else {
-    summary += `\n\n`;
-  }
-
-  for (const typeName of types) {
-    const typeInfo = results[typeName];
-    if (typeInfo && typeInfo.file !== 'not found') {
-      summary += `${typeName}: ${typeInfo.nestedTypes.length} nested type(s)\n`;
-    }
-  }
-
-  return {
-    mode: 'types',
-    summary,
-    types: results,
-  };
-}
-
-// ============================================================================
 // Unified Search Mode Execution
 // ============================================================================
 
 /**
  * Execute unified search mode - searches all indexed documents with unified filters
  */
-async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<SearchModeResult> {
+async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<SearchToolsResult> {
   const {
     query = '',
     documentType = 'all',
-    action,
+    category,
     library,
     exclude,
     limit = 10,
@@ -3025,7 +2940,7 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
   const searchResult = await searchToolsService.searchWithOrama({
     query: query || documentType, // Use documentType as fallback query for discovery
     documentType,
-    action,
+    category,
     library,
     exclude,
     limit,
@@ -3056,6 +2971,10 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
     let parameters: Array<{ name: string; type: string; optional: boolean; description?: string }> | undefined;
     let returnType: string | undefined;
     let example: string | undefined;
+    let properties: Array<{ name: string; type: string; optional: boolean; description?: string }> | undefined;
+    let typeDefinition: string | undefined;
+    let nestedTypes: string[] | undefined;
+    let typeKind: string | undefined;
 
     if (doc.documentType === 'kubernetes') {
       const method = k8sMethodMap.get(doc.id);
@@ -3085,18 +3004,36 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
         returnType = func.returnType;
         example = func.example;
       }
+    } else if (doc.documentType === 'type') {
+      // Type documents have their info stored directly
+      if (doc.properties) {
+        try {
+          properties = JSON.parse(doc.properties);
+        } catch {
+          properties = [];
+        }
+      }
+      typeDefinition = doc.typeDefinition || undefined;
+      nestedTypes = doc.nestedTypes ? doc.nestedTypes.split(',').filter(Boolean) : [];
+      typeKind = doc.typeKind || undefined;
     }
 
     return {
       id: doc.id,
       documentType: doc.documentType,
-      name: doc.methodName,
+      name: doc.name,
       description: doc.description,
-      library: doc.apiClass,
-      action: doc.action,
+      library: doc.library,
+      category: doc.category,
+      // Method-specific
       parameters,
       returnType,
       example,
+      // Type-specific
+      properties,
+      typeDefinition,
+      nestedTypes,
+      typeKind,
     };
   });
 
@@ -3104,7 +3041,7 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
   const relevantScripts: RelevantScript[] = searchResult.scriptResults.map(doc => ({
     filename: doc.id.replace(/^script:/, ''),
     description: doc.description,
-    apiClasses: doc.apiClass !== 'CachedScript' ? [doc.apiClass] : [],
+    apiClasses: doc.library !== 'CachedScript' ? [doc.library] : [],
   }));
 
   const hasMore = offset + results.length < searchResult.totalMatches;
@@ -3113,7 +3050,7 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
   let summary = `SEARCH RESULTS`;
   if (query) summary += ` for "${query}"`;
   if (documentType !== 'all') summary += ` (type: ${documentType})`;
-  if (action) summary += ` (action: ${action})`;
+  if (category) summary += ` (category: ${category})`;
   if (library) summary += ` (library: ${library})`;
   summary += `\n\nFound ${searchResult.totalMatches} result(s) (search: ${searchResult.searchTime.toFixed(2)}ms)`;
   if (offset > 0 || hasMore) {
@@ -3124,12 +3061,12 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
   // Show relevant scripts first if any
   if (relevantScripts.length > 0) {
     summary += `═══════════════════════════════════════════════════════════════\n`;
-    summary += `⚡ CACHED SCRIPTS AVAILABLE - USE THESE FIRST!\n`;
+    summary += `CACHED SCRIPTS AVAILABLE - USE THESE FIRST!\n`;
     summary += `═══════════════════════════════════════════════════════════════\n`;
     relevantScripts.forEach((script, i) => {
       summary += `${i + 1}. ${script.filename}\n`;
       summary += `   ${script.description}\n`;
-      summary += `   ➤ runSandbox({ cached: "${script.filename}" })\n\n`;
+      summary += `   > runSandbox({ cached: "${script.filename}" })\n\n`;
     });
     summary += `═══════════════════════════════════════════════════════════════\n\n`;
   }
@@ -3137,12 +3074,12 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
   // Show facets
   if (Object.keys(searchResult.facets.documentType).length > 0) {
     summary += `FACETS:\n`;
-    summary += `   Types: ${Object.entries(searchResult.facets.documentType).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
-    if (Object.keys(searchResult.facets.apiClass).length > 0) {
-      summary += `   Libraries: ${Object.entries(searchResult.facets.apiClass).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+    summary += `   Document Types: ${Object.entries(searchResult.facets.documentType).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+    if (Object.keys(searchResult.facets.library).length > 0) {
+      summary += `   Libraries: ${Object.entries(searchResult.facets.library).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
     }
-    if (Object.keys(searchResult.facets.action).length > 0) {
-      summary += `   Actions: ${Object.entries(searchResult.facets.action).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+    if (Object.keys(searchResult.facets.category).length > 0) {
+      summary += `   Categories: ${Object.entries(searchResult.facets.category).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
     }
     summary += `\n`;
   }
@@ -3150,14 +3087,30 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
   // Show results
   summary += `RESULTS:\n\n`;
   results.forEach((result, i) => {
-    summary += `${i + 1}. [${result.documentType}] ${result.library}.${result.name}\n`;
+    summary += `${i + 1}. [${result.documentType}] ${result.library}:${result.name}\n`;
     summary += `   ${result.description}\n`;
-    if (result.parameters && result.parameters.length > 0) {
-      const params = result.parameters.map(p => `${p.name}${p.optional ? '?' : ''}: ${p.type}`).join(', ');
-      summary += `   Params: (${params})\n`;
-    }
-    if (result.returnType) {
-      summary += `   Returns: ${result.returnType}\n`;
+
+    if (result.documentType === 'type') {
+      // Show type-specific info
+      if (result.typeKind) {
+        summary += `   Kind: ${result.typeKind}\n`;
+      }
+      if (result.properties && result.properties.length > 0) {
+        const props = result.properties.slice(0, 5).map(p => `${p.name}${p.optional ? '?' : ''}: ${p.type}`).join(', ');
+        summary += `   Properties: ${props}${result.properties.length > 5 ? ` ... +${result.properties.length - 5} more` : ''}\n`;
+      }
+      if (result.nestedTypes && result.nestedTypes.length > 0) {
+        summary += `   Nested types: ${result.nestedTypes.slice(0, 5).join(', ')}${result.nestedTypes.length > 5 ? ` ... +${result.nestedTypes.length - 5} more` : ''}\n`;
+      }
+    } else {
+      // Show method-specific info
+      if (result.parameters && result.parameters.length > 0) {
+        const params = result.parameters.map(p => `${p.name}${p.optional ? '?' : ''}: ${p.type}`).join(', ');
+        summary += `   Params: (${params})\n`;
+      }
+      if (result.returnType) {
+        summary += `   Returns: ${result.returnType}\n`;
+      }
     }
     summary += `\n`;
   });
@@ -3166,7 +3119,7 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
     summary += `No results found. Try:\n`;
     summary += `- Different query term\n`;
     summary += `- Omit filters to see more results\n`;
-    summary += `- Use documentType filter to narrow by type (kubernetes, prometheus, loki, analytics)\n`;
+    summary += `- Use documentType filter: kubernetes, prometheus, loki, analytics, type\n`;
   }
 
   const usage =
@@ -3182,15 +3135,14 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
     '- K8s: k8s and kc (KubeConfig) are pre-configured globals';
 
   return {
-    mode: 'search',
     summary,
     results,
     totalMatches: searchResult.totalMatches,
     relevantScripts,
     facets: {
       documentType: searchResult.facets.documentType,
-      library: searchResult.facets.apiClass,
-      action: searchResult.facets.action,
+      library: searchResult.facets.library,
+      category: searchResult.facets.category,
     },
     pagination: {
       offset,
@@ -3231,37 +3183,29 @@ export async function shutdownSearchIndex(): Promise<void> {
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
   name: 'kubernetes.searchTools',
   description:
-    'Unified search tool for discovering methods across all supported libraries. ' +
-    'MODES: ' +
-    '• search (default): Search all indexed methods - K8s API, Prometheus, Loki, Analytics. ' +
-    'Mix and match libraries in sandbox scripts. ' +
-    'Filters: query, documentType (kubernetes/prometheus/loki/analytics/script/all), action, library, exclude. ' +
-    'Example: { query: "Pod" } or { query: "query", documentType: "loki" } or { documentType: "kubernetes", action: "list" } ' +
-    '• types: Get TypeScript type definitions with path navigation. ' +
-    'Params: types (required), depth. ' +
-    'Example: { mode: "types", types: ["V1Pod", "V1Deployment.spec.template.spec"] } ' +
-    '• metrics: Discover Prometheus cluster metrics (requires PROMETHEUS_URL). ' +
-    'Example: { mode: "metrics", query: "cpu" } ' +
-    'LIBRARIES: ' +
-    'K8s: CoreV1Api, AppsV1Api, BatchV1Api, NetworkingV1Api, etc. ' +
-    'Prometheus: prometheus-query (query, metadata, alerts). ' +
-    'Loki: @prodisco/loki-client (queryRange, labels, labelValues, series, ready). ' +
-    'Analytics: simple-statistics, ml-regression, mathjs, fft-js. ' +
+    'Unified search for methods AND types across all libraries. ' +
+    'DOCUMENT TYPES: ' +
+    '• kubernetes: K8s API methods (CoreV1Api, AppsV1Api, etc.) ' +
+    '• prometheus: Prometheus client methods (query, metadata, alerts) ' +
+    '• loki: Loki client methods (queryRange, labels, labelValues) ' +
+    '• analytics: Analytics functions (simple-statistics, mathjs, ml-regression, fft-js) ' +
+    '• type: TypeScript type definitions (classes, interfaces, enums) ' +
+    '• prometheus-metric: Live Prometheus metrics (requires PROMETHEUS_URL) ' +
+    '• script: Cached sandbox scripts ' +
+    'EXAMPLES: ' +
+    '{ query: "Pod" } - Find Pod-related methods AND types ' +
+    '{ query: "Pod", documentType: "type" } - Find only Pod types (V1Pod, V1PodSpec, etc.) ' +
+    '{ query: "V1Deployment", documentType: "type" } - Get V1Deployment type definition ' +
+    '{ documentType: "kubernetes", category: "list" } - Find all K8s list methods ' +
+    '{ query: "queryRange", library: "@prodisco/loki-client" } - Find Loki queryRange method ' +
     'FILTERS: ' +
-    'action: K8s actions (list, create, read, delete, patch) or library categories (query, labels, descriptive, regression). ' +
-    'library: Filter by specific library/API class. ' +
-    'exclude: { actions: [...], libraries: [...] } ' +
-    'Docs: https://github.com/harche/ProDisco/blob/main/docs/search-tools.md',
+    'documentType: kubernetes | prometheus | loki | analytics | type | script | prometheus-metric | all ' +
+    'category: Method actions (list, create, read) or type kinds (class, interface, enum) ' +
+    'library: @kubernetes/client-node, prometheus-query, @prodisco/loki-client, mathjs, etc. ' +
+    'exclude: { categories: [...], libraries: [...] }',
   schema: SearchToolsInputSchema,
   async execute(input) {
-    const { mode = 'search' } = input;
-
-    if (mode === 'types') {
-      return executeTypeMode(input);
-    } else {
-      // Default: unified search mode - handles all document types including prometheus-metric
-      return executeSearchMode(input);
-    }
+    return executeSearchMode(input);
   },
 };
 

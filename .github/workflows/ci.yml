@@ -286,12 +286,12 @@ jobs:
             -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-test","version":"1.0.0"}}}')
           SESSION_ID=$(echo "$INIT_RESPONSE" | grep -i "mcp-session-id:" | cut -d' ' -f2 | tr -d '\r')
 
-          # Call searchTools
+          # Call searchTools with unified schema (query, documentType, category)
           RESULT=$(curl -s -X POST http://localhost:3000/mcp \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
             -H "mcp-session-id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kubernetes.searchTools","arguments":{"resourceType":"Pod","action":"list","limit":3}}}')
+            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kubernetes.searchTools","arguments":{"query":"Pod","documentType":"kubernetes","category":"list","limit":3}}}')
           echo "$RESULT"
           echo "$RESULT" | grep -q "result"
 

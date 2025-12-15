@@ -180,11 +180,6 @@ ProDisco exposes two tools:
 
 A unified search interface for discovering methods across all supported libraries: Kubernetes API, Prometheus, Loki, and Analytics.
 
-| Mode | Purpose | Example |
-|------|---------|---------|
-| `search` (default) | Search all indexed methods | `{ query: "Pod" }` or `{ documentType: "loki" }` |
-| `types` | Get TypeScript type definitions | `{ mode: "types", types: ["V1Pod.spec"] }` |
-
 **Document Types:**
 
 | Type | Description |
@@ -195,22 +190,23 @@ A unified search interface for discovering methods across all supported librarie
 | `loki` | Loki client methods (queryRange, labels, series) |
 | `analytics` | Statistics/ML libraries (simple-statistics, ml-regression, etc.) |
 | `script` | Cached sandbox scripts |
+| `type` | TypeScript type definitions (V1Pod, V1Deployment, etc.) |
 | `all` | Search all document types (default) |
 
 **Examples:**
 
 ```typescript
-// Find Pod-related methods (searches all types)
+// Find Pod-related methods and types (searches all document types)
 { query: "Pod" }
 
 // Filter by document type
 { query: "Pod", documentType: "kubernetes" }
 
 // Find Loki query methods
-{ documentType: "loki", action: "query" }
+{ documentType: "loki", category: "query" }
 
 // Find Prometheus methods by category
-{ documentType: "prometheus", action: "query" }
+{ documentType: "prometheus", category: "query" }
 
 // Discover cluster metrics
 { documentType: "prometheus-metric", query: "cpu" }
@@ -221,11 +217,11 @@ A unified search interface for discovering methods across all supported librarie
 // Search cached scripts
 { documentType: "script", query: "deployment" }
 
-// Get type definitions with path navigation
-{ mode: "types", types: ["V1Deployment.spec.template.spec"] }
+// Get TypeScript type definitions
+{ query: "V1Deployment", documentType: "type" }
 
-// Exclude certain actions/libraries
-{ query: "Pod", exclude: { actions: ["delete"], libraries: ["CustomObjectsApi"] } }
+// Exclude certain categories/libraries
+{ query: "Pod", exclude: { categories: ["delete"], libraries: ["CustomObjectsApi"] } }
 ```
 
 For comprehensive documentation, see [docs/search-tools.md](docs/search-tools.md).

@@ -1,6 +1,6 @@
 # searchTools Reference
 
-The `kubernetes.searchTools` tool is a unified interface for discovering methods across all supported libraries: Kubernetes API, Prometheus, Loki, and Analytics. It provides a single search mode that can filter by document type, plus a types mode for TypeScript definitions.
+The `kubernetes.searchTools` tool is a unified interface for discovering methods and types across all supported libraries: Kubernetes API, Prometheus, Loki, and Analytics. It provides a single unified search that indexes both API methods AND TypeScript type definitions.
 
 Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8s`, `kc` (pre-configured KubeConfig), `console`, and `require()` for whitelisted modules including `prometheus-query`, `@prodisco/loki-client`, and analytics libraries.
 
@@ -10,8 +10,8 @@ Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8
 
 - [Quick Reference](#quick-reference)
 - [User Guide](#user-guide)
-  - [Search Mode (Default)](#search-mode-default)
-  - [Types Mode](#types-mode)
+  - [Search Mode](#search-mode)
+  - [Type Definitions](#type-definitions)
 - [Document Types](#document-types)
   - [Kubernetes Methods](#kubernetes-methods-documenttype-kubernetes)
   - [Prometheus Methods](#prometheus-methods-documenttype-prometheus)
@@ -36,60 +36,65 @@ Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8
 
 ## Quick Reference
 
-| Mode | Purpose | Key Parameters | Example |
-|------|---------|----------------|---------|
-| `search` (default) | Search all indexed methods | `query`, `documentType`, `action`, `library` | `{ query: "Pod" }` |
-| `types` | Get TypeScript type definitions | `types`, `depth` | `{ mode: "types", types: ["V1Pod"] }` |
+**Key Parameters:**
+
+| Parameter | Description | Example |
+|-----------|-------------|---------|
+| `query` | Search term for full-text search | `{ query: "Pod" }` |
+| `documentType` | Filter by document type | `{ documentType: "kubernetes" }` |
+| `category` | Filter by category (actions/kinds) | `{ category: "list" }` |
+| `library` | Filter by library/API class | `{ library: "CoreV1Api" }` |
 
 **Document Types:**
 
 | Type | Description | Example |
 |------|-------------|---------|
 | `kubernetes` | Kubernetes API methods | `{ documentType: "kubernetes", query: "Pod" }` |
-| `prometheus` | Prometheus client methods | `{ documentType: "prometheus", action: "query" }` |
+| `prometheus` | Prometheus client methods | `{ documentType: "prometheus", category: "query" }` |
 | `prometheus-metric` | Live cluster metrics | `{ documentType: "prometheus-metric", query: "cpu" }` |
-| `loki` | Loki client methods | `{ documentType: "loki", action: "query" }` |
+| `loki` | Loki client methods | `{ documentType: "loki", category: "query" }` |
 | `analytics` | Statistics/ML functions | `{ documentType: "analytics", library: "simple-statistics" }` |
 | `script` | Cached sandbox scripts | `{ documentType: "script", query: "deployment" }` |
+| `type` | TypeScript type definitions | `{ documentType: "type", query: "V1Pod" }` |
 | `all` (default) | Search all types | `{ query: "Pod" }` |
 
 ---
 
 ## User Guide
 
-### Search Mode (Default)
+### Search Mode
 
-Search for methods across all supported libraries using a unified query interface. Use `documentType` to filter by library type, and `action`/`library` for further refinement.
+Search for methods and types across all supported libraries using a unified query interface. Use `documentType` to filter by library type, and `category`/`library` for further refinement.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `query` | string | No | Search term - searches method names, descriptions, and resource types |
-| `documentType` | enum | No | Filter by type: `kubernetes`, `prometheus`, `prometheus-metric`, `loki`, `analytics`, `script`, or `all` (default) |
-| `action` | string | No | Filter by action/category: K8s actions (list, create, read, delete, patch) or library categories (query, labels, descriptive, regression) |
-| `library` | string | No | Filter by library/API class: K8s (CoreV1Api, AppsV1Api, etc.) or libraries (prometheus-query, @prodisco/loki-client, simple-statistics, etc.) |
-| `exclude` | object | No | Exclude specific actions or libraries: `{ actions: [...], libraries: [...] }` |
+| `query` | string | No | Search term - searches names, descriptions, and resource types |
+| `documentType` | enum | No | Filter by type: `kubernetes`, `prometheus`, `prometheus-metric`, `loki`, `analytics`, `script`, `type`, or `all` (default) |
+| `category` | string | No | Filter by category: K8s actions (list, create, read, delete, patch) or type kinds (class, interface, enum) or library categories (query, labels, descriptive, regression) |
+| `library` | string | No | Filter by library/API class: K8s (CoreV1Api, AppsV1Api, etc.) or libraries (@kubernetes/client-node, prometheus-query, @prodisco/loki-client, simple-statistics, etc.) |
+| `exclude` | object | No | Exclude specific categories or libraries: `{ categories: [...], libraries: [...] }` |
 | `limit` | number | No | Max results (default: 10, max: 50) |
 | `offset` | number | No | Skip N results for pagination (default: 0) |
 
 **Examples:**
 
 ```typescript
-// Search all types for "Pod"
+// Search all types for "Pod" (returns both methods and type definitions)
 { query: "Pod" }
 
 // Filter to Kubernetes methods only
 { query: "Pod", documentType: "kubernetes" }
 
 // Find K8s list methods for Pods
-{ query: "Pod", documentType: "kubernetes", action: "list" }
+{ query: "Pod", documentType: "kubernetes", category: "list" }
 
 // Find Loki query methods
-{ documentType: "loki", action: "query" }
+{ documentType: "loki", category: "query" }
 
 // Find Prometheus methods
-{ documentType: "prometheus", action: "query" }
+{ documentType: "prometheus", category: "query" }
 
 // Find cluster metrics
 { documentType: "prometheus-metric", query: "cpu" }
@@ -101,7 +106,7 @@ Search for methods across all supported libraries using a unified query interfac
 { documentType: "script", query: "deployment" }
 
 // Exclude delete actions
-{ query: "Pod", exclude: { actions: ["delete"] } }
+{ query: "Pod", exclude: { categories: ["delete"] } }
 
 // Pagination: get results 11-20
 { query: "Pod", limit: 10, offset: 10 }
@@ -111,18 +116,21 @@ Search for methods across all supported libraries using a unified query interfac
 
 ```typescript
 {
-  mode: "search",
   summary: string,          // Human-readable result summary
-  results: [{               // Array of matching methods/functions
+  results: [{               // Array of matching methods/functions/types
     id: string,             // Unique identifier
-    documentType: string,   // "kubernetes", "prometheus", "loki", "analytics", "script"
-    name: string,           // Method/function name
+    documentType: string,   // "kubernetes", "prometheus", "loki", "analytics", "script", "type"
+    name: string,           // Method/function/type name
     description: string,
     library: string,        // API class or library name
-    action: string,         // Action/category
+    category: string,       // Action/category or type kind
     parameters?: [...],     // Method parameters with types
     returnType?: string,
     example?: string,       // Sandbox-compatible usage example
+    // Type-specific fields (when documentType === "type"):
+    typeDefinition?: string,  // Formatted type definition
+    nestedTypes?: string[],   // Referenced type names for navigation
+    typeKind?: string,        // "class", "interface", "enum", "type-alias"
   }],
   totalMatches: number,     // Total matching results (for pagination)
   relevantScripts: [{       // Cached scripts matching the search
@@ -131,9 +139,9 @@ Search for methods across all supported libraries using a unified query interfac
     apiClasses: string[]
   }],
   facets: {                 // Result breakdown for refining search
-    documentType: { "kubernetes": 15, "loki": 3 },
-    library: { "CoreV1Api": 15, "AppsV1Api": 3 },
-    action: { "list": 5, "query": 4, "create": 3 }
+    documentType: { "kubernetes": 15, "type": 10, "loki": 3 },
+    library: { "CoreV1Api": 15, "@kubernetes/client-node": 10 },
+    category: { "list": 5, "class": 10, "query": 4 }
   },
   pagination: {
     offset: number,
@@ -147,54 +155,53 @@ Search for methods across all supported libraries using a unified query interfac
 
 ---
 
-### Types Mode
+### Type Definitions
 
-Get TypeScript type definitions from the `@kubernetes/client-node` library. Supports dot-notation for navigating to nested types.
+TypeScript type definitions are indexed as first-class documents and can be searched like any other document type. Use `documentType: "type"` to search only types.
 
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `types` | string[] | Yes | Type names or paths to resolve |
-| `depth` | number | No | Nested type resolution depth (1-2, default: 1) |
-
-**Path Navigation:**
-
-Use dot notation to navigate to nested types:
+**Examples:**
 
 ```typescript
-// Get the V1Pod type
-{ mode: "types", types: ["V1Pod"] }
+// Get the V1Pod type definition
+{ query: "V1Pod", documentType: "type" }
 
-// Navigate to spec (returns V1PodSpec)
-{ mode: "types", types: ["V1Pod.spec"] }
+// Find all Pod-related types
+{ query: "Pod", documentType: "type" }
 
-// Navigate to containers (returns V1Container - array element type)
-{ mode: "types", types: ["V1Pod.spec.containers"] }
+// Get types from a specific library
+{ documentType: "type", library: "@kubernetes/client-node" }
 
-// Get multiple types at once
-{ mode: "types", types: ["V1Pod", "V1Deployment", "V1Service"] }
+// Find interface types
+{ documentType: "type", category: "interface" }
 
-// Include nested types at depth 2
-{ mode: "types", types: ["V1Pod"], depth: 2 }
+// Search across everything (methods AND types)
+{ query: "Deployment" }
 ```
 
-**Response Structure:**
+**Navigating Nested Types:**
+
+Type definitions include a `nestedTypes` field that lists referenced types. Query these types to navigate deeper:
 
 ```typescript
-{
-  mode: "types",
-  summary: string,
-  types: {
-    "V1Pod": {
-      name: "V1Pod",
-      definition: "V1Pod {\n  metadata?: V1ObjectMeta\n  spec?: V1PodSpec\n  ...\n}",
-      file: "./node_modules/@kubernetes/client-node/dist/gen/models/V1Pod.d.ts",
-      nestedTypes: ["V1ObjectMeta", "V1PodSpec", "V1PodStatus"]
-    }
-  }
-}
+// Step 1: Get V1Deployment type
+{ query: "V1Deployment", documentType: "type" }
+// Response shows nestedTypes: ["V1DeploymentSpec", "V1ObjectMeta", ...]
+
+// Step 2: Get the nested V1DeploymentSpec type
+{ query: "V1DeploymentSpec", documentType: "type" }
+// Response shows nestedTypes: ["V1PodTemplateSpec", ...]
+
+// Step 3: Continue navigating as needed
+{ query: "V1PodSpec", documentType: "type" }
 ```
+
+**Type Response Fields:**
+
+| Field | Description |
+|-------|-------------|
+| `typeDefinition` | Formatted TypeScript type definition |
+| `nestedTypes` | Array of referenced type names for further navigation |
+| `typeKind` | Type kind: `class`, `interface`, `enum`, or `type-alias` |
 
 ---
 
@@ -202,15 +209,15 @@ Use dot notation to navigate to nested types:
 
 ### Kubernetes Methods (documentType: "kubernetes")
 
-Kubernetes API methods from `@kubernetes/client-node`. Filter by `action` for CRUD operations.
+Kubernetes API methods from `@kubernetes/client-node`. Filter by `category` for CRUD operations.
 
-**Actions:** `list`, `read`, `create`, `delete`, `patch`, `replace`, `connect`, `watch`
+**Categories:** `list`, `read`, `create`, `delete`, `patch`, `replace`, `connect`, `watch`
 
 **Example:**
 
 ```typescript
 // Find Pod list methods
-{ documentType: "kubernetes", query: "Pod", action: "list" }
+{ documentType: "kubernetes", query: "Pod", category: "list" }
 ```
 
 ---
@@ -219,13 +226,13 @@ Kubernetes API methods from `@kubernetes/client-node`. Filter by `action` for CR
 
 Methods from the `prometheus-query` library for querying Prometheus.
 
-**Actions (categories):** `query`, `metadata`, `alerts`
+**Categories:** `query`, `metadata`, `alerts`
 
 **Example:**
 
 ```typescript
 // Find PromQL query methods
-{ documentType: "prometheus", action: "query" }
+{ documentType: "prometheus", category: "query" }
 ```
 
 **Environment:** Requires `PROMETHEUS_URL` for execution.
@@ -252,7 +259,7 @@ Discover actual metrics from your Prometheus cluster. Requires `PROMETHEUS_URL` 
 
 Methods from the `@prodisco/loki-client` library for querying Loki logs.
 
-**Actions (categories):** `query`, `labels`, `streams`, `health`
+**Categories:** `query`, `labels`, `streams`, `health`
 
 **Methods:**
 
@@ -272,10 +279,10 @@ Methods from the `@prodisco/loki-client` library for querying Loki logs.
 { documentType: "loki" }
 
 // Find Loki query methods
-{ documentType: "loki", action: "query" }
+{ documentType: "loki", category: "query" }
 
 // Find Loki label methods
-{ documentType: "loki", action: "labels" }
+{ documentType: "loki", category: "labels" }
 ```
 
 **Environment:** Requires `LOKI_URL` for execution.
@@ -314,7 +321,7 @@ Statistical, machine learning, and signal processing functions.
 | `mathjs` | Matrix operations, linear algebra, symbolic math |
 | `fft-js` | Fast Fourier Transform for detecting periodic patterns |
 
-**Actions (categories):** `descriptive`, `regression`, `distribution`, `matrix`, `signal`
+**Categories:** `descriptive`, `regression`, `distribution`, `matrix`, `signal`
 
 **Examples:**
 
@@ -374,10 +381,11 @@ runSandbox({ cached: "script-2025-01-01T12-00-00-abc123.ts" })
 
 ```
 Step 1: Discover the API method
-> searchTools({ documentType: "kubernetes", query: "Pod", action: "list" })
+> searchTools({ documentType: "kubernetes", query: "Pod", category: "list" })
 
-Step 2: Get type definition for understanding the response
-> searchTools({ mode: "types", types: ["V1Pod.spec", "V1Pod.status"] })
+Step 2: Get type definitions for understanding the response
+> searchTools({ query: "V1Pod", documentType: "type" })
+> searchTools({ query: "V1PodSpec", documentType: "type" })
 
 Step 3: Execute in sandbox
 > runSandbox({ code: `
@@ -392,10 +400,11 @@ Step 3: Execute in sandbox
 
 ```
 Step 1: Find the create method
-> searchTools({ documentType: "kubernetes", query: "Deployment", action: "create" })
+> searchTools({ documentType: "kubernetes", query: "Deployment", category: "create" })
 
-Step 2: Get the full Deployment spec structure
-> searchTools({ mode: "types", types: ["V1Deployment.spec"], depth: 2 })
+Step 2: Get the Deployment type and navigate to nested types
+> searchTools({ query: "V1Deployment", documentType: "type" })
+> searchTools({ query: "V1DeploymentSpec", documentType: "type" })
 
 Step 3: Check for existing deployment scripts
 > searchTools({ documentType: "script", query: "deployment" })
@@ -419,7 +428,7 @@ Step 2: Run cached script by filename
 **Step 1:** Find query methods
 
 ```json
-{ "documentType": "prometheus", "action": "query" }
+{ "documentType": "prometheus", "category": "query" }
 ```
 
 **Step 2:** Execute in sandbox:
@@ -447,7 +456,7 @@ runSandbox({ code: `
 **Step 1:** Find Loki query methods
 
 ```json
-{ "documentType": "loki", "action": "query" }
+{ "documentType": "loki", "category": "query" }
 ```
 
 **Step 2:** Discover available labels
@@ -497,15 +506,26 @@ searchTools uses [Orama](https://orama.com) for fast, typo-tolerant full-text se
 
 ```typescript
 const oramaSchema = {
-  documentType: 'enum',      // "kubernetes" | "script" | "prometheus" | "prometheus-metric" | "loki" | "analytics"
-  resourceType: 'string',    // Searchable: "Pod", "Deployment"
-  methodName: 'string',      // Searchable: "listNamespacedPod", "queryRange", "mean", metric names
+  // Common fields (all document types)
+  id: 'string',              // Unique identifier
+  documentType: 'enum',      // "kubernetes" | "prometheus" | "loki" | "analytics" | "script" | "type"
+  name: 'string',            // Searchable: method name OR type name
   description: 'string',     // Searchable: full description text
   searchTokens: 'string',    // CamelCase-split tokens for better matching
-  action: 'enum',            // Filterable: "list", "create", "query", "labels", "descriptive", etc.
-  apiClass: 'enum',          // Filterable: "CoreV1Api", "prometheus-query", "@prodisco/loki-client", etc.
-  id: 'string',              // Unique identifier (e.g., "loki:@prodisco/loki-client:LokiClient:queryRange")
+  library: 'enum',           // Filterable: API class or package name
+  category: 'enum',          // Filterable: action (list, create) or type kind (class, interface)
+
+  // Method-specific fields
+  resourceType: 'string',    // K8s resource: "Pod", "Deployment"
+  scope: 'enum',             // "namespaced" | "cluster" | "forAllNamespaces"
+  filePath: 'string',        // Script file path
   metricType: 'enum',        // Prometheus metrics: "gauge", "counter", "histogram", "summary"
+
+  // Type-specific fields
+  properties: 'string',      // JSON: [{name, type, optional, description}]
+  typeDefinition: 'string',  // Formatted type definition for display
+  nestedTypes: 'string',     // Comma-separated referenced type names
+  typeKind: 'enum',          // "class" | "interface" | "enum" | "type-alias"
 };
 ```
 
@@ -524,7 +544,8 @@ boost: {
 
 The index is pre-warmed at server startup via `warmupSearchIndex()` to avoid latency on the first search. This indexes:
 
-- All Kubernetes API methods from 10 API classes (~500+ methods)
+- All Kubernetes API methods from 10 API classes (~950+ methods)
+- TypeScript type definitions from all libraries (~900+ types)
 - All cached scripts in `.cache/scripts/`
 - Prometheus library methods from `prometheus-query`
 - Loki library methods from `@prodisco/loki-client`
@@ -533,29 +554,33 @@ The index is pre-warmed at server startup via `warmupSearchIndex()` to avoid lat
 
 ---
 
-### Type Resolution System
+### Type Indexing System
 
-Type definitions are extracted using the TypeScript Compiler API.
+Type definitions are extracted at startup using the TypeScript Compiler API and indexed as first-class documents in Orama.
 
 **Process:**
 
-1. Parse the type path (e.g., `V1Deployment.spec.template.spec`)
-2. Load the base type's `.d.ts` file from `@kubernetes/client-node`
-3. For path navigation:
-   - Find the property in the current type
-   - Extract the property's type node
-   - Resolve array types (`V1Container[]` -> `V1Container`)
-   - Resolve union types (`T | undefined` -> `T`)
-4. Recursively resolve nested types based on `depth` parameter
+1. Parse `.d.ts` files from supported libraries (`@kubernetes/client-node`, `prometheus-query`, `@prodisco/loki-client`, `mathjs`)
+2. Extract classes, interfaces, enums, and type aliases
+3. For each type:
+   - Extract all properties with their types and optional markers
+   - Identify referenced types (nested types) for navigation
+   - Generate formatted type definitions for display
+4. Index types in Orama with full-text search on name, description, and properties
 
-**Path Resolution Examples:**
+**Navigating Types:**
 
-| Input Path | Resolved Type |
-|------------|---------------|
-| `V1Pod` | V1Pod |
-| `V1Pod.spec` | V1PodSpec |
-| `V1Pod.spec.containers` | V1Container (array element) |
-| `V1Pod.status.conditions` | V1PodCondition (array element) |
+Types include a `nestedTypes` field listing referenced types. Query these to explore deeper:
+
+```typescript
+// Step 1: Get V1Deployment type
+{ query: "V1Deployment", documentType: "type" }
+// Response shows nestedTypes: ["V1DeploymentSpec", "V1ObjectMeta", ...]
+
+// Step 2: Query the nested type
+{ query: "V1DeploymentSpec", documentType: "type" }
+// Response shows nestedTypes: ["V1PodTemplateSpec", ...]
+```
 
 ---
 

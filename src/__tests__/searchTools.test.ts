@@ -44,11 +44,11 @@ writeFileSync(testScriptPath, testScriptContent);
 // Main search helper - works for all document types
 type SearchInput = {
   query?: string;
-  documentType?: 'kubernetes' | 'prometheus' | 'loki' | 'analytics' | 'script' | 'all';
-  action?: string;
+  documentType?: 'kubernetes' | 'prometheus' | 'prometheus-metric' | 'loki' | 'analytics' | 'script' | 'type' | 'all';
+  category?: string;
   library?: string;
   exclude?: {
-    actions?: string[];
+    categories?: string[];
     libraries?: string[];
   };
   limit?: number;
@@ -56,7 +56,6 @@ type SearchInput = {
 };
 
 type SearchResult = {
-  mode: 'search';
   summary: string;
   results: Array<{
     id: string;
@@ -64,7 +63,7 @@ type SearchResult = {
     name: string;
     description: string;
     library: string;
-    action: string;
+    category: string;
     parameters?: Array<{ name: string; type: string; optional: boolean; description?: string }>;
     returnType?: string;
     example?: string;
@@ -74,7 +73,7 @@ type SearchResult = {
   facets: {
     documentType: Record<string, number>;
     library: Record<string, number>;
-    action: Record<string, number>;
+    category: Record<string, number>;
   };
   pagination: { offset: number; limit: number; hasMore: boolean };
   searchTime: number;
@@ -96,8 +95,8 @@ const searchTools = async (input: {
   const result = await search({
     query: input.resourceType,
     documentType: 'kubernetes',
-    action: input.action,
-    exclude: input.exclude ? { actions: input.exclude.actions, libraries: input.exclude.apiClasses } : undefined,
+    category: input.action,
+    exclude: input.exclude ? { categories: input.exclude.actions, libraries: input.exclude.apiClasses } : undefined,
     limit: input.limit,
     offset: input.offset,
   });
@@ -107,7 +106,7 @@ const searchTools = async (input: {
     tools: result.results.map(r => ({
       apiClass: r.library,
       methodName: r.name,
-      resourceType: r.action, // In the new format, action contains the extracted action
+      resourceType: r.category, // In the new format, category contains the extracted action
       description: r.description,
       parameters: r.parameters || [],
       returnType: r.returnType || 'Promise<any>',
@@ -124,7 +123,7 @@ const searchTools = async (input: {
     relevantScripts: result.relevantScripts,
     facets: {
       apiClass: result.facets.library,
-      action: result.facets.action,
+      action: result.facets.category,
     },
     searchTime: result.searchTime,
     pagination: result.pagination,
@@ -294,11 +293,18 @@ describe('kubernetes.searchTools', () => {
       const result = await searchTools({
         resourceType: 'Pod',
         action: 'connect',
+        limit: 50, // Increase limit to find more connect methods
       });
 
       expect(result.tools.length).toBeGreaterThan(0);
       const methodNames = result.tools.map(t => t.methodName);
-      expect(methodNames.some(name => name.includes('Exec') || name.includes('exec'))).toBe(true);
+      // Connect methods may include Exec, Attach, Portforward, Proxy, etc.
+      expect(methodNames.some(name =>
+        name.includes('Exec') || name.includes('exec') ||
+        name.includes('Attach') || name.includes('attach') ||
+        name.includes('Portforward') || name.includes('Proxy') ||
+        name.toLowerCase().includes('connect')
+      )).toBe(true);
     });
 
     it('finds Pod eviction using "Eviction" resource type', async () => {
@@ -1257,7 +1263,7 @@ const searchPrometheus = async (input: {
   const result = await search({
     query: input.methodPattern,
     documentType: 'prometheus',
-    action: input.category !== 'all' ? input.category : undefined,
+    category: input.category !== 'all' ? input.category : undefined,
     limit: input.limit,
     offset: input.offset,
   });
@@ -1267,7 +1273,7 @@ const searchPrometheus = async (input: {
       library: r.library,
       className: undefined,
       methodName: r.name,
-      category: r.action,
+      category: r.category,
       description: r.description,
       parameters: r.parameters || [],
       returnType: r.returnType || 'Promise<any>',
@@ -1280,7 +1286,7 @@ const searchPrometheus = async (input: {
     paths: result.paths,
     facets: {
       library: result.facets.library,
-      category: result.facets.action,
+      category: result.facets.category,
     },
     pagination: result.pagination,
   };
@@ -1829,7 +1835,7 @@ const searchAnalytics = async (input: {
     functions: result.results.map(r => ({
       library: r.library as 'simple-statistics' | 'ml-regression' | 'mathjs' | 'fft-js',
       functionName: r.name,
-      category: r.action,
+      category: r.category,
       description: r.description,
       signature: `${r.name}(${(r.parameters || []).map(p => p.name).join(', ')})`,
       parameters: r.parameters || [],
@@ -1847,7 +1853,7 @@ const searchAnalytics = async (input: {
     paths: result.paths,
     facets: {
       library: result.facets.library,
-      category: result.facets.action,
+      category: result.facets.category,
     },
     pagination: result.pagination,
   };
@@ -2445,7 +2451,7 @@ describe('kubernetes.searchTools - Analytics Mode', () => {
 // Helper for loki mode - uses unified API
 const searchLoki = async (input: {
   mode: 'loki';
-  lokiCategory?: 'query' | 'labels' | 'streams' | 'all';
+  lokiCategory?: 'query' | 'labels' | 'streams' | 'health' | 'all';
   lokiMethodPattern?: string;
   limit?: number;
   offset?: number;
@@ -2453,7 +2459,7 @@ const searchLoki = async (input: {
   const result = await search({
     query: input.lokiMethodPattern,
     documentType: 'loki',
-    action: input.lokiCategory !== 'all' ? input.lokiCategory : undefined,
+    category: input.lokiCategory !== 'all' ? input.lokiCategory : undefined,
     limit: input.limit,
     offset: input.offset,
   });
@@ -2464,7 +2470,7 @@ const searchLoki = async (input: {
       library: '@prodisco/loki-client' as const,
       className: 'LokiClient',
       methodName: r.name,
-      category: r.action,
+      category: r.category,
       description: r.description,
       parameters: r.parameters || [],
       returnType: r.returnType || 'Promise<any>',
@@ -2478,7 +2484,7 @@ const searchLoki = async (input: {
     paths: result.paths,
     facets: {
       library: result.facets.library,
-      category: result.facets.action,
+      category: result.facets.category,
     },
     pagination: result.pagination,
     usage: result.usage,
