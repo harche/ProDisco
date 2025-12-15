@@ -1,0 +1,296 @@
+/**
+ * Parse TypeScript scripts and extract searchable metadata
+ */
+
+import * as ts from 'typescript';
+import { readFileSync, existsSync, readdirSync, statSync, lstatSync } from 'fs';
+import { join, basename } from 'path';
+import type { CachedScript, ParseScriptsOptions } from './types.js';
+
+/** Maximum number of resource types to extract from script content */
+const MAX_RESOURCE_TYPES_FROM_CONTENT = 10;
+
+/** Common stop words to filter from keywords */
+const STOP_WORDS = new Set([
+  'the', 'and', 'for', 'from', 'with', 'this', 'that', 'are', 'was', 'were',
+  'been', 'being', 'have', 'has', 'had', 'having', 'does', 'did', 'doing',
+  'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
+]);
+
+/**
+ * Parse a script file and extract searchable metadata
+ */
+export function parseScript(filePath: string): CachedScript | null {
+  if (!existsSync(filePath)) {
+    return null;
+  }
+
+  try {
+    const filename = basename(filePath);
+    const description = extractFirstCommentBlock(filePath);
+    const filenameResourceTypes = extractResourceTypesFromFilename(filename);
+    const { apiClasses, resourceTypes: contentResourceTypes } = extractApiSignals(filePath);
+
+    // Combine resource types from filename and content
+    const resourceTypes = [
+      ...new Set([
+        ...filenameResourceTypes,
+        ...contentResourceTypes.map((t) => t.toLowerCase()),
+      ]),
+    ];
+
+    // Extract additional keywords from description
+    const keywords = description
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((word) => word.length > 2)
+      .filter((word) => !STOP_WORDS.has(word));
+
+    return {
+      filename,
+      filePath,
+      description: description || `Script: ${filename.replace(/\.ts$/, '')}`,
+      resourceTypes,
+      apiClasses,
+      keywords,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse all scripts from a directory
+ */
+export function parseScriptsFromDirectory(
+  dirPath: string,
+  options: ParseScriptsOptions = {}
+): CachedScript[] {
+  const { extension = '.ts', recursive = false, maxScripts = 1000 } = options;
+
+  if (!existsSync(dirPath)) {
+    return [];
+  }
+
+  const scripts: CachedScript[] = [];
+
+  function walkDir(dir: string) {
+    if (scripts.length >= maxScripts) return;
+
+    try {
+      const entries = readdirSync(dir);
+
+      for (const entry of entries) {
+        if (scripts.length >= maxScripts) break;
+
+        // Skip node_modules and hidden directories
+        if (entry === 'node_modules' || entry.startsWith('.')) {
+          continue;
+        }
+
+        const fullPath = join(dir, entry);
+
+        try {
+          // Use lstat to detect symlinks (don't follow them)
+          const lstat = lstatSync(fullPath);
+
+          // Skip symbolic links to prevent traversing into unexpected directories
+          if (lstat.isSymbolicLink()) {
+            continue;
+          }
+
+          if (lstat.isDirectory() && recursive) {
+            walkDir(fullPath);
+          } else if (lstat.isFile() && entry.endsWith(extension)) {
+            const script = parseScript(fullPath);
+            if (script) {
+              scripts.push(script);
+            }
+          }
+        } catch {
+          // Skip files we can't access
+        }
+      }
+    } catch {
+      // Skip directories we can't read
+    }
+  }
+
+  walkDir(dirPath);
+  return scripts;
+}
+
+/**
+ * Extract the first comment block from a TypeScript file
+ */
+function extractFirstCommentBlock(filePath: string): string {
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+
+    // Get leading comments from the start of the file
+    const leadingComments = ts.getLeadingCommentRanges(content, 0);
+
+    if (!leadingComments || leadingComments.length === 0) {
+      return '';
+    }
+
+    const commentTexts: string[] = [];
+
+    for (const comment of leadingComments) {
+      const commentText = content.slice(comment.pos, comment.end);
+
+      if (comment.kind === ts.SyntaxKind.MultiLineCommentTrivia) {
+        // Block comment - extract content between /* and */
+        const inner = commentText.slice(2, -2);
+        const lines = inner.split('\n');
+
+        for (const line of lines) {
+          let cleaned = line.trim();
+          if (cleaned.startsWith('*')) {
+            cleaned = cleaned.slice(1).trim();
+          }
+          if (cleaned.length > 0) {
+            commentTexts.push(cleaned);
+          }
+        }
+      } else if (comment.kind === ts.SyntaxKind.SingleLineCommentTrivia) {
+        // Single-line comment - remove leading //
+        const cleaned = commentText.slice(2).trim();
+        if (cleaned.length > 0) {
+          commentTexts.push(cleaned);
+        }
+      }
+    }
+
+    return commentTexts.join(' ').trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Check if a filename is an auto-generated script name
+ * Auto-generated names look like: script-2025-12-04T13-47-57-abc123def456.ts
+ */
+export function isAutoGeneratedScriptName(filename: string): boolean {
+  return /^script-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-[a-f0-9]+\.ts$/.test(filename);
+}
+
+/**
+ * Extract likely resource types from a script filename
+ */
+function extractResourceTypesFromFilename(filename: string): string[] {
+  // Skip auto-generated filenames
+  if (isAutoGeneratedScriptName(filename)) {
+    return [];
+  }
+
+  // Remove extension
+  const baseName = filename.replace(/\.ts$/, '');
+
+  // Split by common separators and filter out action words
+  const actionWords = new Set([
+    'get', 'list', 'create', 'delete', 'update', 'patch', 'watch',
+    'read', 'write', 'fetch', 'query', 'run', 'execute',
+  ]);
+
+  const parts = baseName
+    .split(/[-_]/)
+    .filter((part) => part.length > 0)
+    .filter((part) => !actionWords.has(part.toLowerCase()));
+
+  // Add singular/plural variants
+  const resourceTypes: string[] = [];
+
+  for (const part of parts) {
+    resourceTypes.push(part.toLowerCase());
+    // Add singular if plural
+    if (part.endsWith('s') && part.length > 2) {
+      resourceTypes.push(part.slice(0, -1).toLowerCase());
+    }
+  }
+
+  return [...new Set(resourceTypes)];
+}
+
+/**
+ * Extract API signals from script content using TypeScript AST
+ */
+function extractApiSignals(
+  filePath: string
+): { apiClasses: string[]; resourceTypes: string[] } {
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    const sourceFile = ts.createSourceFile(
+      filePath,
+      content,
+      ts.ScriptTarget.Latest,
+      true
+    );
+
+    const apiClasses = new Set<string>();
+    const resourceTypes = new Set<string>();
+
+    // Common API class patterns (not just K8s)
+    const apiClassPatterns = [
+      // K8s
+      /^(Core|Apps|Batch|Networking|Rbac|Storage|Custom|Api|Autoscaling|Policy)V\d+Api$/,
+      // General patterns
+      /^.*Client$/,
+      /^.*Driver$/,
+      /^.*Service$/,
+    ];
+
+    function isApiClass(name: string): boolean {
+      return apiClassPatterns.some((pattern) => pattern.test(name));
+    }
+
+    function visit(node: ts.Node) {
+      // Find type references
+      if (ts.isTypeReferenceNode(node)) {
+        const typeName = node.typeName.getText(sourceFile);
+
+        // K8s types start with V followed by version number
+        if (typeName.startsWith('V') && typeName.length > 2) {
+          const secondChar = typeName.charAt(1);
+          if (secondChar >= '0' && secondChar <= '9') {
+            if (
+              !typeName.includes('Api') &&
+              !typeName.includes('List') &&
+              typeName.length < 30
+            ) {
+              resourceTypes.add(typeName);
+            }
+          }
+        }
+      }
+
+      // Find identifier references
+      if (ts.isIdentifier(node)) {
+        const name = node.text;
+        if (isApiClass(name)) {
+          apiClasses.add(name);
+        }
+      }
+
+      // Find property access
+      if (ts.isPropertyAccessExpression(node)) {
+        const propName = node.name.text;
+        if (isApiClass(propName)) {
+          apiClasses.add(propName);
+        }
+      }
+
+      ts.forEachChild(node, visit);
+    }
+
+    visit(sourceFile);
+
+    return {
+      apiClasses: [...apiClasses],
+      resourceTypes: [...resourceTypes].slice(0, MAX_RESOURCE_TYPES_FROM_CONTENT),
+    };
+  } catch {
+    return { apiClasses: [], resourceTypes: [] };
+  }
+}

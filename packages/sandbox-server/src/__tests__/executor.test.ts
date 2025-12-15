@@ -364,10 +364,10 @@ describe('Executor', () => {
       expect(result.output).toBe('function');
     });
 
-    it('allows require of prometheus-query', async () => {
+    it('allows require of @prodisco/prometheus-client', async () => {
       const result = await executor.execute(`
-        const prom = require('prometheus-query');
-        console.log(typeof prom.PrometheusDriver);
+        const prom = require('@prodisco/prometheus-client');
+        console.log(typeof prom.PrometheusClient);
       `);
 
       expect(result.success).toBe(true);

@@ -1,0 +1,42 @@
+{
+  "name": "@prodisco/prometheus-client",
+  "version": "0.1.0",
+  "description": "Typed Prometheus client with metric discovery for AI agents",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "prometheus",
+    "metrics",
+    "monitoring",
+    "typescript",
+    "ai-agents"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "prometheus-query": "^3.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

@@ -54,6 +54,8 @@
     "esbuild": "^0.27.1",
     "express": "^5.2.1",
     "@prodisco/loki-client": "file:packages/loki-client",
+    "@prodisco/search-libs": "file:packages/search-libs",
+    "@prodisco/prometheus-client": "file:packages/prometheus-client",
     "prometheus-query": "^3.3.2",
     "typescript": "^5.9.3",
     "yaml": "^2.8.2",

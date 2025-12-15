@@ -244,17 +244,17 @@ describe('kubernetes.searchTools (type documents in Orama)', () => {
       }
     });
 
-    it('filters by prometheus-query library', async () => {
+    it('filters by @prodisco/prometheus-client library', async () => {
       const result = await searchToolsTool.execute({
         query: '',
         documentType: 'type',
-        library: 'prometheus-query',
+        library: '@prodisco/prometheus-client',
         limit: 20,
       });
 
       // Should find prometheus types if any match
       for (const typeInfo of result.results) {
-        expect(typeInfo.library).toBe('prometheus-query');
+        expect(typeInfo.library).toBe('@prodisco/prometheus-client');
       }
     });
   });
@@ -292,7 +292,7 @@ describe('kubernetes.searchTools (type documents in Orama)', () => {
 
       // Should include both types and methods
       const typeResults = result.results.filter(r => r.documentType === 'type');
-      const methodResults = result.results.filter(r => r.documentType === 'kubernetes');
+      const methodResults = result.results.filter(r => r.documentType === 'method');
 
       // Deployment should match both types and methods
       expect(typeResults.length + methodResults.length).toBeGreaterThan(0);

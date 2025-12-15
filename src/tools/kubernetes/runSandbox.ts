@@ -550,7 +550,7 @@ export const runSandboxTool: ToolDefinition<RunSandboxResult, typeof RunSandboxI
     '• list: List active and recent executions. ' +
     'Params: states (optional), limit (optional), includeCompletedWithinMs (optional). ' +
     'Example: { mode: "list", states: ["running"], limit: 5 } ' +
-    'The sandbox provides: k8s, kc (pre-configured KubeConfig), console, process.env, require("prometheus-query"). ' +
+    'The sandbox provides: k8s, kc (pre-configured KubeConfig), console, process.env, require("@prodisco/prometheus-client"). ' +
     'Use searchTools first to discover APIs and find cached scripts.',
   schema: RunSandboxInputSchema,
 

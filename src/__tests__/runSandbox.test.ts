@@ -220,15 +220,15 @@ describe('kubernetes.runSandbox', () => {
     it('provides require function for whitelisted modules', async () => {
       const result = await runSandbox({
         code: `
-          const promQuery = require('prometheus-query');
-          console.log("prometheus-query loaded:", typeof promQuery !== 'undefined');
-          console.log("PrometheusDriver:", typeof promQuery.PrometheusDriver);
+          const promClient = require('@prodisco/prometheus-client');
+          console.log("prometheus-client loaded:", typeof promClient !== 'undefined');
+          console.log("PrometheusClient:", typeof promClient.PrometheusClient);
         `,
       });
 
       expect(result.success).toBe(true);
-      expect(result.output).toContain('prometheus-query loaded: true');
-      expect(result.output).toContain('PrometheusDriver: function');
+      expect(result.output).toContain('prometheus-client loaded: true');
+      expect(result.output).toContain('PrometheusClient: function');
     });
 
     it('require returns k8s for @kubernetes/client-node', async () => {
@@ -423,7 +423,7 @@ describe('kubernetes.runSandbox', () => {
 
       // May or may not find by ID, but cache should have scripts
       expect(files.length).toBeGreaterThan(0);
-    });
+    }, 30000); // Allow 30s for sandbox initialization
 
     it('does not cache failed scripts', async () => {
       const uniqueMarker = `FAIL_${Date.now()}`;
@@ -793,31 +793,31 @@ describe('kubernetes.runSandbox', () => {
   });
 
   describe('Prometheus Integration', () => {
-    it('can load prometheus-query module', async () => {
+    it('can load prometheus-client module', async () => {
       const result = await runSandbox({
         code: `
-          const { PrometheusDriver } = require('prometheus-query');
-          console.log("PrometheusDriver loaded:", typeof PrometheusDriver === 'function');
+          const { PrometheusClient } = require('@prodisco/prometheus-client');
+          console.log("PrometheusClient loaded:", typeof PrometheusClient === 'function');
         `,
       });
 
       expect(result.success).toBe(true);
-      expect(result.output).toContain('PrometheusDriver loaded: true');
+      expect(result.output).toContain('PrometheusClient loaded: true');
     });
 
-    it('can create PrometheusDriver instance', async () => {
+    it('can create PrometheusClient instance', async () => {
       const result = await runSandbox({
         code: `
-          const { PrometheusDriver } = require('prometheus-query');
-          const driver = new PrometheusDriver({
+          const { PrometheusClient } = require('@prodisco/prometheus-client');
+          const client = new PrometheusClient({
             endpoint: 'http://localhost:9090'
           });
-          console.log("Driver created:", driver.constructor.name);
+          console.log("Client created:", client.constructor.name);
         `,
       });
 
       expect(result.success).toBe(true);
-      expect(result.output).toContain('Driver created: PrometheusDriver');
+      expect(result.output).toContain('Client created: PrometheusClient');
     });
 
     it('can access PROMETHEUS_URL from environment', async () => {
