@@ -1,8 +1,8 @@
 # searchTools Reference
 
-The `kubernetes.searchTools` tool is a unified interface for discovering Kubernetes API methods, type definitions, cached scripts, and Prometheus/statistics library methods. It supports four modes designed for progressive disclosure: start with method discovery, drill into types as needed, reuse existing scripts, and analyze metrics with Prometheus.
+The `kubernetes.searchTools` tool is a unified interface for discovering methods across all supported libraries: Kubernetes API, Prometheus, Loki, and Analytics. It provides a single search mode that can filter by document type, plus a types mode for TypeScript definitions.
 
-Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8s`, `kc` (pre-configured KubeConfig), `console`, and `require("prometheus-query")`.
+Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8s`, `kc` (pre-configured KubeConfig), `console`, and `require()` for whitelisted modules including `prometheus-query`, `@prodisco/loki-client`, and analytics libraries.
 
 ---
 
@@ -10,16 +10,21 @@ Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8
 
 - [Quick Reference](#quick-reference)
 - [User Guide](#user-guide)
-  - [Methods Mode (Default)](#methods-mode-default)
+  - [Search Mode (Default)](#search-mode-default)
   - [Types Mode](#types-mode)
-  - [Scripts Mode](#scripts-mode)
-  - [Prometheus Mode](#prometheus-mode)
-  - [Analytics Mode](#analytics-mode)
+- [Document Types](#document-types)
+  - [Kubernetes Methods](#kubernetes-methods-documenttype-method)
+  - [Prometheus Methods](#prometheus-methods-documenttype-prometheus)
+  - [Prometheus Metrics](#prometheus-metrics-documenttype-prometheus-metric)
+  - [Loki Methods](#loki-methods-documenttype-loki)
+  - [Analytics Functions](#analytics-functions-documenttype-analytics)
+  - [Cached Scripts](#cached-scripts-documenttype-script)
 - [Example Workflows](#example-workflows)
   - [List Pods in a Namespace](#workflow-1-list-pods-in-a-namespace)
   - [Create a Deployment](#workflow-2-create-a-deployment)
   - [Reuse a Cached Script](#workflow-3-reuse-a-cached-script)
   - [Query P99 Latency from Prometheus](#workflow-4-query-p99-latency-from-prometheus)
+  - [Query Loki Logs](#workflow-5-query-loki-logs)
 - [Technical Architecture](#technical-architecture)
   - [Search Engine (Orama)](#search-engine-orama)
   - [Type Resolution System](#type-resolution-system)
@@ -31,87 +36,114 @@ Use `kubernetes.runSandbox` to execute discovered APIs. The sandbox provides `k8
 
 ## Quick Reference
 
-| Mode | Purpose | Required Params | Example |
-|------|---------|-----------------|---------|
-| `methods` | Find API methods | `resourceType` | `{ resourceType: "Pod" }` |
-| `types` | Get type definitions | `types` | `{ mode: "types", types: ["V1Pod"] }` |
-| `scripts` | Search cached scripts | (none) | `{ mode: "scripts", searchTerm: "logs" }` |
-| `prometheus` | Search Prometheus/stats methods | (none) | `{ mode: "prometheus", methodPattern: "mean" }` |
-| `analytics` | Search statistics/ML libraries | (none) | `{ mode: "analytics", library: "simple-statistics" }` |
+| Mode | Purpose | Key Parameters | Example |
+|------|---------|----------------|---------|
+| `search` (default) | Search all indexed methods | `query`, `documentType`, `action`, `library` | `{ query: "Pod" }` |
+| `types` | Get TypeScript type definitions | `types`, `depth` | `{ mode: "types", types: ["V1Pod"] }` |
+
+**Document Types:**
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `method` | Kubernetes API methods | `{ documentType: "method", query: "Pod" }` |
+| `prometheus` | Prometheus client methods | `{ documentType: "prometheus", action: "query" }` |
+| `prometheus-metric` | Live cluster metrics | `{ documentType: "prometheus-metric", query: "cpu" }` |
+| `loki` | Loki client methods | `{ documentType: "loki", action: "query" }` |
+| `analytics` | Statistics/ML functions | `{ documentType: "analytics", library: "simple-statistics" }` |
+| `script` | Cached sandbox scripts | `{ documentType: "script", query: "deployment" }` |
+| `all` (default) | Search all types | `{ query: "Pod" }` |
 
 ---
 
 ## User Guide
 
-### Methods Mode (Default)
+### Search Mode (Default)
 
-Search for Kubernetes API methods by resource type. This is the starting point for most workflows.
+Search for methods across all supported libraries using a unified query interface. Use `documentType` to filter by library type, and `action`/`library` for further refinement.
 
 **Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `resourceType` | string | Yes | Resource type to search (e.g., "Pod", "Deployment", "Service") |
-| `action` | string | No | Filter by action: `list`, `read`, `create`, `delete`, `patch`, `replace`, `connect`, `get`, `watch` |
-| `scope` | enum | No | Filter by scope: `namespaced`, `cluster`, or `all` (default) |
-| `exclude` | object | No | Exclude specific actions or API classes |
+| `query` | string | No | Search term - searches method names, descriptions, and resource types |
+| `documentType` | enum | No | Filter by type: `method`, `prometheus`, `prometheus-metric`, `loki`, `analytics`, `script`, or `all` (default) |
+| `action` | string | No | Filter by action/category: K8s actions (list, create, read, delete, patch) or library categories (query, labels, descriptive, regression) |
+| `library` | string | No | Filter by library/API class: K8s (CoreV1Api, AppsV1Api, etc.) or libraries (prometheus-query, @prodisco/loki-client, simple-statistics, etc.) |
+| `scope` | enum | No | Filter by scope: `namespaced`, `cluster`, or `all` (default) - K8s methods only |
+| `exclude` | object | No | Exclude specific actions or libraries: `{ actions: [...], libraries: [...] }` |
 | `limit` | number | No | Max results (default: 10, max: 50) |
 | `offset` | number | No | Skip N results for pagination (default: 0) |
 
 **Examples:**
 
 ```typescript
-// List all Pod-related methods
-{ resourceType: "Pod" }
+// Search all types for "Pod"
+{ query: "Pod" }
 
-// Find namespaced list operations for Pods
-{ resourceType: "Pod", action: "list", scope: "namespaced" }
+// Filter to Kubernetes methods only
+{ query: "Pod", documentType: "method" }
 
-// Deployment create methods
-{ resourceType: "Deployment", action: "create" }
+// Find K8s list methods for Pods
+{ query: "Pod", documentType: "method", action: "list", scope: "namespaced" }
 
-// Pod methods, excluding delete and connect actions
-{ resourceType: "Pod", exclude: { actions: ["delete", "connect"] } }
+// Find Loki query methods
+{ documentType: "loki", action: "query" }
 
-// Pod methods, excluding CoreV1Api (shows PolicyV1Api, AutoscalingV1Api, etc.)
-{ resourceType: "Pod", exclude: { apiClasses: ["CoreV1Api"] } }
+// Find Prometheus methods
+{ documentType: "prometheus", action: "query" }
+
+// Find cluster metrics
+{ documentType: "prometheus-metric", query: "cpu" }
+
+// Find analytics functions
+{ documentType: "analytics", library: "simple-statistics" }
+
+// Search cached scripts
+{ documentType: "script", query: "deployment" }
+
+// Exclude delete actions
+{ query: "Pod", exclude: { actions: ["delete"] } }
 
 // Pagination: get results 11-20
-{ resourceType: "Pod", limit: 10, offset: 10 }
+{ query: "Pod", limit: 10, offset: 10 }
 ```
 
 **Response Structure:**
 
 ```typescript
 {
-  mode: "methods",
+  mode: "search",
   summary: string,          // Human-readable result summary
-  tools: [{                 // Array of matching API methods
-    apiClass: string,       // e.g., "CoreV1Api"
-    methodName: string,     // e.g., "listNamespacedPod"
-    resourceType: string,   // e.g., "Pod"
+  results: [{               // Array of matching methods/functions
+    id: string,             // Unique identifier
+    documentType: string,   // "method", "prometheus", "loki", "analytics", "script"
+    name: string,           // Method/function name
     description: string,
-    parameters: [...],      // Method parameters with types
-    example: string,        // Sandbox-compatible usage example
-    inputSchema: {...},     // Parameter schema
-    outputSchema: {...},    // Return value schema
+    library: string,        // API class or library name
+    action: string,         // Action/category
+    parameters?: [...],     // Method parameters with types
+    returnType?: string,
+    example?: string,       // Sandbox-compatible usage example
   }],
-  totalMatches: number,     // Total matching methods (for pagination)
+  totalMatches: number,     // Total matching results (for pagination)
   relevantScripts: [{       // Cached scripts matching the search
     filename: string,
     description: string,
     apiClasses: string[]
   }],
   facets: {                 // Result breakdown for refining search
-    apiClass: { "CoreV1Api": 15, "AppsV1Api": 3 },
-    action: { "list": 5, "read": 4, "create": 3 },
+    documentType: { "method": 15, "loki": 3 },
+    library: { "CoreV1Api": 15, "AppsV1Api": 3 },
+    action: { "list": 5, "query": 4, "create": 3 },
     scope: { "namespaced": 10, "cluster": 5 }
   },
   pagination: {
     offset: number,
     limit: number,
     hasMore: boolean
-  }
+  },
+  searchTime: number,       // Search duration in ms
+  usage: string,            // Quick usage guide
 }
 ```
 
@@ -168,227 +200,135 @@ Use dot notation to navigate to nested types:
 
 ---
 
-### Scripts Mode
+## Document Types
 
-Search and discover cached scripts. Scripts are automatically cached when successfully executed via `runSandbox`.
+### Kubernetes Methods (documentType: "method")
 
-**Parameters:**
+Kubernetes API methods from `@kubernetes/client-node`. Filter by `action` for CRUD operations and `scope` for namespaced vs cluster resources.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `searchTerm` | string | No | Search term (omit to list all scripts) |
-| `limit` | number | No | Max results (default: 10, max: 50) |
-| `offset` | number | No | Skip N results for pagination |
+**Actions:** `list`, `read`, `create`, `delete`, `patch`, `replace`, `connect`, `watch`
 
-**Examples:**
+**Example:**
 
 ```typescript
-// List all cached scripts
-{ mode: "scripts" }
-
-// Search for pod-related scripts
-{ mode: "scripts", searchTerm: "pod" }
-
-// Search for logging scripts
-{ mode: "scripts", searchTerm: "logs" }
-
-// Paginate through all scripts
-{ mode: "scripts", limit: 5, offset: 5 }
-```
-
-**Response Structure:**
-
-```typescript
-{
-  mode: "scripts",
-  summary: string,
-  scripts: [{
-    filename: "script-2025-01-01T12-00-00-abc123.ts",
-    description: "Get logs from a pod in the default namespace",
-    apiClasses: ["CoreV1Api"]
-  }],
-  totalMatches: number,
-  pagination: { offset, limit, hasMore }
-}
+// Find Pod list methods
+{ documentType: "method", query: "Pod", action: "list", scope: "namespaced" }
 ```
 
 ---
 
-### Prometheus Mode
+### Prometheus Methods (documentType: "prometheus")
 
-Search for Prometheus API methods. This mode exposes methods from the `prometheus-query` library for querying Prometheus.
+Methods from the `prometheus-query` library for querying Prometheus.
 
-**Parameters:**
+**Actions (categories):** `query`, `metadata`, `alerts`
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `category` | enum | No | Filter by category: `query`, `metadata`, `alerts`, `metrics`, or `all` (default) |
-| `methodPattern` | string | No | Search pattern for method names or metric names (e.g., "query", "labels", "pod", "gpu") |
-| `limit` | number | No | Max results (default: 10, max: 50) |
-| `offset` | number | No | Skip N results for pagination (default: 0) |
-
-**Categories:**
-
-| Category | Description |
-|----------|-------------|
-| `query` | PromQL instant/range queries |
-| `metadata` | Labels, series, targets, metrics metadata |
-| `alerts` | Alerting rules and active alerts |
-| `metrics` | Discover actual metrics from your Prometheus cluster with descriptions |
-
-**Examples:**
+**Example:**
 
 ```typescript
-// List all prometheus methods
-{ mode: "prometheus" }
-
 // Find PromQL query methods
-{ mode: "prometheus", category: "query" }
-
-// Find metadata methods
-{ mode: "prometheus", category: "metadata" }
-
-// Search for specific methods
-{ mode: "prometheus", methodPattern: "query" }
-
-// Paginate through all methods
-{ mode: "prometheus", limit: 20, offset: 20 }
-
-// Discover actual metrics from cluster (requires PROMETHEUS_URL)
-{ mode: "prometheus", category: "metrics" }
-
-// Find pod-related metrics
-{ mode: "prometheus", category: "metrics", methodPattern: "pod" }
-
-// Find GPU metrics (DCGM, nvidia, etc.)
-{ mode: "prometheus", category: "metrics", methodPattern: "gpu" }
+{ documentType: "prometheus", action: "query" }
 ```
 
-**Metrics Category Response:**
-
-When using `category: "metrics"`, metrics are grouped by semantic category for easier discovery:
-
-- **STATUS & LIFECYCLE** - status, phase, ready, restart metrics
-- **CPU & COMPUTE** - cpu, throttle metrics
-- **MEMORY** - memory, mem metrics
-- **NETWORK** - network, receive, transmit, rx, tx metrics
-- **STORAGE** - storage, disk, volume, fs metrics
-- **OTHER** - everything else
-
-The response includes a "NEXT STEPS" section showing how to:
-1. Get labels for a metric using `labelNames()`
-2. Query a metric using `instantQuery()`
-
-**Response Structure:**
-
-```typescript
-{
-  mode: "prometheus",
-  summary: string,          // Human-readable result summary
-  methods: [{               // Array of matching methods
-    library: "prometheus-query",
-    className?: string,     // e.g., "PrometheusDriver"
-    methodName: string,     // e.g., "instantQuery", "rangeQuery"
-    category: string,       // e.g., "query", "metadata", "alerts"
-    description: string,
-    parameters: [...],      // Method parameters with types
-    returnType: string,
-    example: string,        // Sandbox-compatible usage example
-  }],
-  totalMatches: number,
-  libraries: {
-    "prometheus-query": { installed: true, version: "^3.3.2" }
-  },
-  usage: string,            // Quick usage guide
-  facets: {
-    category: { "query": 2, "metadata": 10, "alerts": 5 }
-  },
-  pagination: { offset, limit, hasMore }
-}
-```
-
-**Environment Configuration:**
-
-`PROMETHEUS_URL` is **required** for executing queries - set it when adding the MCP server:
-
-```bash
-claude mcp add ProDisco \
-  --env KUBECONFIG="${HOME}/.kube/config" \
-  --env PROMETHEUS_URL="http://prometheus:9090" \
-  -- npx -y @prodisco/k8s-mcp
-```
-
-If `PROMETHEUS_URL` is not set:
-- Prometheus methods are still discoverable
-- The response includes a warning that execution requires configuration
+**Environment:** Requires `PROMETHEUS_URL` for execution.
 
 ---
 
-### Analytics Mode
+### Prometheus Metrics (documentType: "prometheus-metric")
 
-Search for statistical, machine learning, and signal processing functions. Use these libraries to analyze Prometheus data for anomaly detection, trend forecasting, correlation analysis, and periodic pattern detection.
+Discover actual metrics from your Prometheus cluster. Requires `PROMETHEUS_URL` to be set.
 
-**Parameters:**
+**Example:**
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `library` | enum | No | Filter by library: `simple-statistics`, `ml-regression`, `mathjs`, `fft-js`, or `all` (default) |
-| `functionPattern` | string | No | Search pattern for function names (e.g., "mean", "regression", "matrix") |
-| `limit` | number | No | Max results (default: 10, max: 50) |
-| `offset` | number | No | Skip N results for pagination |
+```typescript
+// Find CPU-related metrics
+{ documentType: "prometheus-metric", query: "cpu" }
 
-**Available Libraries:**
+// Find GPU metrics
+{ documentType: "prometheus-metric", query: "gpu" }
+```
 
-| Library | Version | Purpose |
-|---------|---------|---------|
-| `simple-statistics` | 7.8.8 | Descriptive stats, z-scores, percentiles, linear regression, correlation |
-| `ml-regression` | 5.0.0 | Polynomial, exponential, and power regression for trend forecasting |
-| `mathjs` | 14.5.2 | Matrix operations, linear algebra, symbolic math |
-| `fft-js` | 0.0.12 | Fast Fourier Transform for detecting periodic patterns |
+---
+
+### Loki Methods (documentType: "loki")
+
+Methods from the `@prodisco/loki-client` library for querying Loki logs.
+
+**Actions (categories):** `query`, `labels`, `streams`, `health`
+
+**Methods:**
+
+| Method | Category | Description |
+|--------|----------|-------------|
+| `queryRange` | query | Query logs using LogQL, returns parsed log entries |
+| `queryRangeMatrix` | query | Query for metric results (rate, count_over_time) |
+| `labels` | labels | Get all available label names |
+| `labelValues` | labels | Get all values for a specific label |
+| `series` | streams | Get log stream series matching selectors |
+| `ready` | health | Check if Loki is ready |
 
 **Examples:**
 
 ```typescript
-// List all analytics functions
-{ mode: "analytics" }
+// Find all Loki methods
+{ documentType: "loki" }
+
+// Find Loki query methods
+{ documentType: "loki", action: "query" }
+
+// Find Loki label methods
+{ documentType: "loki", action: "labels" }
+```
+
+**Environment:** Requires `LOKI_URL` for execution.
+
+**Sandbox Usage:**
+
+```typescript
+const { LokiClient } = require('@prodisco/loki-client');
+const client = new LokiClient({ baseUrl: process.env.LOKI_URL });
+
+// Query logs from the last hour
+const result = await client.queryRange('{namespace="default"}', { since: '1h', limit: 100 });
+result.logs.forEach(log => console.log(`[${log.timestamp.toISOString()}] ${log.line}`));
+
+// Get available labels
+const labels = await client.labels({ since: '24h' });
+console.log('Labels:', labels);
+
+// Get values for a label
+const namespaces = await client.labelValues('namespace', { since: '24h' });
+console.log('Namespaces:', namespaces);
+```
+
+---
+
+### Analytics Functions (documentType: "analytics")
+
+Statistical, machine learning, and signal processing functions.
+
+**Libraries:**
+
+| Library | Purpose |
+|---------|---------|
+| `simple-statistics` | Descriptive stats, z-scores, percentiles, linear regression, correlation |
+| `ml-regression` | Polynomial, exponential, and power regression for trend forecasting |
+| `mathjs` | Matrix operations, linear algebra, symbolic math |
+| `fft-js` | Fast Fourier Transform for detecting periodic patterns |
+
+**Actions (categories):** `descriptive`, `regression`, `distribution`, `matrix`, `signal`
+
+**Examples:**
+
+```typescript
+// Find all analytics functions
+{ documentType: "analytics" }
 
 // Filter by library
-{ mode: "analytics", library: "simple-statistics" }
+{ documentType: "analytics", library: "simple-statistics" }
 
 // Search for regression functions
-{ mode: "analytics", functionPattern: "regression" }
-
-// Find correlation functions
-{ mode: "analytics", functionPattern: "correlation" }
-
-// Find FFT functions for signal analysis
-{ mode: "analytics", library: "fft-js" }
-```
-
-**Response Structure:**
-
-```typescript
-{
-  mode: "analytics",
-  summary: string,
-  functions: [{
-    library: string,         // e.g., "simple-statistics"
-    functionName: string,    // e.g., "mean", "sampleCorrelation"
-    category: string,        // e.g., "descriptive", "regression", "signal"
-    description: string,
-    parameters: [...],
-    returnType: string,
-    example: string,         // Sandbox-compatible usage example
-  }],
-  totalMatches: number,
-  libraries: {
-    "simple-statistics": { installed: true, version: "7.8.8", description: "..." },
-    "ml-regression": { installed: true, version: "5.0.0", description: "..." },
-    // ...
-  },
-  usage: string,
-  pagination: { offset, limit, hasMore }
-}
+{ documentType: "analytics", query: "regression" }
 ```
 
 **Common Use Cases:**
@@ -403,7 +343,30 @@ Search for statistical, machine learning, and signal processing functions. Use t
 | Periodic pattern detection | fft-js | `fft`, `util.fftMag`, `util.fftFreq` |
 | Matrix operations | mathjs | `matrix`, `multiply`, `inv`, `eigs` |
 
-For detailed examples with real Prometheus data, see [analytics.md](analytics.md).
+For detailed examples, see [analytics.md](analytics.md).
+
+---
+
+### Cached Scripts (documentType: "script")
+
+Scripts automatically cached when successfully executed via `runSandbox`.
+
+**Example:**
+
+```typescript
+// List all cached scripts
+{ documentType: "script" }
+
+// Search for pod-related scripts
+{ documentType: "script", query: "pod" }
+```
+
+**Usage:**
+
+```typescript
+// Run a cached script
+runSandbox({ cached: "script-2025-01-01T12-00-00-abc123.ts" })
+```
 
 ---
 
@@ -413,7 +376,7 @@ For detailed examples with real Prometheus data, see [analytics.md](analytics.md
 
 ```
 Step 1: Discover the API method
-> searchTools({ resourceType: "Pod", action: "list", scope: "namespaced" })
+> searchTools({ documentType: "method", query: "Pod", action: "list", scope: "namespaced" })
 
 Step 2: Get type definition for understanding the response
 > searchTools({ mode: "types", types: ["V1Pod.spec", "V1Pod.status"] })
@@ -431,13 +394,13 @@ Step 3: Execute in sandbox
 
 ```
 Step 1: Find the create method
-> searchTools({ resourceType: "Deployment", action: "create" })
+> searchTools({ documentType: "method", query: "Deployment", action: "create" })
 
 Step 2: Get the full Deployment spec structure
 > searchTools({ mode: "types", types: ["V1Deployment.spec"], depth: 2 })
 
 Step 3: Check for existing deployment scripts
-> searchTools({ mode: "scripts", searchTerm: "deployment" })
+> searchTools({ documentType: "script", query: "deployment" })
 
 Step 4: Execute using discovered types
 > runSandbox({ code: `...` })
@@ -447,7 +410,7 @@ Step 4: Execute using discovered types
 
 ```
 Step 1: Search for existing scripts
-> searchTools({ mode: "scripts", searchTerm: "logs" })
+> searchTools({ documentType: "script", query: "logs" })
 
 Step 2: Run cached script by filename
 > runSandbox({ cached: "script-2025-01-01T12-00-00-abc123.ts" })
@@ -458,7 +421,7 @@ Step 2: Run cached script by filename
 **Step 1:** Find query methods
 
 ```json
-{ "mode": "prometheus", "category": "query" }
+{ "documentType": "prometheus", "action": "query" }
 ```
 
 **Step 2:** Execute in sandbox:
@@ -481,6 +444,42 @@ runSandbox({ code: `
 ` })
 ```
 
+### Workflow 5: Query Loki Logs
+
+**Step 1:** Find Loki query methods
+
+```json
+{ "documentType": "loki", "action": "query" }
+```
+
+**Step 2:** Discover available labels
+
+```typescript
+runSandbox({ code: `
+  const { LokiClient } = require('@prodisco/loki-client');
+  const client = new LokiClient({ baseUrl: process.env.LOKI_URL });
+
+  const labels = await client.labels({ since: '24h' });
+  console.log('Available labels:', labels);
+
+  const apps = await client.labelValues('app', { since: '24h' });
+  console.log('Apps:', apps);
+` })
+```
+
+**Step 3:** Query logs
+
+```typescript
+runSandbox({ code: `
+  const { LokiClient } = require('@prodisco/loki-client');
+  const client = new LokiClient({ baseUrl: process.env.LOKI_URL });
+
+  const result = await client.queryRange('{app="nginx"} |= "error"', { since: '1h', limit: 50 });
+  console.log(\`Found \${result.logs.length} error logs\`);
+  result.logs.forEach(log => console.log(\`[\${log.timestamp.toISOString()}] \${log.line}\`));
+` })
+```
+
 ---
 
 ## Technical Architecture
@@ -500,17 +499,15 @@ searchTools uses [Orama](https://orama.com) for fast, typo-tolerant full-text se
 
 ```typescript
 const oramaSchema = {
-  documentType: 'enum',      // "method" | "script" | "prometheus" | "prometheus-metric"
+  documentType: 'enum',      // "method" | "script" | "prometheus" | "prometheus-metric" | "loki" | "analytics"
   resourceType: 'string',    // Searchable: "Pod", "Deployment"
-  methodName: 'string',      // Searchable: "listNamespacedPod", "mean", "rangeQuery", metric names
+  methodName: 'string',      // Searchable: "listNamespacedPod", "queryRange", "mean", metric names
   description: 'string',     // Searchable: full description text
   searchTokens: 'string',    // CamelCase-split tokens for better matching
-  action: 'enum',            // Filterable: "list", "create", "prometheus", "metric", etc.
-  scope: 'enum',             // Filterable: "namespaced", "cluster", "prometheus"
-  apiClass: 'enum',          // Filterable: "CoreV1Api", "prometheus-query", "prometheus-metric", etc.
-  id: 'string',              // Unique identifier (for scripts: "script:<filename>")
-  library: 'enum',           // Prometheus: "prometheus-query"
-  category: 'enum',          // Prometheus: "query", "metadata", "alerts"
+  action: 'enum',            // Filterable: "list", "create", "query", "labels", "descriptive", etc.
+  scope: 'enum',             // Filterable: "namespaced", "cluster", "library"
+  apiClass: 'enum',          // Filterable: "CoreV1Api", "prometheus-query", "@prodisco/loki-client", etc.
+  id: 'string',              // Unique identifier (e.g., "loki:@prodisco/loki-client:LokiClient:queryRange")
   metricType: 'enum',        // Prometheus metrics: "gauge", "counter", "histogram", "summary"
 };
 ```
@@ -530,9 +527,11 @@ boost: {
 
 The index is pre-warmed at server startup via `warmupSearchIndex()` to avoid latency on the first search. This indexes:
 
-- All API methods from 10 API classes (~500+ methods)
+- All Kubernetes API methods from 10 API classes (~500+ methods)
 - All cached scripts in `.cache/scripts/`
 - Prometheus library methods from `prometheus-query`
+- Loki library methods from `@prodisco/loki-client`
+- Analytics library methods from `simple-statistics`, `ml-regression`, `mathjs`, `fft-js`
 - **Prometheus cluster metrics** (background, non-blocking) - if `PROMETHEUS_URL` is set, actual metrics are fetched from the cluster and indexed. This runs in the background and refreshes every 30 minutes.
 
 ---
