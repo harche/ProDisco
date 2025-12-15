@@ -52,24 +52,34 @@ npm run proto:generate -w @prodisco/sandbox-server
 npm run build -w @prodisco/sandbox-server
 npm run build
 
-# Step 3: Pack sandbox-server
+# Step 3: Pack loki-client
+log "Creating npm pack for @prodisco/loki-client"
+cd "$ROOT_DIR/packages/loki-client"
+LOKI_TARBALL=$(npm pack --pack-destination "$ARTIFACT_DIR" 2>/dev/null | tail -1)
+log "Created: $LOKI_TARBALL"
+
+# Step 4: Pack sandbox-server
 log "Creating npm pack for @prodisco/sandbox-server"
 cd "$ROOT_DIR/packages/sandbox-server"
 SANDBOX_TARBALL=$(npm pack --pack-destination "$ARTIFACT_DIR" 2>/dev/null | tail -1)
 log "Created: $SANDBOX_TARBALL"
 
-# Step 4: Pack k8s-mcp
+# Step 5: Pack k8s-mcp
 log "Creating npm pack for @prodisco/k8s-mcp"
 cd "$ROOT_DIR"
 MCP_TARBALL=$(npm pack --pack-destination "$ARTIFACT_DIR" 2>/dev/null | tail -1)
 log "Created: $MCP_TARBALL"
 
-# Step 5: Initialize test directory and install packages
+# Step 6: Initialize test directory and install packages
 log "Installing packages in clean test directory"
 cd "$TEST_DIR"
 npm init -y > /dev/null
 
-# Install sandbox-server first (it's a dependency)
+# Install loki-client first (sandbox-server depends on it)
+log "Installing loki-client from tarball"
+npm install "$ARTIFACT_DIR/$LOKI_TARBALL" --save
+
+# Install sandbox-server (k8s-mcp depends on it)
 log "Installing sandbox-server from tarball"
 npm install "$ARTIFACT_DIR/$SANDBOX_TARBALL" --save
 
@@ -77,7 +87,7 @@ npm install "$ARTIFACT_DIR/$SANDBOX_TARBALL" --save
 log "Installing k8s-mcp from tarball"
 npm install "$ARTIFACT_DIR/$MCP_TARBALL" --save
 
-# Step 6: Verify package contents
+# Step 7: Verify package contents
 log "Verifying package contents"
 
 # Check sandbox-server has the critical files
@@ -104,7 +114,7 @@ if [ ! -f "$MCP_PKG_DIR/dist/server.js" ]; then
 fi
 log "  ✓ k8s-mcp package structure is correct"
 
-# Step 7: Test sandbox-server can start (TCP mode)
+# Step 8: Test sandbox-server can start (TCP mode)
 log "Testing sandbox-server startup"
 cd "$TEST_DIR"
 
@@ -132,7 +142,7 @@ if [ ! -S "/tmp/npm-pack-test-sandbox.sock" ]; then
   exit 1
 fi
 
-# Step 8: Test MCP server can start (with sandbox via socket)
+# Step 9: Test MCP server can start (with sandbox via socket)
 log "Testing MCP server startup (with sandbox subprocess)"
 
 # Kill the standalone sandbox first - MCP will spawn its own
@@ -223,7 +233,7 @@ fi
 
 log "  ✓ MCP server started successfully with sandbox subprocess"
 
-# Step 9: Test TCP mode with remote sandbox
+# Step 10: Test TCP mode with remote sandbox
 log "Testing MCP server in TCP mode (remote sandbox)"
 
 # Start sandbox server first
