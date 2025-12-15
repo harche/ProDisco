@@ -5,17 +5,20 @@ WORKDIR /app
 
 # Copy package files for dependency installation
 COPY package.json package-lock.json ./
+COPY packages/loki-client/package.json ./packages/loki-client/
 COPY packages/sandbox-server/package.json ./packages/sandbox-server/
 
 # Install dependencies (ignore prepare scripts like husky)
 RUN npm ci --ignore-scripts
 
 # Copy source files
+COPY packages/loki-client/ ./packages/loki-client/
 COPY packages/sandbox-server/ ./packages/sandbox-server/
 COPY src/ ./src/
 COPY tsconfig.json ./
 
-# Generate proto files and build
+# Generate proto files and build (loki-client must be built before sandbox-server)
+RUN npm run build -w @prodisco/loki-client
 RUN npm run proto:generate -w @prodisco/sandbox-server
 RUN npm run build -w @prodisco/sandbox-server
 RUN npm run build
@@ -27,11 +30,13 @@ WORKDIR /app
 
 # Install production dependencies
 COPY package.json package-lock.json ./
+COPY packages/loki-client/package.json ./packages/loki-client/
 COPY packages/sandbox-server/package.json ./packages/sandbox-server/
 
 RUN npm ci --omit=dev --ignore-scripts
 
 # Copy built files from builder
+COPY --from=builder /app/packages/loki-client/dist ./packages/loki-client/dist
 COPY --from=builder /app/packages/sandbox-server/dist ./packages/sandbox-server/dist
 COPY --from=builder /app/dist ./dist
 

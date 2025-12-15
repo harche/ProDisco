@@ -1,9 +1,10 @@
 # ProDisco (Progressive Disclosure Kubernetes MCP Server)
 
-ProDisco gives AI agents **Kubernetes access + Prometheus metrics + advanced analytics** through two unified tools. It follows Anthropic's [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes search tools which surface API methods, agents discover them to write code, execute it in a sandbox, and only the final console output returns to the agent.
+ProDisco gives AI agents **Kubernetes access + Prometheus metrics + Loki logs + advanced analytics** through two unified tools. It follows Anthropic's [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes search tools which surface API methods, agents discover them to write code, execute it in a sandbox, and only the final console output returns to the agent.
 
 **Beyond simple resource fetching** - ProDisco includes statistical analysis, machine learning, and signal processing libraries for in-depth cluster observability:
 
+- **Log Querying** - Search Loki logs with LogQL, explore labels, and analyze log streams
 - **Anomaly Detection** - Find outliers using z-scores and standard deviations
 - **Trend Forecasting** - Predict resource exhaustion with polynomial regression
 - **Correlation Analysis** - Discover relationships between metrics with Pearson correlation
@@ -80,6 +81,7 @@ claude mcp remove ProDisco
 | `KUBECONFIG` | No | Path to kubeconfig (defaults to `~/.kube/config`) |
 | `K8S_CONTEXT` | No | Kubernetes context (defaults to current context) |
 | `PROMETHEUS_URL` | No | Prometheus server URL for metrics queries |
+| `LOKI_URL` | No | Loki server URL for log queries |
 
 > **Important:** Export environment variables before running `claude mcp add`. The `--env` flag may not reliably pass variables to the MCP server process.
 
@@ -176,44 +178,61 @@ ProDisco exposes two tools:
 
 ### kubernetes.searchTools
 
-A unified search interface for discovering Kubernetes API methods, type definitions, cached scripts, and Prometheus methods.
+A unified search interface for discovering methods across all supported libraries: Kubernetes API, Prometheus, Loki, and Analytics.
 
 | Mode | Purpose | Example |
 |------|---------|---------|
-| `methods` | Find Kubernetes API methods | `{ resourceType: "Pod", action: "list" }` |
+| `search` (default) | Search all indexed methods | `{ query: "Pod" }` or `{ documentType: "loki" }` |
 | `types` | Get TypeScript type definitions | `{ mode: "types", types: ["V1Pod.spec"] }` |
-| `scripts` | Search cached scripts | `{ mode: "scripts", searchTerm: "logs" }` |
-| `prometheus` | Find Prometheus API methods | `{ mode: "prometheus", category: "query" }` |
-| `analytics` | Search statistics/ML libraries | `{ mode: "analytics", library: "simple-statistics" }` |
+
+**Document Types:**
+
+| Type | Description |
+|------|-------------|
+| `kubernetes` | Kubernetes API methods (CoreV1Api, AppsV1Api, etc.) |
+| `prometheus` | Prometheus client methods (query, metadata, alerts) |
+| `prometheus-metric` | Live Prometheus metrics (requires PROMETHEUS_URL) |
+| `loki` | Loki client methods (queryRange, labels, series) |
+| `analytics` | Statistics/ML libraries (simple-statistics, ml-regression, etc.) |
+| `script` | Cached sandbox scripts |
+| `all` | Search all document types (default) |
 
 **Examples:**
 
 ```typescript
-// Find Pod list methods
-{ resourceType: "Pod", action: "list", scope: "namespaced" }
+// Find Pod-related methods (searches all types)
+{ query: "Pod" }
+
+// Filter by document type
+{ query: "Pod", documentType: "kubernetes" }
+
+// Find Loki query methods
+{ documentType: "loki", action: "query" }
+
+// Find Prometheus methods by category
+{ documentType: "prometheus", action: "query" }
+
+// Discover cluster metrics
+{ documentType: "prometheus-metric", query: "cpu" }
+
+// Find analytics functions
+{ documentType: "analytics", library: "simple-statistics" }
+
+// Search cached scripts
+{ documentType: "script", query: "deployment" }
 
 // Get type definitions with path navigation
 { mode: "types", types: ["V1Deployment.spec.template.spec"] }
 
-// Search cached scripts
-{ mode: "scripts", searchTerm: "pod" }
-
-// Find Prometheus query methods
-{ mode: "prometheus", category: "query" }
-
-// Discover cluster metrics
-{ mode: "prometheus", category: "metrics", methodPattern: "gpu" }
-
-// Find analytics functions for statistical analysis
-{ mode: "analytics", library: "simple-statistics" }
-{ mode: "analytics", functionPattern: "regression" }
+// Exclude certain actions/libraries
+{ query: "Pod", exclude: { actions: ["delete"], libraries: ["CustomObjectsApi"] } }
 ```
 
 For comprehensive documentation, see [docs/search-tools.md](docs/search-tools.md).
 
 ### kubernetes.runSandbox
 
-Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus operations.
+Execute TypeScript code in a sandboxed environment for Kubernetes, Prometheus, and Loki operations.
 
 **Execution Modes:**
 
@@ -234,11 +253,12 @@ Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus
 - `require()` - Whitelisted modules:
   - `@kubernetes/client-node` - Kubernetes API client
   - `prometheus-query` - Prometheus PromQL queries
+  - `@prodisco/loki-client` - Loki LogQL queries
   - `simple-statistics` - Descriptive stats, z-scores, regression
   - `ml-regression` - Polynomial, exponential, power regression
   - `mathjs` - Matrix operations, linear algebra
   - `fft-js` - Fast Fourier Transform for signal analysis
-- `process.env` - Environment variables (PROMETHEUS_URL, etc.)
+- `process.env` - Environment variables (PROMETHEUS_URL, LOKI_URL, etc.)
 
 **Examples:**
 
@@ -266,6 +286,16 @@ Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus
 
 // Cancel a running execution
 { mode: "cancel", executionId: "abc-123" }
+
+// Query Loki logs
+{
+  code: `
+    const { LokiClient } = require('@prodisco/loki-client');
+    const client = new LokiClient({ baseUrl: process.env.LOKI_URL });
+    const result = await client.queryRange('{namespace="default"}', { since: '1h', limit: 100 });
+    result.logs.forEach(log => console.log(\`[\${log.timestamp.toISOString()}] \${log.line}\`));
+  `
+}
 ```
 
 For architecture details, see [docs/grpc-sandbox-architecture.md](docs/grpc-sandbox-architecture.md).
@@ -289,6 +319,7 @@ ProDisco goes beyond simple resource fetching - it provides **statistical analys
 
 | Use Case | Prompt |
 |----------|--------|
+| **Log Analysis** | "Query Loki for error logs from the nginx app in the last hour. Show me the most common error patterns." |
 | **Cluster Health** | "Analyze CPU and memory usage across all pods. Calculate mean, median, standard deviation, and identify outliers using z-scores. Show pods above the 95th percentile." |
 | **Memory Leaks** | "Check for memory leaks. Fetch memory usage over 2 hours and use linear regression to identify pods with increasing memory." |
 | **Anomaly Detection** | "Analyze network traffic and detect anomalies. Find receive/transmit rates more than 2 standard deviations from normal." |
