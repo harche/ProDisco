@@ -43,6 +43,11 @@ COPY packages/sandbox-server/package.json ./packages/sandbox-server/
 
 RUN npm ci --omit=dev --ignore-scripts
 
+# Optional: install additional libraries (from user config) into node_modules at build time
+# Example: --build-arg EXTRA_NPM_PACKAGES="@aws-sdk/client-s3 @google-cloud/storage"
+ARG EXTRA_NPM_PACKAGES=""
+RUN if [ -n "$EXTRA_NPM_PACKAGES" ]; then npm install --omit=dev --no-audit --no-fund --ignore-scripts $EXTRA_NPM_PACKAGES; fi
+
 # Copy built files from builder
 COPY --from=builder /app/packages/search-libs/dist ./packages/search-libs/dist
 COPY --from=builder /app/packages/prometheus-client/dist ./packages/prometheus-client/dist

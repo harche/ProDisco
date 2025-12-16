@@ -374,6 +374,16 @@ describe('Executor', () => {
       expect(result.output).toBe('function');
     });
 
+    it('allows require of package subpaths when the package is allowlisted', async () => {
+      const result = await executor.execute(`
+        const sub = require('@kubernetes/client-node/dist/index');
+        console.log(typeof sub.KubeConfig);
+      `);
+
+      expect(result.success).toBe(true);
+      expect(result.output).toBe('function');
+    });
+
     it('blocks require of unauthorized modules', async () => {
       const result = await executor.execute(`
         const fs = require('fs');
@@ -391,37 +401,28 @@ describe('Executor', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain("Module 'child_process' not available in sandbox");
     });
+
+    it('respects allowlist overrides (blocks non-allowlisted packages)', async () => {
+      const limited = new Executor({ allowedModules: ['simple-statistics'] });
+      const result = await limited.execute(`
+        const k8s = require('@kubernetes/client-node');
+        console.log(typeof k8s);
+      `);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Module '@kubernetes/client-node' not available in sandbox");
+    });
   });
 
-  describe('Sandbox Context - Kubernetes', () => {
-    it('provides pre-configured KubeConfig (kc)', async () => {
-      const result = await executor.execute(`
-        console.log(typeof kc);
-        console.log(typeof kc.getCurrentContext);
-      `);
-
-      expect(result.success).toBe(true);
-      expect(result.output).toBe('object\nfunction');
-    });
-
-    it('provides k8s library', async () => {
+  describe('Sandbox Context - Globals', () => {
+    it('does not provide any Kubernetes convenience globals (k8s/kc)', async () => {
       const result = await executor.execute(`
         console.log(typeof k8s);
-        console.log(typeof k8s.KubeConfig);
+        console.log(typeof kc);
       `);
 
       expect(result.success).toBe(true);
-      expect(result.output).toBe('object\nfunction');
-    });
-
-    it('can create API clients from kc', async () => {
-      const result = await executor.execute(`
-        const api = kc.makeApiClient(k8s.CoreV1Api);
-        console.log(typeof api);
-      `);
-
-      expect(result.success).toBe(true);
-      expect(result.output).toBe('object');
+      expect(result.output).toBe('undefined\nundefined');
     });
   });
 

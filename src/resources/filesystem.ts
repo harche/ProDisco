@@ -13,7 +13,7 @@ export interface FileResource {
   mimeType?: string;
 }
 
-export const PUBLIC_GENERATED_ROOT_PATH = '/dist/tools/kubernetes';
+export const PUBLIC_GENERATED_ROOT_PATH = '/dist/tools/prodisco';
 export const PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH = PUBLIC_GENERATED_ROOT_PATH.endsWith('/')
   ? PUBLIC_GENERATED_ROOT_PATH
   : `${PUBLIC_GENERATED_ROOT_PATH}/`;

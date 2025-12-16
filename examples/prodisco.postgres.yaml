@@ -1,0 +1,4 @@
+libraries:
+  - name: "pg-mem"
+    description: "In-memory Postgres for local testing"
+

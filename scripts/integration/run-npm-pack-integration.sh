@@ -200,7 +200,7 @@ proc.stderr.on('data', (data) => {
   if (text.includes('Sandbox gRPC server is ready')) {
     foundSandboxReady = true;
   }
-  if (text.includes('Kubernetes MCP server ready on stdio')) {
+  if (text.includes('ProDisco MCP server ready on stdio')) {
     foundReady = true;
   }
 });
@@ -304,7 +304,7 @@ proc.stderr.on('data', (data) => {
   if (text.includes('Remote sandbox server is ready')) {
     foundRemoteConnect = true;
   }
-  if (text.includes('Kubernetes MCP server ready on stdio')) {
+  if (text.includes('ProDisco MCP server ready on stdio')) {
     foundMcpReady = true;
   }
 });

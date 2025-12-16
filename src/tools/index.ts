@@ -1,5 +1,5 @@
 import type { AnyToolDefinition } from './types.js';
-import { kubernetesTools } from './kubernetes/index.js';
+import { prodiscoTools } from './prodisco/index.js';
 
-export const tools: AnyToolDefinition[] = [...kubernetesTools];
+export const tools: AnyToolDefinition[] = [...prodiscoTools];
 

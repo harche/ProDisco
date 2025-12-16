@@ -1,0 +1,4 @@
+libraries:
+  - name: "@kubernetes/client-node"
+    description: "Kubernetes API client"
+

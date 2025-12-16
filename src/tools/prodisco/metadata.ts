@@ -1,5 +1,5 @@
 /**
- * Kubernetes tool metadata
+ * ProDisco tool metadata
  *
  * Exports:
  * - searchTools: API method discovery (mode: 'methods'), type definitions (mode: 'types'),
@@ -10,7 +10,7 @@
 import { searchToolsTool } from './searchTools.js';
 import { runSandboxTool } from './runSandbox.js';
 
-export const kubernetesToolMetadata = [
+export const prodiscoToolMetadata = [
   {
     tool: searchToolsTool,
     sourceModulePath: './searchTools.ts',
