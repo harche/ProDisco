@@ -1,12 +1,9 @@
 import vm from 'node:vm';
 import { transform } from 'esbuild';
 import * as k8s from '@kubernetes/client-node';
-import * as prometheusQuery from 'prometheus-query';
+import * as prometheusClient from '@prodisco/prometheus-client';
 // Analytics libraries for advanced data analysis
 import * as simpleStatistics from 'simple-statistics';
-import * as mlRegression from 'ml-regression';
-import * as mathjs from 'mathjs';
-import fftJsDefault from 'fft-js';
 // Loki client for log querying
 import * as lokiClient from '@prodisco/loki-client';
 
@@ -91,25 +88,12 @@ export class Executor {
         k8s,                           // Full @kubernetes/client-node library
         kc: this.kc,                   // Pre-configured KubeConfig
 
-        // Module loading (for all libraries including prometheus-query and analytics)
+        // Module loading (for all libraries including prometheus-client and analytics)
         require: (mod: string) => {
           if (mod === '@kubernetes/client-node') return k8s;
-          if (mod === 'prometheus-query') return prometheusQuery;
+          if (mod === '@prodisco/prometheus-client') return prometheusClient;
           // Analytics libraries
           if (mod === 'simple-statistics') return simpleStatistics;
-          if (mod === 'ml-regression') return mlRegression;
-          if (mod === 'mathjs') return mathjs;
-          if (mod === 'fft-js') {
-            // Use default export and spread nested util to ensure all properties cross VM boundary
-            return {
-              fft: fftJsDefault.fft,
-              ifft: fftJsDefault.ifft,
-              util: {
-                fftMag: fftJsDefault.util.fftMag,
-                fftFreq: fftJsDefault.util.fftFreq,
-              },
-            };
-          }
           // Loki client for log querying
           if (mod === '@prodisco/loki-client' || mod === 'loki-client') return lokiClient;
           throw new Error(`Module '${mod}' not available in sandbox`);
@@ -251,22 +235,9 @@ export class Executor {
         kc: this.kc,
         require: (mod: string) => {
           if (mod === '@kubernetes/client-node') return k8s;
-          if (mod === 'prometheus-query') return prometheusQuery;
+          if (mod === '@prodisco/prometheus-client') return prometheusClient;
           // Analytics libraries
           if (mod === 'simple-statistics') return simpleStatistics;
-          if (mod === 'ml-regression') return mlRegression;
-          if (mod === 'mathjs') return mathjs;
-          if (mod === 'fft-js') {
-            // Use default export and spread nested util to ensure all properties cross VM boundary
-            return {
-              fft: fftJsDefault.fft,
-              ifft: fftJsDefault.ifft,
-              util: {
-                fftMag: fftJsDefault.util.fftMag,
-                fftFreq: fftJsDefault.util.fftFreq,
-              },
-            };
-          }
           // Loki client for log querying
           if (mod === '@prodisco/loki-client' || mod === 'loki-client') return lokiClient;
           throw new Error(`Module '${mod}' not available in sandbox`);

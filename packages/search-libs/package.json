@@ -1,0 +1,41 @@
+{
+  "name": "@prodisco/search-libs",
+  "version": "0.1.0",
+  "description": "Generic TypeScript library indexing and search using Orama",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@orama/orama": "^3.1.5",
+    "typescript": "^5.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "vitest": "^4.0.15"
+  },
+  "keywords": [
+    "typescript",
+    "search",
+    "indexing",
+    "orama",
+    "ast",
+    "type-extraction"
+  ],
+  "author": "Harshal Patil",
+  "license": "MIT"
+}

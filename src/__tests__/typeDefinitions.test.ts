@@ -3,9 +3,9 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import { searchToolsTool, searchToolsService } from '../tools/kubernetes/searchTools.js';
 
 // Helper to execute type search using the new unified approach
-async function executeTypeSearch(query: string, options?: { library?: string; limit?: number }) {
+async function executeTypeSearch(methodName: string, options?: { library?: string; limit?: number }) {
   const result = await searchToolsTool.execute({
-    query,
+    methodName,
     documentType: 'type',
     library: options?.library,
     limit: options?.limit || 10,
@@ -18,7 +18,7 @@ describe('kubernetes.searchTools (type documents in Orama)', () => {
   beforeAll(async () => {
     // Ensure the search index is initialized
     await searchToolsService.initialize();
-  });
+  }, 30000);
 
   afterAll(async () => {
     await searchToolsService.shutdown();
@@ -232,7 +232,7 @@ describe('kubernetes.searchTools (type documents in Orama)', () => {
   describe('Library Filtering', () => {
     it('filters by @kubernetes/client-node library', async () => {
       const result = await searchToolsTool.execute({
-        query: 'Pod',
+        methodName: 'Pod',
         documentType: 'type',
         library: '@kubernetes/client-node',
         limit: 20,
@@ -244,17 +244,17 @@ describe('kubernetes.searchTools (type documents in Orama)', () => {
       }
     });
 
-    it('filters by prometheus-query library', async () => {
+    it('filters by @prodisco/prometheus-client library', async () => {
       const result = await searchToolsTool.execute({
-        query: '',
+        methodName: '',
         documentType: 'type',
-        library: 'prometheus-query',
+        library: '@prodisco/prometheus-client',
         limit: 20,
       });
 
       // Should find prometheus types if any match
       for (const typeInfo of result.results) {
-        expect(typeInfo.library).toBe('prometheus-query');
+        expect(typeInfo.library).toBe('@prodisco/prometheus-client');
       }
     });
   });
@@ -269,7 +269,7 @@ describe('kubernetes.searchTools (type documents in Orama)', () => {
 
     it('can filter by category (type kind)', async () => {
       const result = await searchToolsTool.execute({
-        query: '',
+        methodName: '',
         documentType: 'type',
         category: 'interface',
         library: '@prodisco/loki-client',
@@ -286,13 +286,13 @@ describe('kubernetes.searchTools (type documents in Orama)', () => {
   describe('Unified Search', () => {
     it('returns types when searching without documentType filter', async () => {
       const result = await searchToolsTool.execute({
-        query: 'Deployment',
+        methodName: 'Deployment',
         limit: 20,
       });
 
       // Should include both types and methods
       const typeResults = result.results.filter(r => r.documentType === 'type');
-      const methodResults = result.results.filter(r => r.documentType === 'kubernetes');
+      const methodResults = result.results.filter(r => r.documentType === 'method');
 
       // Deployment should match both types and methods
       expect(typeResults.length + methodResults.length).toBeGreaterThan(0);
@@ -300,7 +300,7 @@ describe('kubernetes.searchTools (type documents in Orama)', () => {
 
     it('facets include type document counts', async () => {
       const result = await searchToolsTool.execute({
-        query: 'Pod',
+        methodName: 'Pod',
         limit: 10,
       });
 

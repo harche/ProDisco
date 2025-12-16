@@ -196,32 +196,29 @@ A unified search interface for discovering methods across all supported librarie
 **Examples:**
 
 ```typescript
-// Find Pod-related methods and types (searches all document types)
-{ query: "Pod" }
+// Find Pod-related methods by name
+{ methodName: "listPod" }
 
-// Filter by document type
-{ query: "Pod", documentType: "kubernetes" }
+// Filter by document type and library
+{ methodName: "Pod", documentType: "method", library: "@kubernetes/client-node" }
 
 // Find Loki query methods
-{ documentType: "loki", category: "query" }
+{ documentType: "method", library: "@prodisco/loki-client", category: "query" }
 
-// Find Prometheus methods by category
-{ documentType: "prometheus", category: "query" }
-
-// Discover cluster metrics
-{ documentType: "prometheus-metric", query: "cpu" }
+// Find Prometheus methods
+{ methodName: "executeRange", library: "@prodisco/prometheus-client" }
 
 // Find analytics functions
-{ documentType: "analytics", library: "simple-statistics" }
+{ documentType: "function", library: "simple-statistics" }
 
 // Search cached scripts
-{ documentType: "script", query: "deployment" }
+{ documentType: "script", methodName: "deployment" }
 
 // Get TypeScript type definitions
-{ query: "V1Deployment", documentType: "type" }
+{ methodName: "V1Deployment", documentType: "type" }
 
 // Exclude certain categories/libraries
-{ query: "Pod", exclude: { categories: ["delete"], libraries: ["CustomObjectsApi"] } }
+{ methodName: "Pod", exclude: { categories: ["delete"], libraries: ["CustomObjectsApi"] } }
 ```
 
 For comprehensive documentation, see [docs/search-tools.md](docs/search-tools.md).
@@ -248,7 +245,7 @@ Execute TypeScript code in a sandboxed environment for Kubernetes, Prometheus, a
 - `console` - Captured output (log, error, warn, info)
 - `require()` - Whitelisted modules:
   - `@kubernetes/client-node` - Kubernetes API client
-  - `prometheus-query` - Prometheus PromQL queries
+  - `@prodisco/prometheus-client` - Prometheus PromQL queries with MetricSearchEngine for semantic metric discovery
   - `@prodisco/loki-client` - Loki LogQL queries
   - `simple-statistics` - Descriptive stats, z-scores, regression
   - `ml-regression` - Polynomial, exponential, power regression
@@ -282,6 +279,25 @@ Execute TypeScript code in a sandboxed environment for Kubernetes, Prometheus, a
 
 // Cancel a running execution
 { mode: "cancel", executionId: "abc-123" }
+
+// Query Prometheus metrics
+{
+  code: `
+    const { PrometheusClient, MetricSearchEngine } = require('@prodisco/prometheus-client');
+    const client = new PrometheusClient({ endpoint: process.env.PROMETHEUS_URL });
+
+    // Discover metrics semantically
+    const search = new MetricSearchEngine(client);
+    const metrics = await search.search("memory usage");
+    console.log('Found metrics:', metrics.map(m => m.name));
+
+    // Execute PromQL query
+    const end = new Date();
+    const start = new Date(end.getTime() - 60 * 60 * 1000);
+    const result = await client.executeRange('node_memory_MemAvailable_bytes', { start, end, step: '1m' });
+    console.log(\`Got \${result.data.length} time series\`);
+  `
+}
 
 // Query Loki logs
 {

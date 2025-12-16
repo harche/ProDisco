@@ -374,14 +374,14 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
     it('queries up metric', async () => {
       const result = await client.execute({
         code: `
-          const prom = require('prometheus-query');
-          const driver = new prom.PrometheusDriver({
+          const { PrometheusClient } = require('@prodisco/prometheus-client');
+          const prom = new PrometheusClient({
             endpoint: 'http://localhost:9090',
           });
-          const response = await driver.instantQuery('up');
+          const response = await prom.execute('up');
           console.log(JSON.stringify({
             resultType: response.resultType,
-            resultCount: response.result.length,
+            resultCount: response.data.length,
           }));
         `,
         timeoutMs: 30000,
@@ -396,14 +396,14 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
     it('queries container metrics', async () => {
       const result = await client.execute({
         code: `
-          const prom = require('prometheus-query');
-          const driver = new prom.PrometheusDriver({
+          const { PrometheusClient } = require('@prodisco/prometheus-client');
+          const prom = new PrometheusClient({
             endpoint: 'http://localhost:9090',
           });
-          const response = await driver.instantQuery('container_cpu_usage_seconds_total');
+          const response = await prom.execute('container_cpu_usage_seconds_total');
           console.log(JSON.stringify({
             resultType: response.resultType,
-            hasResults: response.result.length > 0,
+            hasResults: response.data.length > 0,
           }));
         `,
         timeoutMs: 30000,
@@ -417,14 +417,14 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
     it('queries container memory metrics', async () => {
       const result = await client.execute({
         code: `
-          const prom = require('prometheus-query');
-          const driver = new prom.PrometheusDriver({
+          const { PrometheusClient } = require('@prodisco/prometheus-client');
+          const prom = new PrometheusClient({
             endpoint: 'http://localhost:9090',
           });
-          const response = await driver.instantQuery('container_memory_usage_bytes{container!=""}');
+          const response = await prom.execute('container_memory_usage_bytes{container!=""}');
           console.log(JSON.stringify({
             resultType: response.resultType,
-            containerCount: response.result.length,
+            containerCount: response.data.length,
           }));
         `,
         timeoutMs: 30000,
@@ -439,16 +439,16 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
     it('performs range query', async () => {
       const result = await client.execute({
         code: `
-          const prom = require('prometheus-query');
-          const driver = new prom.PrometheusDriver({
+          const { PrometheusClient } = require('@prodisco/prometheus-client');
+          const prom = new PrometheusClient({
             endpoint: 'http://localhost:9090',
           });
           const end = new Date();
           const start = new Date(end.getTime() - 5 * 60 * 1000); // 5 minutes ago
-          const response = await driver.rangeQuery('up', start, end, 60);
+          const response = await prom.executeRange('up', { start, end, step: 60 });
           console.log(JSON.stringify({
             resultType: response.resultType,
-            seriesCount: response.result.length,
+            seriesCount: response.data.length,
           }));
         `,
         timeoutMs: 30000,
@@ -463,14 +463,14 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
     it('queries node metrics', async () => {
       const result = await client.execute({
         code: `
-          const prom = require('prometheus-query');
-          const driver = new prom.PrometheusDriver({
+          const { PrometheusClient } = require('@prodisco/prometheus-client');
+          const prom = new PrometheusClient({
             endpoint: 'http://localhost:9090',
           });
-          const response = await driver.instantQuery('node_memory_MemTotal_bytes');
-          const nodes = response.result.map(r => ({
-            instance: r.metric.labels.instance,
-            memoryBytes: parseFloat(r.value.value),
+          const response = await prom.execute('node_memory_MemTotal_bytes');
+          const nodes = response.data.map(r => ({
+            instance: r.labels.instance,
+            memoryBytes: r.samples.length > 0 ? r.samples[0].value : 0,
           }));
           console.log(JSON.stringify(nodes));
         `,
@@ -493,15 +493,15 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
           const podNames = podsResponse.items.map(p => p.metadata?.name).filter(Boolean);
 
           // Query Prometheus for container CPU metrics (available from cadvisor)
-          const prom = require('prometheus-query');
-          const driver = new prom.PrometheusDriver({
+          const { PrometheusClient } = require('@prodisco/prometheus-client');
+          const prom = new PrometheusClient({
             endpoint: 'http://localhost:9090',
           });
-          const response = await driver.instantQuery('container_cpu_usage_seconds_total{container!=""}');
+          const response = await prom.execute('container_cpu_usage_seconds_total{container!=""}');
 
           console.log(JSON.stringify({
             k8sPodCount: podNames.length,
-            prometheusMetricCount: response.result.length,
+            prometheusMetricCount: response.data.length,
           }));
         `,
         timeoutMs: 30000,

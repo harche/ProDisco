@@ -5,6 +5,8 @@ WORKDIR /app
 
 # Copy package files for dependency installation
 COPY package.json package-lock.json ./
+COPY packages/search-libs/package.json ./packages/search-libs/
+COPY packages/prometheus-client/package.json ./packages/prometheus-client/
 COPY packages/loki-client/package.json ./packages/loki-client/
 COPY packages/sandbox-server/package.json ./packages/sandbox-server/
 
@@ -12,12 +14,16 @@ COPY packages/sandbox-server/package.json ./packages/sandbox-server/
 RUN npm ci --ignore-scripts
 
 # Copy source files
+COPY packages/search-libs/ ./packages/search-libs/
+COPY packages/prometheus-client/ ./packages/prometheus-client/
 COPY packages/loki-client/ ./packages/loki-client/
 COPY packages/sandbox-server/ ./packages/sandbox-server/
 COPY src/ ./src/
 COPY tsconfig.json ./
 
-# Generate proto files and build (loki-client must be built before sandbox-server)
+# Generate proto files and build (dependencies must be built before sandbox-server)
+RUN npm run build -w @prodisco/search-libs
+RUN npm run build -w @prodisco/prometheus-client
 RUN npm run build -w @prodisco/loki-client
 RUN npm run proto:generate -w @prodisco/sandbox-server
 RUN npm run build -w @prodisco/sandbox-server
@@ -30,12 +36,16 @@ WORKDIR /app
 
 # Install production dependencies
 COPY package.json package-lock.json ./
+COPY packages/search-libs/package.json ./packages/search-libs/
+COPY packages/prometheus-client/package.json ./packages/prometheus-client/
 COPY packages/loki-client/package.json ./packages/loki-client/
 COPY packages/sandbox-server/package.json ./packages/sandbox-server/
 
 RUN npm ci --omit=dev --ignore-scripts
 
 # Copy built files from builder
+COPY --from=builder /app/packages/search-libs/dist ./packages/search-libs/dist
+COPY --from=builder /app/packages/prometheus-client/dist ./packages/prometheus-client/dist
 COPY --from=builder /app/packages/loki-client/dist ./packages/loki-client/dist
 COPY --from=builder /app/packages/sandbox-server/dist ./packages/sandbox-server/dist
 COPY --from=builder /app/dist ./dist

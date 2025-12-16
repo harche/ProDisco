@@ -24,6 +24,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: npm run build -w @prodisco/search-libs
+      - run: npm run build -w @prodisco/prometheus-client
       - run: npm run build -w @prodisco/loki-client
       - run: npm run proto:generate -w @prodisco/sandbox-server
       - run: npm run build -w @prodisco/sandbox-server
@@ -48,6 +50,8 @@ jobs:
 
       - name: Build packages
         run: |
+          npm run build -w @prodisco/search-libs
+          npm run build -w @prodisco/prometheus-client
           npm run build -w @prodisco/loki-client
           npm run proto:generate -w @prodisco/sandbox-server
           npm run build -w @prodisco/sandbox-server
@@ -127,6 +131,8 @@ jobs:
 
       - name: Build packages
         run: |
+          npm run build -w @prodisco/search-libs
+          npm run build -w @prodisco/prometheus-client
           npm run build -w @prodisco/loki-client
           npm run proto:generate -w @prodisco/sandbox-server
           npm run build -w @prodisco/sandbox-server
@@ -203,6 +209,8 @@ jobs:
 
       - name: Build packages
         run: |
+          npm run build -w @prodisco/search-libs
+          npm run build -w @prodisco/prometheus-client
           npm run build -w @prodisco/loki-client
           npm run proto:generate -w @prodisco/sandbox-server
           npm run build -w @prodisco/sandbox-server
@@ -327,6 +335,8 @@ jobs:
 
       - name: Build packages
         run: |
+          npm run build -w @prodisco/search-libs
+          npm run build -w @prodisco/prometheus-client
           npm run build -w @prodisco/loki-client
           npm run proto:generate -w @prodisco/sandbox-server
           npm run build -w @prodisco/sandbox-server
