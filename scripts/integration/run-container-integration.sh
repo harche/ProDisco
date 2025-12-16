@@ -58,7 +58,10 @@ if [ -d "packages/sandbox-server/dist" ] && [ -f "packages/sandbox-server/dist/s
   log "sandbox-server already built, skipping build step"
 else
   log "Building packages"
+  npm run build -w @prodisco/search-libs
+  npm run build -w @prodisco/prometheus-client
   npm run build -w @prodisco/loki-client
+  npm run proto:generate -w @prodisco/sandbox-server
   npm run build -w @prodisco/sandbox-server
 fi
 

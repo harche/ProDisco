@@ -25,8 +25,8 @@ import { LibraryIndexer } from '@prodisco/search-libs';
 const indexer = new LibraryIndexer({
   packages: [
     { name: '@kubernetes/client-node' },
-    { name: 'prometheus-query' },
-    { name: 'mathjs', typeFilter: /^(Matrix|BigNumber)$/ },
+    { name: '@prodisco/prometheus-client' },
+    { name: 'simple-statistics' },
   ],
 });
 

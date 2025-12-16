@@ -93,7 +93,7 @@ const searchTools = async (input: {
   offset?: number;
 }) => {
   const result = await search({
-    query: input.resourceType,
+    methodName: input.resourceType,
     documentType: 'method',
     library: '@kubernetes/client-node',
     category: input.action,
@@ -162,7 +162,7 @@ const searchScripts = async (input: {
   // When no searchTerm, use 'script' since all scripts have 'script' in their searchTokens
   // This ensures Orama full-text search returns results
   const result = await search({
-    query: input.searchTerm || 'script',
+    methodName: input.searchTerm || 'script',
     documentType: 'script',
     limit: input.limit,
     offset: input.offset,
@@ -1364,7 +1364,7 @@ const searchPrometheus = async (input: {
 }) => {
   // Use 'PrometheusDriver' as default query to find Prometheus methods when no pattern specified
   const result = await search({
-    query: input.methodPattern || 'PrometheusDriver',
+    methodName: input.methodPattern || 'PrometheusDriver',
     documentType: 'method',
     library: '@prodisco/prometheus-client',
     category: input.category !== 'all' ? input.category : undefined,
@@ -1613,7 +1613,7 @@ const searchAnalytics = async (input: {
   offset?: number;
 }) => {
   const result = await search({
-    query: input.functionPattern,
+    methodName: input.functionPattern,
     documentType: 'function',
     library: input.library !== 'all' ? input.library : undefined,
     limit: input.limit,
@@ -2085,7 +2085,7 @@ const searchLoki = async (input: {
 }) => {
   // Use 'LokiClient' as default query to find Loki methods when no pattern specified
   const result = await search({
-    query: input.lokiMethodPattern || 'LokiClient',
+    methodName: input.lokiMethodPattern || 'LokiClient',
     documentType: 'method',
     library: '@prodisco/loki-client',
     category: input.lokiCategory !== 'all' ? input.lokiCategory : undefined,

@@ -45,11 +45,11 @@ const INDEXED_LIBRARIES = [
 // ============================================================================
 
 const SearchToolsInputSchema = z.object({
-  // === Search parameters ===
-  query: z
+  // === Search by name ===
+  methodName: z
     .string()
     .optional()
-    .describe('Search term - searches names, descriptions, and types'),
+    .describe('Search for API methods by name (e.g., "readLog", "listPod", "executeRange"). Searches method names in the indexed documentation.'),
 
   // === Filter parameters ===
   documentType: z
@@ -317,7 +317,7 @@ export const searchToolsService = new SearchToolsService();
  */
 async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<SearchToolsResult> {
   const {
-    query = '',
+    methodName,
     documentType = 'all',
     category,
     library,
@@ -328,7 +328,7 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
 
   // Execute search
   const searchResult = await searchToolsService.search({
-    query,
+    query: methodName,
     documentType,
     category,
     library,
@@ -337,8 +337,10 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
     offset,
   });
 
-  // Get relevant scripts
-  const relevantScripts = await searchToolsService.getRelevantScripts(query);
+  // Get relevant scripts if searching by name
+  const relevantScripts = methodName
+    ? await searchToolsService.getRelevantScripts(methodName)
+    : [];
 
   // Format results
   const formatted = formatResults(searchResult, {
@@ -351,19 +353,15 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
   // Build summary
   let summary = '';
 
-  // Add workflow guidance based on query patterns
-  const queryLower = query.toLowerCase();
-  const isMetricsQuery = /\b(memory|cpu|disk|network|node|pod|container|usage|consumption|utilization|metrics?)\b/.test(queryLower);
-  const isLogsQuery = /\b(log|logs|error|warn|debug|trace)\b/.test(queryLower);
-
-  if (isMetricsQuery && (!library || library === 'all' || library === '@prodisco/prometheus-client')) {
+  // Add workflow guidance based on library filter
+  if (!library || library === 'all' || library === '@prodisco/prometheus-client') {
     summary += '**PROMETHEUS WORKFLOW:**\n';
     summary += '1. Create search engine: `const search = new MetricSearchEngine(new PrometheusClient({ endpoint: process.env.PROMETHEUS_URL }))`\n';
     summary += '2. Search metrics semantically: `const metrics = await search.search("memory usage")` - returns ranked results by name AND description\n';
     summary += '3. Execute PromQL with discovered metrics: `await client.executeRange("metric_name", { start, end, step })`\n\n';
   }
 
-  if (isLogsQuery && (!library || library === 'all' || library === '@prodisco/loki-client')) {
+  if (!library || library === 'all' || library === '@prodisco/loki-client') {
     summary += '**LOKI WORKFLOW:**\n';
     summary += '1. Query logs: `await loki.queryRange({ query: \'{namespace="default"}\', start, end })`\n';
     summary += '2. Access results: `result.streams[i].labels`, `result.streams[i].entries[j].line`\n\n';
@@ -421,7 +419,7 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
     'LIBRARY IMPORTS:\n' +
     '- Prometheus: const { PrometheusClient, MetricSearchEngine } = require("@prodisco/prometheus-client");\n' +
     '- Loki: const { LokiClient } = require("@prodisco/loki-client");\n' +
-    '- Analytics: require("simple-statistics"), require("ml-regression"), require("mathjs"), require("fft-js")\n' +
+    '- Analytics: require("simple-statistics")\n' +
     '- K8s: k8s and kc (KubeConfig) are pre-configured globals\n' +
     '\n' +
     'METRIC DISCOVERY (semantic search):\n' +
@@ -491,21 +489,17 @@ export async function shutdownSearchIndex(): Promise<void> {
 // ============================================================================
 
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
-  name: 'searchTools',
+  name: 'kubernetes.searchTools',
   description:
-    '**SEARCH BEFORE CODING.** Discover APIs, methods, and types before writing code. ' +
-    'Don\'t guess - search to find correct method names, parameters, and usage patterns. ' +
-    '\n\n' +
-    'INDEXED: ' +
-    '@kubernetes/client-node (K8s API), ' +
-    '@prodisco/prometheus-client (Prometheus queries + MetricSearchEngine for live metric discovery), ' +
-    '@prodisco/loki-client (Loki logs), ' +
-    'simple-statistics (stats). ' +
+    '**BROWSE API DOCUMENTATION.** Find API methods by name from indexed libraries. ' +
+    'Use methodName to search (e.g., "readLog", "listPod") - this does NOT query actual data. ' +
     '\n\n' +
     'EXAMPLES: ' +
-    '"list pods" → finds listNamespacedPod, listPodForAllNamespaces. ' +
-    '"memory metrics" → finds MetricSearchEngine.search() for semantic metric discovery. ' +
-    '"query logs" → finds LokiClient.queryRange(). ' +
+    'methodName: "readLog" → finds readNamespacedPodLog. ' +
+    'methodName: "listPod" → finds listPodForAllNamespaces. ' +
+    'methodName: "executeRange" → finds PrometheusClient.executeRange(). ' +
+    '\n\n' +
+    'INDEXED: @kubernetes/client-node, @prodisco/prometheus-client, @prodisco/loki-client, simple-statistics. ' +
     '\n\n' +
     'FILTERS: library, documentType (method|type|function|script), category',
   schema: SearchToolsInputSchema,

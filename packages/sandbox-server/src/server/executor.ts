@@ -4,9 +4,6 @@ import * as k8s from '@kubernetes/client-node';
 import * as prometheusClient from '@prodisco/prometheus-client';
 // Analytics libraries for advanced data analysis
 import * as simpleStatistics from 'simple-statistics';
-import * as mlRegression from 'ml-regression';
-import * as mathjs from 'mathjs';
-import fftJsDefault from 'fft-js';
 // Loki client for log querying
 import * as lokiClient from '@prodisco/loki-client';
 
@@ -97,19 +94,6 @@ export class Executor {
           if (mod === '@prodisco/prometheus-client') return prometheusClient;
           // Analytics libraries
           if (mod === 'simple-statistics') return simpleStatistics;
-          if (mod === 'ml-regression') return mlRegression;
-          if (mod === 'mathjs') return mathjs;
-          if (mod === 'fft-js') {
-            // Use default export and spread nested util to ensure all properties cross VM boundary
-            return {
-              fft: fftJsDefault.fft,
-              ifft: fftJsDefault.ifft,
-              util: {
-                fftMag: fftJsDefault.util.fftMag,
-                fftFreq: fftJsDefault.util.fftFreq,
-              },
-            };
-          }
           // Loki client for log querying
           if (mod === '@prodisco/loki-client' || mod === 'loki-client') return lokiClient;
           throw new Error(`Module '${mod}' not available in sandbox`);
@@ -254,19 +238,6 @@ export class Executor {
           if (mod === '@prodisco/prometheus-client') return prometheusClient;
           // Analytics libraries
           if (mod === 'simple-statistics') return simpleStatistics;
-          if (mod === 'ml-regression') return mlRegression;
-          if (mod === 'mathjs') return mathjs;
-          if (mod === 'fft-js') {
-            // Use default export and spread nested util to ensure all properties cross VM boundary
-            return {
-              fft: fftJsDefault.fft,
-              ifft: fftJsDefault.ifft,
-              util: {
-                fftMag: fftJsDefault.util.fftMag,
-                fftFreq: fftJsDefault.util.fftFreq,
-              },
-            };
-          }
           // Loki client for log querying
           if (mod === '@prodisco/loki-client' || mod === 'loki-client') return lokiClient;
           throw new Error(`Module '${mod}' not available in sandbox`);

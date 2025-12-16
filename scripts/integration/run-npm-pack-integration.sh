@@ -44,13 +44,26 @@ log "Setting up test environment"
 rm -rf "$ARTIFACT_DIR"
 mkdir -p "$TEST_DIR"
 
-# Step 2: Build packages (loki-client, then sandbox-server, then main package)
+# Step 2: Build packages (deps first, then sandbox-server, then main package)
 log "Building packages"
 cd "$ROOT_DIR"
+npm run build -w @prodisco/search-libs
+npm run build -w @prodisco/prometheus-client
 npm run build -w @prodisco/loki-client
 npm run proto:generate -w @prodisco/sandbox-server
 npm run build -w @prodisco/sandbox-server
 npm run build
+
+# Step 2.5: Pack search-libs and prometheus-client (k8s-mcp and sandbox-server depend on them)
+log "Creating npm pack for @prodisco/search-libs"
+cd "$ROOT_DIR/packages/search-libs"
+SEARCH_LIBS_TARBALL=$(npm pack --pack-destination "$ARTIFACT_DIR" 2>/dev/null | tail -1)
+log "Created: $SEARCH_LIBS_TARBALL"
+
+log "Creating npm pack for @prodisco/prometheus-client"
+cd "$ROOT_DIR/packages/prometheus-client"
+PROM_TARBALL=$(npm pack --pack-destination "$ARTIFACT_DIR" 2>/dev/null | tail -1)
+log "Created: $PROM_TARBALL"
 
 # Step 3: Pack loki-client
 log "Creating npm pack for @prodisco/loki-client"
@@ -74,6 +87,14 @@ log "Created: $MCP_TARBALL"
 log "Installing packages in clean test directory"
 cd "$TEST_DIR"
 npm init -y > /dev/null
+
+# Install search-libs first (prometheus-client depends on it)
+log "Installing search-libs from tarball"
+npm install "$ARTIFACT_DIR/$SEARCH_LIBS_TARBALL" --save
+
+# Install prometheus-client (sandbox-server depends on it)
+log "Installing prometheus-client from tarball"
+npm install "$ARTIFACT_DIR/$PROM_TARBALL" --save
 
 # Install loki-client first (sandbox-server depends on it)
 log "Installing loki-client from tarball"

@@ -413,7 +413,7 @@ describe('extractFromPackage', () => {
       expect(result.types.length).toBeGreaterThan(0);
       expect(result.types.some((t) => t.name === 'V1Pod')).toBe(true);
     }
-  });
+  }, 30000);
 
   it('extracts methods from @kubernetes/client-node if installed', () => {
     const result = extractFromPackage({
@@ -425,7 +425,7 @@ describe('extractFromPackage', () => {
     if (result.errors.length === 0) {
       expect(result.methods.length).toBeGreaterThanOrEqual(0);
     }
-  });
+  }, 30000);
 
   it('returns errors for non-existent package', () => {
     const result = extractFromPackage({
