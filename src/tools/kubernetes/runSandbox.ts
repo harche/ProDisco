@@ -530,28 +530,19 @@ async function executeListMode(
 export const runSandboxTool: ToolDefinition<RunSandboxResult, typeof RunSandboxInputSchema> = {
   name: 'kubernetes.runSandbox',
   description:
+    '**PREREQUISITE: Call searchTools first** to discover correct API methods and parameters. ' +
+    'Do NOT guess - search to find available APIs before writing code. ' +
+    '\n\n' +
     'Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus operations. ' +
     'MODES: ' +
-    '• execute (default): Blocking execution, waits for completion. ' +
-    'Params: code OR cached (required), timeout. ' +
-    'Example: { code: "console.log(\'hello\')" } ' +
-    '• stream: Real-time output streaming, returns all output when complete. ' +
-    'Params: code OR cached (required), timeout. ' +
-    'Example: { mode: "stream", code: "for(let i=0;i<5;i++) console.log(i)" } ' +
-    '• async: Start execution and return immediately with execution ID. ' +
-    'Params: code OR cached (required), timeout. ' +
-    'Example: { mode: "async", code: "longRunningTask()" } ' +
-    '• status: Get status and output of an async execution. ' +
-    'Params: executionId (required), wait (optional, long-poll), outputOffset (optional). ' +
-    'Example: { mode: "status", executionId: "abc-123", wait: true } ' +
-    '• cancel: Cancel a running execution. ' +
-    'Params: executionId (required). ' +
-    'Example: { mode: "cancel", executionId: "abc-123" } ' +
-    '• list: List active and recent executions. ' +
-    'Params: states (optional), limit (optional), includeCompletedWithinMs (optional). ' +
-    'Example: { mode: "list", states: ["running"], limit: 5 } ' +
-    'The sandbox provides: k8s, kc (pre-configured KubeConfig), console, process.env, require("@prodisco/prometheus-client"). ' +
-    'Use searchTools first to discover APIs and find cached scripts.',
+    '• execute (default): Blocking execution, waits for completion. Params: code OR cached (required), timeout. ' +
+    '• stream: Real-time output streaming. Params: code OR cached (required), timeout. ' +
+    '• async: Start execution and return immediately with execution ID. Params: code OR cached (required), timeout. ' +
+    '• status: Get status of async execution. Params: executionId (required), wait (optional). ' +
+    '• cancel: Cancel a running execution. Params: executionId (required). ' +
+    '• list: List active/recent executions. Params: states (optional), limit (optional). ' +
+    '\n\n' +
+    'The sandbox provides: k8s, kc (pre-configured KubeConfig), console, process.env, require("@prodisco/prometheus-client").',
   schema: RunSandboxInputSchema,
 
   async execute(input) {

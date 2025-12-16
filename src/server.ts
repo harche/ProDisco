@@ -42,10 +42,18 @@ const server = new McpServer(
   },
   {
     instructions:
-      'Kubernetes and Prometheus operations via Progressive Disclosure. ' +
-      'Use kubernetes.searchTools to discover available APIs. ' +
-      'Use kubernetes.runSandbox to execute TypeScript scripts directly. ' +
-      'The sandbox provides: k8s, kc (pre-configured KubeConfig), console, and require("prometheus-query").',
+      '**ALWAYS SEARCH BEFORE WRITING CODE.** ' +
+      'Call searchTools first to discover APIs, methods, and correct usage patterns. ' +
+      'Do NOT guess method names or parameters - search to find them. ' +
+      '\n\n' +
+      'WORKFLOW: ' +
+      '1. User asks about Kubernetes/Prometheus/Loki → Call searchTools with relevant query ' +
+      '2. Review search results to find correct APIs ' +
+      '3. Call runSandbox to execute code using discovered APIs ' +
+      '\n\n' +
+      'TOOLS: ' +
+      'searchTools - Discover APIs (K8s methods, Prometheus metrics, Loki queries, statistics functions). ' +
+      'runSandbox - Execute TypeScript with pre-configured k8s, kc (KubeConfig), and library imports.',
   },
 );
 

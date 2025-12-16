@@ -1,208 +1,184 @@
 /**
- * Metric discovery utilities for Prometheus
+ * Metric search engine using Orama for semantic search
+ *
+ * Indexes live Prometheus metrics and enables semantic search
+ * by name and description, not just regex pattern matching.
  */
 
-import type {
-  MetricInfo,
-  MetricType,
-  MetricDocument,
-  MetricDiscoveryOptions,
-} from './types.js';
+import { SearchEngine, type BaseDocument } from '@prodisco/search-libs';
+import type { MetricInfo, MetricType } from './types.js';
 import { PrometheusClient } from './client.js';
 
 /**
- * MetricDiscovery - Discovers and manages Prometheus metrics
+ * Search options for finding metrics
  */
-export class MetricDiscovery {
+export interface MetricSearchOptions {
+  /** Maximum number of results (default: 20) */
+  limit?: number;
+
+  /** Filter by metric type */
+  type?: MetricType;
+}
+
+/**
+ * MetricSearchEngine - Semantic search for Prometheus metrics
+ *
+ * Uses Orama search engine to index metric names and descriptions,
+ * enabling natural language search like "memory consumption" instead
+ * of requiring exact metric names.
+ */
+export class MetricSearchEngine {
   private client: PrometheusClient;
-  private cachedMetrics: Map<string, MetricInfo> = new Map();
+  private searchEngine: SearchEngine;
+  private indexed = false;
+  private indexedCount = 0;
+  private lastIndexTime: number | null = null;
+
+  /** Cache TTL in milliseconds (5 minutes) */
+  private static readonly CACHE_TTL_MS = 5 * 60 * 1000;
 
   constructor(client: PrometheusClient) {
     this.client = client;
+    this.searchEngine = new SearchEngine({
+      tokenizerOptions: {
+        stemming: true,
+        stemmerSkipProperties: ['name'],
+      },
+    });
   }
 
   /**
-   * Discover all metrics from Prometheus
+   * Index all metrics from Prometheus into the search engine.
    *
-   * @param options - Discovery options (filters, limits)
-   * @returns Array of metric information
+   * @param force - Force re-indexing even if cache is valid
    */
-  async discoverMetrics(options: MetricDiscoveryOptions = {}): Promise<MetricInfo[]> {
-    const { nameFilter, typeFilter, limit } = options;
-
-    const metadata = await this.client.metadata();
-    const metrics: MetricInfo[] = [];
-
-    for (const [name, entries] of Object.entries(metadata)) {
-      // Apply name filter
-      if (nameFilter && !nameFilter.test(name)) {
-        continue;
-      }
-
-      const entry = Array.isArray(entries) ? entries[0] : entries;
-      const type = this.normalizeMetricType(entry?.type);
-
-      // Apply type filter
-      if (typeFilter && !typeFilter.includes(type)) {
-        continue;
-      }
-
-      const metricInfo: MetricInfo = {
-        name,
-        type,
-        help: entry?.help || 'No description available',
-      };
-
-      metrics.push(metricInfo);
-      this.cachedMetrics.set(name, metricInfo);
-
-      // Apply limit
-      if (limit && metrics.length >= limit) {
-        break;
+  async index(force = false): Promise<number> {
+    // Check if cache is still valid
+    if (!force && this.indexed && this.lastIndexTime) {
+      const elapsed = Date.now() - this.lastIndexTime;
+      if (elapsed < MetricSearchEngine.CACHE_TTL_MS) {
+        return this.indexedCount;
       }
     }
 
-    return metrics;
-  }
+    // Fetch all metrics from Prometheus
+    const metrics = await this.client.listMetrics();
 
-  /**
-   * Get a specific metric's information
-   *
-   * @param name - Metric name
-   * @returns Metric info if found
-   */
-  async getMetric(name: string): Promise<MetricInfo | undefined> {
-    // Check cache first
-    if (this.cachedMetrics.has(name)) {
-      return this.cachedMetrics.get(name);
-    }
-
-    // Fetch from Prometheus
-    const metadata = await this.client.metadata();
-    const entries = metadata[name];
-
-    if (!entries) {
-      return undefined;
-    }
-
-    const entry = Array.isArray(entries) ? entries[0] : entries;
-    const metricInfo: MetricInfo = {
-      name,
-      type: this.normalizeMetricType(entry?.type),
-      help: entry?.help || 'No description available',
-    };
-
-    this.cachedMetrics.set(name, metricInfo);
-    return metricInfo;
-  }
-
-  /**
-   * Get metrics formatted as indexable documents for search-libs
-   *
-   * @param options - Discovery options
-   * @returns Array of metric documents ready for indexing
-   */
-  async getIndexableMetrics(options: MetricDiscoveryOptions = {}): Promise<MetricDocument[]> {
-    const metrics = await this.discoverMetrics(options);
-
-    return metrics.map((metric) => ({
-      id: `metric:${metric.name}`,
+    // Build documents for indexing
+    const docs: BaseDocument[] = metrics.map((m) => ({
+      id: `metric:${m.name}`,
       documentType: 'metric' as const,
-      name: metric.name,
-      description: metric.help,
-      searchTokens: this.buildSearchTokens(metric),
+      name: m.name,
+      description: m.help,
+      searchTokens: `${m.name.replace(/_/g, ' ')} ${m.type} ${m.help}`,
       library: 'prometheus',
-      category: 'metric',
-      metricType: metric.type,
+      category: m.type,
+      properties: '',
+      typeDefinition: '',
+      nestedTypes: '',
+      typeKind: '',
+      parameters: '',
+      returnType: '',
+      returnTypeDefinition: '',
+      signature: '',
+      className: '',
+      filePath: '',
+      keywords: m.type,
+    }));
+
+    // Re-initialize search engine for fresh index
+    this.searchEngine = new SearchEngine({
+      tokenizerOptions: {
+        stemming: true,
+        stemmerSkipProperties: ['name'],
+      },
+    });
+
+    await this.searchEngine.initialize();
+    await this.searchEngine.insertBatch(docs);
+
+    this.indexed = true;
+    this.indexedCount = docs.length;
+    this.lastIndexTime = Date.now();
+
+    return this.indexedCount;
+  }
+
+  /**
+   * Search for metrics using natural language.
+   *
+   * Examples:
+   * - "memory usage" → finds container_memory_usage_bytes, etc.
+   * - "http requests" → finds http_requests_total, etc.
+   * - "cpu" → finds all CPU-related metrics
+   *
+   * @param query - Natural language search query
+   * @param options - Search options (limit, type filter)
+   * @returns Ranked list of matching metrics
+   */
+  async search(query: string, options: MetricSearchOptions = {}): Promise<MetricInfo[]> {
+    const { limit = 20, type } = options;
+
+    if (!this.indexed) {
+      await this.index();
+    }
+
+    const result = await this.searchEngine.search({
+      query,
+      limit,
+      category: type,
+    });
+
+    return result.results.map((doc) => ({
+      name: doc.name,
+      type: (doc.category as MetricType) || 'unknown',
+      help: doc.description,
     }));
   }
 
   /**
-   * Get cached metrics (without fetching from Prometheus)
+   * List all indexed metrics
    */
-  getCachedMetrics(): MetricInfo[] {
-    return Array.from(this.cachedMetrics.values());
-  }
+  async list(options: MetricSearchOptions = {}): Promise<MetricInfo[]> {
+    const { limit = 100, type } = options;
 
-  /**
-   * Clear the metric cache
-   */
-  clearCache(): void {
-    this.cachedMetrics.clear();
-  }
-
-  /**
-   * Check if a metric exists
-   *
-   * @param name - Metric name
-   * @returns True if metric exists
-   */
-  async metricExists(name: string): Promise<boolean> {
-    if (this.cachedMetrics.has(name)) {
-      return true;
+    if (!this.indexed) {
+      await this.index();
     }
 
-    const metric = await this.getMetric(name);
-    return metric !== undefined;
+    const result = await this.searchEngine.search({
+      query: '',
+      limit,
+      category: type,
+    });
+
+    return result.results.map((doc) => ({
+      name: doc.name,
+      type: (doc.category as MetricType) || 'unknown',
+      help: doc.description,
+    }));
   }
 
-  /**
-   * Get metrics by type
-   *
-   * @param type - Metric type to filter by
-   * @returns Array of metrics matching the type
-   */
-  async getMetricsByType(type: MetricType): Promise<MetricInfo[]> {
-    return this.discoverMetrics({ typeFilter: [type] });
+  getIndexedCount(): number {
+    return this.indexedCount;
   }
 
-  /**
-   * Search metrics by name pattern
-   *
-   * @param pattern - Regex pattern to match metric names
-   * @returns Array of matching metrics
-   */
-  async searchMetrics(pattern: RegExp): Promise<MetricInfo[]> {
-    return this.discoverMetrics({ nameFilter: pattern });
+  isReady(): boolean {
+    return this.indexed;
   }
 
-  /**
-   * Normalize metric type string to MetricType
-   */
-  private normalizeMetricType(type?: string): MetricType {
-    if (!type) return 'unknown';
-
-    const normalized = type.toLowerCase();
-    switch (normalized) {
-      case 'counter':
-        return 'counter';
-      case 'gauge':
-        return 'gauge';
-      case 'histogram':
-        return 'histogram';
-      case 'summary':
-        return 'summary';
-      default:
-        return 'unknown';
-    }
-  }
-
-  /**
-   * Build search tokens from metric info
-   */
-  private buildSearchTokens(metric: MetricInfo): string {
-    const nameParts = metric.name.replace(/_/g, ' ');
-    return `${nameParts} ${metric.type} ${metric.help}`;
+  async clear(): Promise<void> {
+    await this.searchEngine.shutdown();
+    this.indexed = false;
+    this.indexedCount = 0;
+    this.lastIndexTime = null;
   }
 }
 
 /**
- * Create a MetricDiscovery instance from a Prometheus endpoint
- *
- * @param endpoint - Prometheus server URL
- * @returns MetricDiscovery instance
+ * Create a MetricSearchEngine from a Prometheus endpoint
  */
-export function createMetricDiscovery(endpoint: string): MetricDiscovery {
+export function createMetricSearchEngine(endpoint: string): MetricSearchEngine {
   const client = new PrometheusClient({ endpoint });
-  return new MetricDiscovery(client);
+  return new MetricSearchEngine(client);
 }

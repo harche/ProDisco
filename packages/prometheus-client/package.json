@@ -28,6 +28,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@prodisco/search-libs": "*",
     "prometheus-query": "^3.4.0"
   },
   "devDependencies": {

@@ -358,9 +358,9 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
 
   if (isMetricsQuery && (!library || library === 'all' || library === '@prodisco/prometheus-client')) {
     summary += '**PROMETHEUS WORKFLOW:**\n';
-    summary += '1. First discover available metrics: `await prom.findMetrics(/memory/i)`\n';
-    summary += '2. Then query the discovered metrics: `await prom.queryRange("metric_name", { start, end, step })`\n';
-    summary += '3. Access results: `result.data[i].labels`, `result.data[i].samples[j].value`\n\n';
+    summary += '1. Create search engine: `const search = new MetricSearchEngine(new PrometheusClient({ endpoint: process.env.PROMETHEUS_URL }))`\n';
+    summary += '2. Search metrics semantically: `const metrics = await search.search("memory usage")` - returns ranked results by name AND description\n';
+    summary += '3. Execute PromQL with discovered metrics: `await client.executeRange("metric_name", { start, end, step })`\n\n';
   }
 
   if (isLogsQuery && (!library || library === 'all' || library === '@prodisco/loki-client')) {
@@ -419,15 +419,16 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
     '- Execution modes: "execute" (blocking), "stream" (real-time), "async" (non-blocking)\n' +
     '\n' +
     'LIBRARY IMPORTS:\n' +
-    '- Prometheus: const { PrometheusClient } = require("@prodisco/prometheus-client"); const prom = new PrometheusClient({ endpoint: process.env.PROMETHEUS_URL });\n' +
-    '- Loki: const { LokiClient } = require("@prodisco/loki-client"); const client = new LokiClient({ baseUrl: process.env.LOKI_URL });\n' +
+    '- Prometheus: const { PrometheusClient, MetricSearchEngine } = require("@prodisco/prometheus-client");\n' +
+    '- Loki: const { LokiClient } = require("@prodisco/loki-client");\n' +
     '- Analytics: require("simple-statistics"), require("ml-regression"), require("mathjs"), require("fft-js")\n' +
     '- K8s: k8s and kc (KubeConfig) are pre-configured globals\n' +
     '\n' +
-    'LIVE METRIC DISCOVERY:\n' +
-    '- To find available metrics in the cluster: const { MetricDiscovery, PrometheusClient } = require("@prodisco/prometheus-client"); const discovery = new MetricDiscovery(new PrometheusClient({ endpoint: process.env.PROMETHEUS_URL }));\n' +
-    '- Search by pattern: await discovery.searchMetrics(/memory/i)\n' +
-    '- List all: await discovery.discoverMetrics()';
+    'METRIC DISCOVERY (semantic search):\n' +
+    '- const client = new PrometheusClient({ endpoint: process.env.PROMETHEUS_URL });\n' +
+    '- const search = new MetricSearchEngine(client);\n' +
+    '- await search.search("memory usage") → finds metrics by name AND description\n' +
+    '- await search.search("http requests", { type: "counter" }) → filter by metric type';
 
   // Map results to expected format
   const results = formatted.items.map((item) => ({
@@ -492,22 +493,21 @@ export async function shutdownSearchIndex(): Promise<void> {
 export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
   name: 'searchTools',
   description:
-    'Search for API methods and types across indexed TypeScript libraries. ' +
+    '**SEARCH BEFORE CODING.** Discover APIs, methods, and types before writing code. ' +
+    'Don\'t guess - search to find correct method names, parameters, and usage patterns. ' +
     '\n\n' +
-    '**CRITICAL - PROMETHEUS METRICS WORKFLOW:** ' +
-    'To query metrics (memory, CPU, disk, etc.), you MUST first discover what metrics exist in the cluster. ' +
-    'Step 1: Search for "findMetrics" to find the discovery API. ' +
-    'Step 2: Use findMetrics(/pattern/) to discover available metric names. ' +
-    'Step 3: Use queryRange() to query the discovered metrics. ' +
-    'DO NOT guess metric names - always discover first!' +
-    '\n\n' +
-    '**INDEXED LIBRARIES:** ' +
+    'INDEXED: ' +
     '@kubernetes/client-node (K8s API), ' +
-    '@prodisco/prometheus-client (Prometheus queries), ' +
+    '@prodisco/prometheus-client (Prometheus queries + MetricSearchEngine for live metric discovery), ' +
     '@prodisco/loki-client (Loki logs), ' +
-    'simple-statistics (stats functions). ' +
+    'simple-statistics (stats). ' +
     '\n\n' +
-    'FILTERS: library, documentType (method|type|function|script|all), category',
+    'EXAMPLES: ' +
+    '"list pods" → finds listNamespacedPod, listPodForAllNamespaces. ' +
+    '"memory metrics" → finds MetricSearchEngine.search() for semantic metric discovery. ' +
+    '"query logs" → finds LokiClient.queryRange(). ' +
+    '\n\n' +
+    'FILTERS: library, documentType (method|type|function|script), category',
   schema: SearchToolsInputSchema,
   async execute(input) {
     return executeSearchMode(input);

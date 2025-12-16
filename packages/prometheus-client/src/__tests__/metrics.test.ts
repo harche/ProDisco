@@ -1,90 +1,48 @@
 /**
- * Tests for the MetricDiscovery class
+ * Tests for the MetricSearchEngine class
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { MetricDiscovery } from '../metrics.js';
+import { describe, it, expect } from 'vitest';
+import { MetricSearchEngine, createMetricSearchEngine } from '../metrics.js';
 import { PrometheusClient } from '../client.js';
 
-describe('MetricDiscovery', () => {
+describe('MetricSearchEngine', () => {
   describe('constructor', () => {
-    it('creates MetricDiscovery with client', () => {
+    it('creates MetricSearchEngine with client', () => {
       const client = new PrometheusClient({ endpoint: 'http://prometheus:9090' });
-      const discovery = new MetricDiscovery(client);
+      const search = new MetricSearchEngine(client);
 
-      expect(discovery).toBeDefined();
+      expect(search).toBeDefined();
+      expect(search.isReady()).toBe(false);
+      expect(search.getIndexedCount()).toBe(0);
     });
   });
 
-  describe('getCachedMetrics', () => {
-    it('returns empty array before discovery', () => {
-      const client = new PrometheusClient({ endpoint: 'http://prometheus:9090' });
-      const discovery = new MetricDiscovery(client);
+  describe('createMetricSearchEngine', () => {
+    it('creates engine from endpoint string', () => {
+      const search = createMetricSearchEngine('http://prometheus:9090');
 
-      const cached = discovery.getCachedMetrics();
-
-      expect(cached).toEqual([]);
+      expect(search).toBeInstanceOf(MetricSearchEngine);
+      expect(search.isReady()).toBe(false);
     });
   });
 
-  describe('clearCache', () => {
-    it('clears the metric cache', () => {
+  describe('clear', () => {
+    it('resets the search engine state', async () => {
       const client = new PrometheusClient({ endpoint: 'http://prometheus:9090' });
-      const discovery = new MetricDiscovery(client);
+      const search = new MetricSearchEngine(client);
 
-      // Just verify it doesn't throw
-      discovery.clearCache();
+      await search.clear();
 
-      expect(discovery.getCachedMetrics().length).toBe(0);
-    });
-  });
-
-  describe('getIndexableMetrics format', () => {
-    it('returns documents with correct structure when metrics are available', async () => {
-      // This test documents the expected output format
-      // Actual discovery would need a running Prometheus server
-
-      // The expected document structure is:
-      const expectedStructure = {
-        id: expect.stringMatching(/^metric:/),
-        documentType: 'metric',
-        name: expect.any(String),
-        description: expect.any(String),
-        searchTokens: expect.any(String),
-        library: 'prometheus',
-        category: expect.any(String),
-        metricType: expect.any(String),
-      };
-
-      // Just verify the function exists and would return the right structure
-      const client = new PrometheusClient({ endpoint: 'http://prometheus:9090' });
-      const discovery = new MetricDiscovery(client);
-
-      expect(discovery.getIndexableMetrics).toBeDefined();
-      expect(typeof discovery.getIndexableMetrics).toBe('function');
+      expect(search.isReady()).toBe(false);
+      expect(search.getIndexedCount()).toBe(0);
     });
   });
 });
 
-describe('MetricDiscovery - with mock data', () => {
-  // Test the metric normalization logic
-  describe('normalizeMetricType', () => {
-    it('should handle all metric types', () => {
-      // Test that the discovery would correctly categorize different metric types
-      // This tests the internal logic without needing a running server
-
-      const metricTypes = ['counter', 'gauge', 'histogram', 'summary', 'unknown'];
-
-      // All these should be valid metric types
-      metricTypes.forEach((type) => {
-        expect(['counter', 'gauge', 'histogram', 'summary', 'unknown']).toContain(type);
-      });
-    });
-  });
-
+describe('MetricSearchEngine - search token generation', () => {
   describe('searchTokens generation', () => {
     it('should build searchable tokens from metric name', () => {
-      // Test the token generation logic
       const metricName = 'http_requests_total';
       const nameParts = metricName.replace(/_/g, ' ');
 
@@ -92,6 +50,28 @@ describe('MetricDiscovery - with mock data', () => {
       expect(nameParts).toContain('http');
       expect(nameParts).toContain('requests');
       expect(nameParts).toContain('total');
+    });
+
+    it('should include metric type in tokens', () => {
+      const metricName = 'container_memory_usage_bytes';
+      const metricType = 'gauge';
+      const help = 'Current memory usage in bytes';
+
+      const searchTokens = `${metricName.replace(/_/g, ' ')} ${metricType} ${help}`;
+
+      expect(searchTokens).toContain('container memory usage bytes');
+      expect(searchTokens).toContain('gauge');
+      expect(searchTokens).toContain('Current memory usage');
+    });
+  });
+
+  describe('metric types', () => {
+    it('should handle all metric types', () => {
+      const validTypes = ['counter', 'gauge', 'histogram', 'summary', 'unknown'];
+
+      validTypes.forEach((type) => {
+        expect(['counter', 'gauge', 'histogram', 'summary', 'unknown']).toContain(type);
+      });
     });
   });
 });

@@ -378,7 +378,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
           const prom = new PrometheusClient({
             endpoint: 'http://localhost:9090',
           });
-          const response = await prom.instantQuery('up');
+          const response = await prom.execute('up');
           console.log(JSON.stringify({
             resultType: response.resultType,
             resultCount: response.data.length,
@@ -400,7 +400,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
           const prom = new PrometheusClient({
             endpoint: 'http://localhost:9090',
           });
-          const response = await prom.instantQuery('container_cpu_usage_seconds_total');
+          const response = await prom.execute('container_cpu_usage_seconds_total');
           console.log(JSON.stringify({
             resultType: response.resultType,
             hasResults: response.data.length > 0,
@@ -421,7 +421,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
           const prom = new PrometheusClient({
             endpoint: 'http://localhost:9090',
           });
-          const response = await prom.instantQuery('container_memory_usage_bytes{container!=""}');
+          const response = await prom.execute('container_memory_usage_bytes{container!=""}');
           console.log(JSON.stringify({
             resultType: response.resultType,
             containerCount: response.data.length,
@@ -445,7 +445,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
           });
           const end = new Date();
           const start = new Date(end.getTime() - 5 * 60 * 1000); // 5 minutes ago
-          const response = await prom.rangeQuery('up', { start, end, step: 60 });
+          const response = await prom.executeRange('up', { start, end, step: 60 });
           console.log(JSON.stringify({
             resultType: response.resultType,
             seriesCount: response.data.length,
@@ -467,7 +467,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
           const prom = new PrometheusClient({
             endpoint: 'http://localhost:9090',
           });
-          const response = await prom.instantQuery('node_memory_MemTotal_bytes');
+          const response = await prom.execute('node_memory_MemTotal_bytes');
           const nodes = response.data.map(r => ({
             instance: r.labels.instance,
             memoryBytes: r.samples.length > 0 ? r.samples[0].value : 0,
@@ -497,7 +497,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
           const prom = new PrometheusClient({
             endpoint: 'http://localhost:9090',
           });
-          const response = await prom.instantQuery('container_cpu_usage_seconds_total{container!=""}');
+          const response = await prom.execute('container_cpu_usage_seconds_total{container!=""}');
 
           console.log(JSON.stringify({
             k8sPodCount: podNames.length,

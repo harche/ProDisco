@@ -1,13 +1,12 @@
 # @prodisco/prometheus-client
 
-Typed Prometheus client with metric discovery for AI agents. Wraps the `prometheus-query` library with a clean TypeScript interface.
+Typed Prometheus client with semantic metric discovery for AI agents. Wraps the `prometheus-query` library with a clean TypeScript interface.
 
 ## Features
 
-- **Typed Queries**: Full TypeScript support for instant and range queries
-- **Metric Discovery**: Discover and catalog all metrics from a Prometheus server
-- **Search Integration**: Get metrics as indexable documents for `@prodisco/search-libs`
-- **Caching**: Built-in metric caching to reduce API calls
+- **Semantic Metric Search**: Find metrics by natural language queries (e.g., "memory usage")
+- **Typed Execution**: Full TypeScript support for PromQL execution
+- **Orama Integration**: Uses `@prodisco/search-libs` for fast, indexed metric search
 
 ## Installation
 
@@ -18,28 +17,73 @@ npm install @prodisco/prometheus-client
 ## Quick Start
 
 ```typescript
-import { PrometheusClient, MetricDiscovery } from '@prodisco/prometheus-client';
+import { PrometheusClient, MetricSearchEngine } from '@prodisco/prometheus-client';
 
-// Create a client
-const client = new PrometheusClient({
-  endpoint: 'http://prometheus:9090',
+// Create client and search engine
+const client = new PrometheusClient({ endpoint: 'http://prometheus:9090' });
+const search = new MetricSearchEngine(client);
+
+// 1. DISCOVER metrics with semantic search
+const memoryMetrics = await search.search('memory usage');
+console.log(memoryMetrics);
+// [{ name: 'container_memory_working_set_bytes', type: 'gauge', help: 'Current working set in bytes' }, ...]
+
+// 2. EXECUTE PromQL with discovered metric names
+const result = await client.executeRange('container_memory_working_set_bytes', {
+  start: new Date(Date.now() - 3600000), // 1 hour ago
+  end: new Date(),
+  step: '5m'
 });
-
-// Execute an instant query
-const result = await client.instantQuery('up');
 console.log(result.data);
-
-// Discover all metrics
-const discovery = new MetricDiscovery(client);
-const metrics = await discovery.discoverMetrics();
-console.log(`Found ${metrics.length} metrics`);
 ```
 
 ## API Reference
 
+### MetricSearchEngine
+
+Semantic search for discovering available metrics. **Use this first** before executing queries.
+
+```typescript
+import { PrometheusClient, MetricSearchEngine } from '@prodisco/prometheus-client';
+
+const client = new PrometheusClient({ endpoint: 'http://prometheus:9090' });
+const search = new MetricSearchEngine(client);
+```
+
+#### Methods
+
+##### `search(query: string, options?: MetricSearchOptions): Promise<MetricInfo[]>`
+
+Search metrics by natural language. Searches both metric names AND descriptions.
+
+```typescript
+// Find memory-related metrics
+const metrics = await search.search('memory usage');
+
+// Find CPU metrics, filter by type
+const gauges = await search.search('cpu', { type: 'gauge', limit: 10 });
+```
+
+##### `index(force?: boolean): Promise<number>`
+
+Manually index/refresh metrics from Prometheus. Called automatically on first search.
+
+```typescript
+const count = await search.index();
+console.log(`Indexed ${count} metrics`);
+```
+
+##### `list(options?: MetricSearchOptions): Promise<MetricInfo[]>`
+
+List all indexed metrics.
+
+```typescript
+const allMetrics = await search.list({ limit: 100 });
+```
+
 ### PrometheusClient
 
-The main client for executing Prometheus queries.
+Execute PromQL queries against Prometheus. **Note**: You should know the metric names first - use `MetricSearchEngine.search()` to discover them.
 
 ```typescript
 import { PrometheusClient } from '@prodisco/prometheus-client';
@@ -52,201 +96,73 @@ const client = new PrometheusClient({
 
 #### Methods
 
-##### `instantQuery(query: string, time?: Date): Promise<InstantQueryResult>`
+##### `execute(promql: string, time?: Date): Promise<InstantQueryResult>`
 
-Execute an instant query at a specific point in time.
+Execute an instant PromQL query.
 
 ```typescript
-const result = await client.instantQuery('http_requests_total');
-
-// With specific time
-const result = await client.instantQuery('http_requests_total', new Date('2024-01-01'));
+// First discover metrics: await search.search('http requests')
+// Then execute with known metric name:
+const result = await client.execute('http_requests_total');
 ```
 
-##### `rangeQuery(query: string, range: TimeRange): Promise<RangeQueryResult>`
+##### `executeRange(promql: string, range: TimeRange): Promise<RangeQueryResult>`
 
-Execute a range query over a time period.
+Execute a range PromQL query over a time period.
 
 ```typescript
-const result = await client.rangeQuery('rate(http_requests_total[5m])', {
-  start: new Date('2024-01-01'),
-  end: new Date('2024-01-02'),
-  step: '1m',
+// First discover metrics: await search.search('memory')
+// Then execute with known metric name:
+const result = await client.executeRange('node_memory_MemTotal_bytes', {
+  start: new Date(Date.now() - 3600000), // 1 hour ago
+  end: new Date(),
+  step: '5m',
 });
 
-// Or with Unix timestamps
-const result = await client.rangeQuery('cpu_usage', {
-  start: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago
-  end: Math.floor(Date.now() / 1000),
-  step: '15s',
+result.data.forEach(series => {
+  console.log(`Labels: ${JSON.stringify(series.labels)}`);
+  series.samples.forEach(s => {
+    console.log(`  ${new Date(s.time * 1000)}: ${s.value}`);
+  });
 });
+```
+
+##### `listMetrics(): Promise<MetricInfo[]>`
+
+Get raw metric metadata from Prometheus. For semantic search, use `MetricSearchEngine` instead.
+
+```typescript
+const metrics = await client.listMetrics();
 ```
 
 ##### `labelNames(): Promise<string[]>`
 
 Get all label names.
 
-```typescript
-const labels = await client.labelNames();
-// ['__name__', 'instance', 'job', 'pod', 'namespace', ...]
-```
-
 ##### `labelValues(label: string): Promise<string[]>`
 
 Get all values for a specific label.
-
-```typescript
-const jobs = await client.labelValues('job');
-// ['prometheus', 'node-exporter', 'kubernetes-pods', ...]
-```
-
-##### `metadata(): Promise<Record<string, MetadataEntry[]>>`
-
-Get metric metadata from Prometheus.
-
-```typescript
-const metadata = await client.metadata();
-// {
-//   'http_requests_total': [{ type: 'counter', help: 'Total HTTP requests' }],
-//   'cpu_usage': [{ type: 'gauge', help: 'CPU usage percentage' }],
-//   ...
-// }
-```
-
-##### `series(match: string[], start?: Date, end?: Date): Promise<Record<string, string>[]>`
-
-Get all series matching label matchers.
-
-```typescript
-const series = await client.series(['{job="prometheus"}']);
-// [{ __name__: 'up', job: 'prometheus', instance: 'localhost:9090' }, ...]
-```
 
 ##### `isHealthy(): Promise<boolean>`
 
 Check if Prometheus is reachable.
 
-```typescript
-const healthy = await client.isHealthy();
-if (!healthy) {
-  console.error('Prometheus is not reachable');
-}
-```
-
-### MetricDiscovery
-
-Discover and manage Prometheus metrics for indexing.
-
-```typescript
-import { PrometheusClient, MetricDiscovery } from '@prodisco/prometheus-client';
-
-const client = new PrometheusClient({ endpoint: 'http://prometheus:9090' });
-const discovery = new MetricDiscovery(client);
-```
-
-#### Methods
-
-##### `discoverMetrics(options?: MetricDiscoveryOptions): Promise<MetricInfo[]>`
-
-Discover all metrics from Prometheus.
-
-```typescript
-// Get all metrics
-const metrics = await discovery.discoverMetrics();
-
-// Filter by name pattern
-const httpMetrics = await discovery.discoverMetrics({
-  nameFilter: /^http_/,
-});
-
-// Filter by type
-const counters = await discovery.discoverMetrics({
-  typeFilter: ['counter'],
-});
-
-// Limit results
-const topMetrics = await discovery.discoverMetrics({
-  limit: 100,
-});
-```
-
-##### `getMetric(name: string): Promise<MetricInfo | undefined>`
-
-Get information about a specific metric.
-
-```typescript
-const metric = await discovery.getMetric('http_requests_total');
-if (metric) {
-  console.log(`${metric.name}: ${metric.type} - ${metric.help}`);
-}
-```
-
-##### `getIndexableMetrics(options?: MetricDiscoveryOptions): Promise<MetricDocument[]>`
-
-Get metrics formatted as documents for `@prodisco/search-libs`.
-
-```typescript
-const docs = await discovery.getIndexableMetrics();
-
-// Use with search-libs
-import { LibraryIndexer } from '@prodisco/search-libs';
-const indexer = new LibraryIndexer({ packages: [] });
-await indexer.initialize();
-await indexer.addDocuments(docs);
-```
-
-##### `getMetricsByType(type: MetricType): Promise<MetricInfo[]>`
-
-Get all metrics of a specific type.
-
-```typescript
-const gauges = await discovery.getMetricsByType('gauge');
-const counters = await discovery.getMetricsByType('counter');
-```
-
-##### `searchMetrics(pattern: RegExp): Promise<MetricInfo[]>`
-
-Search metrics by name pattern.
-
-```typescript
-const k8sMetrics = await discovery.searchMetrics(/^kube_/);
-const nodeMetrics = await discovery.searchMetrics(/^node_/);
-```
-
-##### `getCachedMetrics(): MetricInfo[]`
-
-Get previously discovered metrics from cache.
-
-```typescript
-const cached = discovery.getCachedMetrics();
-```
-
-##### `clearCache(): void`
-
-Clear the metric cache.
-
-```typescript
-discovery.clearCache();
-```
-
 ### Helper Function
 
-##### `createMetricDiscovery(endpoint: string): MetricDiscovery`
+##### `createMetricSearchEngine(endpoint: string): MetricSearchEngine`
 
-Create a MetricDiscovery instance directly from an endpoint.
+Create a MetricSearchEngine directly from an endpoint.
 
 ```typescript
-import { createMetricDiscovery } from '@prodisco/prometheus-client';
+import { createMetricSearchEngine } from '@prodisco/prometheus-client';
 
-const discovery = createMetricDiscovery('http://prometheus:9090');
-const metrics = await discovery.discoverMetrics();
+const search = createMetricSearchEngine('http://prometheus:9090');
+const metrics = await search.search('disk usage');
 ```
 
 ## Types
 
 ### MetricInfo
-
-Information about a Prometheus metric.
 
 ```typescript
 interface MetricInfo {
@@ -256,85 +172,23 @@ interface MetricInfo {
 }
 ```
 
-### MetricDocument
-
-Document format compatible with `@prodisco/search-libs`.
+### MetricSearchOptions
 
 ```typescript
-interface MetricDocument {
-  id: string;            // "metric:http_requests_total"
-  documentType: 'metric';
-  name: string;
-  description: string;
-  searchTokens: string;
-  library: string;       // "prometheus"
-  category: string;      // "metric"
-  metricType: string;
+interface MetricSearchOptions {
+  limit?: number;    // Max results (default: 20)
+  type?: MetricType; // Filter by metric type
 }
 ```
 
 ### TimeRange
 
-Time range for range queries.
-
 ```typescript
 interface TimeRange {
   start: Date | number;  // Start time
   end: Date | number;    // End time
-  step: string;          // Step interval (e.g., "15s", "1m")
+  step: string;          // Step interval (e.g., "15s", "1m", "5m")
 }
-```
-
-### InstantQueryResult / RangeQueryResult
-
-Query results with time series data.
-
-```typescript
-interface InstantQueryResult {
-  resultType: 'vector' | 'matrix' | 'scalar' | 'string';
-  data: TimeSeries[];
-}
-
-interface TimeSeries {
-  labels: Record<string, string>;
-  samples: Sample[];
-}
-
-interface Sample {
-  time: number;   // Unix timestamp
-  value: number;  // Metric value
-}
-```
-
-## Integration with search-libs
-
-The prometheus-client is designed to work seamlessly with `@prodisco/search-libs` for unified search across library types and Prometheus metrics.
-
-```typescript
-import { LibraryIndexer } from '@prodisco/search-libs';
-import { PrometheusClient, MetricDiscovery } from '@prodisco/prometheus-client';
-
-// Set up the indexer
-const indexer = new LibraryIndexer({
-  packages: [
-    { name: '@kubernetes/client-node' },
-  ],
-});
-await indexer.initialize();
-
-// Add Prometheus metrics to the index
-const client = new PrometheusClient({
-  endpoint: process.env.PROMETHEUS_URL || 'http://prometheus:9090',
-});
-const discovery = new MetricDiscovery(client);
-const metricDocs = await discovery.getIndexableMetrics();
-await indexer.addDocuments(metricDocs);
-
-// Now search across both K8s types and Prometheus metrics
-const results = await indexer.search({
-  query: 'pod memory',
-  limit: 10,
-});
 ```
 
 ## Environment Variables
@@ -342,18 +196,6 @@ const results = await indexer.search({
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PROMETHEUS_URL` | Prometheus server endpoint | - |
-
-## Error Handling
-
-The client throws errors for network issues and invalid queries. Wrap calls in try-catch:
-
-```typescript
-try {
-  const result = await client.instantQuery('invalid{query');
-} catch (error) {
-  console.error('Query failed:', error.message);
-}
-```
 
 ## License
 

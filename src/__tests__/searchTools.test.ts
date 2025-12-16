@@ -1435,15 +1435,15 @@ describe('kubernetes.searchTools - Prometheus Mode', () => {
   });
 
   describe('Prometheus Mode Filtering', () => {
-    it('can find query methods by pattern search', async () => {
+    it('can find execute methods by pattern search', async () => {
       // Generic extraction assigns 'other' category - use pattern search instead
       const result = await searchPrometheus({
         mode: 'prometheus',
-        methodPattern: 'Query',
+        methodPattern: 'execute',
       });
 
       expect(result.methods.length).toBeGreaterThan(0);
-      expect(result.methods.some(m => m.methodName.toLowerCase().includes('query'))).toBe(true);
+      expect(result.methods.some(m => m.methodName.toLowerCase().includes('execute'))).toBe(true);
     });
 
     it('can find metadata methods by pattern search', async () => {
@@ -1489,16 +1489,16 @@ describe('kubernetes.searchTools - Prometheus Mode', () => {
       expect(Array.isArray(method.parameters)).toBe(true);
     });
 
-    it('finds instantQuery and rangeQuery methods', async () => {
-      // Use pattern search to find query methods
+    it('finds execute and executeRange methods', async () => {
+      // Use pattern search to find execute methods
       const result = await searchPrometheus({
         mode: 'prometheus',
-        methodPattern: 'Query',
+        methodPattern: 'execute',
       });
 
       const methodNames = result.methods.map(m => m.methodName);
-      expect(methodNames).toContain('instantQuery');
-      expect(methodNames).toContain('rangeQuery');
+      expect(methodNames).toContain('execute');
+      expect(methodNames).toContain('executeRange');
     });
 
     it('all methods are from @prodisco/prometheus-client library', async () => {

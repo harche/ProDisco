@@ -52,7 +52,7 @@ export const baseSchema = {
  */
 export type BaseDocument = {
   id: string;
-  documentType: 'type' | 'method' | 'function' | 'script';
+  documentType: 'type' | 'method' | 'function' | 'script' | 'metric';
   name: string;
   description: string;
   searchTokens: string;

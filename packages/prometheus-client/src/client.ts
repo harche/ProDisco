@@ -1,5 +1,8 @@
 /**
  * PrometheusClient - Typed wrapper around prometheus-query library
+ *
+ * IMPORTANT: This client executes PromQL queries. To DISCOVER available metrics,
+ * use MetricSearchEngine.search() first.
  */
 
 import type {
@@ -16,7 +19,11 @@ import type {
 type AnyPrometheusDriver = any;
 
 /**
- * Typed client for Prometheus queries
+ * Typed client for executing PromQL queries against Prometheus.
+ *
+ * NOTE: This client runs PromQL expressions. To discover available metrics,
+ * use MetricSearchEngine.search() - it provides semantic search over metric
+ * names and descriptions.
  */
 export class PrometheusClient {
   private options: PrometheusClientOptions;
@@ -54,15 +61,24 @@ export class PrometheusClient {
   }
 
   /**
-   * Execute an instant query
+   * Execute an instant PromQL query.
    *
-   * @param query - PromQL query string
+   * This runs a PromQL expression and returns the current value.
+   * You must already know the metric name - use MetricSearchEngine.search()
+   * to discover available metrics first.
+   *
+   * @param promql - PromQL expression (e.g., "node_memory_MemTotal_bytes")
    * @param time - Optional evaluation time (defaults to now)
    * @returns Query result with time series data
+   *
+   * @example
+   * // First discover metrics with MetricSearchEngine.search("memory")
+   * // Then execute with known metric name:
+   * const result = await client.execute("node_memory_MemTotal_bytes");
    */
-  async instantQuery(query: string, time?: Date): Promise<InstantQueryResult> {
+  async execute(promql: string, time?: Date): Promise<InstantQueryResult> {
     const driver = await this.getDriver();
-    const result = await driver.instantQuery(query, time);
+    const result = await driver.instantQuery(promql, time);
 
     return {
       resultType: result.resultType as InstantQueryResult['resultType'],
@@ -71,49 +87,36 @@ export class PrometheusClient {
   }
 
   /**
-   * Execute a range query
+   * Execute a range PromQL query over a time period.
    *
-   * @param query - PromQL query string
+   * This runs a PromQL expression over a time range and returns samples.
+   * You must already know the metric name - use MetricSearchEngine.search()
+   * to discover available metrics first.
+   *
+   * @param promql - PromQL expression (e.g., "rate(http_requests_total[5m])")
    * @param range - Time range with start, end, and step
    * @returns Query result with time series data
+   *
+   * @example
+   * // First discover metrics with MetricSearchEngine.search("memory")
+   * // Then execute with known metric name:
+   * const result = await client.executeRange("node_memory_MemTotal_bytes", {
+   *   start: new Date(Date.now() - 3600000),
+   *   end: new Date(),
+   *   step: "5m"
+   * });
    */
-  async rangeQuery(query: string, range: TimeRange): Promise<RangeQueryResult> {
+  async executeRange(promql: string, range: TimeRange): Promise<RangeQueryResult> {
     const driver = await this.getDriver();
     const start = range.start instanceof Date ? range.start : new Date(range.start * 1000);
     const end = range.end instanceof Date ? range.end : new Date(range.end * 1000);
 
-    const result = await driver.rangeQuery(query, start, end, range.step);
+    const result = await driver.rangeQuery(promql, start, end, range.step);
 
     return {
       resultType: 'matrix',
       data: this.parseTimeSeries(result.result),
     };
-  }
-
-  /**
-   * Execute a range query (alias for rangeQuery)
-   *
-   * This alias matches Prometheus API naming convention (query_range).
-   *
-   * @param query - PromQL query string
-   * @param range - Time range with start, end, and step
-   * @returns Query result with time series data
-   */
-  async queryRange(query: string, range: TimeRange): Promise<RangeQueryResult> {
-    return this.rangeQuery(query, range);
-  }
-
-  /**
-   * Execute an instant query (alias for instantQuery)
-   *
-   * This alias matches Prometheus API naming convention.
-   *
-   * @param query - PromQL query string
-   * @param time - Optional evaluation time (defaults to now)
-   * @returns Query result with time series data
-   */
-  async query(query: string, time?: Date): Promise<InstantQueryResult> {
-    return this.instantQuery(query, time);
   }
 
   /**
@@ -177,37 +180,18 @@ export class PrometheusClient {
   }
 
   /**
-   * Find available metrics in the live Prometheus cluster.
+   * List all available metrics from the live Prometheus cluster.
    *
-   * Use this to discover what metrics (memory, cpu, disk, network, etc.) are
-   * available before querying. Returns metric names with their types and descriptions.
+   * Returns raw metric metadata. For semantic search (e.g., "memory usage"),
+   * use MetricSearchEngine instead.
    *
-   * @param pattern - Optional regex pattern to filter metrics (e.g., /memory/i, /node_cpu/i)
-   * @returns Array of available metrics with name, type, and description
-   *
-   * @example
-   * // Find all memory-related metrics
-   * const metrics = await prom.findMetrics(/memory/i);
-   * console.log(metrics.map(m => m.name));
-   *
-   * @example
-   * // Find all node metrics
-   * const nodeMetrics = await prom.findMetrics(/^node_/);
-   *
-   * @example
-   * // List all available metrics
-   * const allMetrics = await prom.findMetrics();
+   * @returns Array of all available metrics with name, type, and description
    */
-  async findMetrics(pattern?: RegExp): Promise<MetricInfo[]> {
+  async listMetrics(): Promise<MetricInfo[]> {
     const allMetadata = await this.metadata();
     const metrics: MetricInfo[] = [];
 
     for (const [name, entries] of Object.entries(allMetadata)) {
-      // Apply pattern filter if provided
-      if (pattern && !pattern.test(name)) {
-        continue;
-      }
-
       const entry = Array.isArray(entries) ? entries[0] : entries;
       metrics.push({
         name,
@@ -217,17 +201,6 @@ export class PrometheusClient {
     }
 
     return metrics;
-  }
-
-  /**
-   * List all available metrics in the live Prometheus cluster.
-   *
-   * Alias for findMetrics() without a pattern - returns all metrics.
-   *
-   * @returns Array of all available metrics with name, type, and description
-   */
-  async listMetrics(): Promise<MetricInfo[]> {
-    return this.findMetrics();
   }
 
   /**
