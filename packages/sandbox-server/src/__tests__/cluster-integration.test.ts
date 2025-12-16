@@ -29,7 +29,7 @@ function isClusterAvailable(): boolean {
 // Check if Prometheus is available
 function isPrometheusAvailable(): boolean {
   try {
-    execSync('curl -s http://localhost:9090/-/healthy', { stdio: 'pipe' });
+    execSync('curl -s http://127.0.0.1:9090/-/healthy', { stdio: 'pipe' });
     return true;
   } catch {
     return false;
@@ -356,7 +356,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
     server = await startServer({
       socketPath: testSocketPath,
       cacheDir: testCacheDir,
-      prometheusUrl: 'http://localhost:9090',
+      prometheusUrl: 'http://127.0.0.1:9090',
     });
 
     client = new SandboxClient({ socketPath: testSocketPath });
@@ -396,7 +396,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
         code: `
           const { PrometheusClient } = require('@prodisco/prometheus-client');
           const prom = new PrometheusClient({
-            endpoint: 'http://localhost:9090',
+            endpoint: 'http://127.0.0.1:9090',
           });
           const response = await prom.execute('up');
           console.log(JSON.stringify({
@@ -418,7 +418,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
         code: `
           const { PrometheusClient } = require('@prodisco/prometheus-client');
           const prom = new PrometheusClient({
-            endpoint: 'http://localhost:9090',
+            endpoint: 'http://127.0.0.1:9090',
           });
           const response = await prom.execute('container_cpu_usage_seconds_total');
           console.log(JSON.stringify({
@@ -439,7 +439,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
         code: `
           const { PrometheusClient } = require('@prodisco/prometheus-client');
           const prom = new PrometheusClient({
-            endpoint: 'http://localhost:9090',
+            endpoint: 'http://127.0.0.1:9090',
           });
           const response = await prom.execute('container_memory_usage_bytes{container!=""}');
           console.log(JSON.stringify({
@@ -461,7 +461,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
         code: `
           const { PrometheusClient } = require('@prodisco/prometheus-client');
           const prom = new PrometheusClient({
-            endpoint: 'http://localhost:9090',
+            endpoint: 'http://127.0.0.1:9090',
           });
           const end = new Date();
           const start = new Date(end.getTime() - 5 * 60 * 1000); // 5 minutes ago
@@ -485,7 +485,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
         code: `
           const { PrometheusClient } = require('@prodisco/prometheus-client');
           const prom = new PrometheusClient({
-            endpoint: 'http://localhost:9090',
+            endpoint: 'http://127.0.0.1:9090',
           });
           const response = await prom.execute('node_memory_MemTotal_bytes');
           const nodes = response.data.map(r => ({
@@ -516,7 +516,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
           // Query Prometheus for container CPU metrics (available from cadvisor)
           const { PrometheusClient } = require('@prodisco/prometheus-client');
           const prom = new PrometheusClient({
-            endpoint: 'http://localhost:9090',
+            endpoint: 'http://127.0.0.1:9090',
           });
           const response = await prom.execute('container_cpu_usage_seconds_total{container!=""}');
 

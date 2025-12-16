@@ -3,7 +3,7 @@ import { transform } from 'esbuild';
 import { builtinModules, createRequire } from 'node:module';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 export interface ExecutionResult {
   success: boolean;
@@ -42,6 +42,58 @@ const DEFAULT_ALLOWED_MODULES = [
 ];
 
 const localRequire = createRequire(import.meta.url);
+
+function hasUsableNodeModules(dir: string): boolean {
+  const nodeModulesPath = path.join(dir, 'node_modules');
+  if (!existsSync(nodeModulesPath)) {
+    return false;
+  }
+
+  // node_modules can exist for tooling caches (e.g., vitest creates node_modules/.vite),
+  // so require at least one non-dot entry to treat it as a real dependency root.
+  try {
+    const entries = readdirSync(nodeModulesPath);
+    return entries.some((name) => !name.startsWith('.'));
+  } catch {
+    return false;
+  }
+}
+
+function findNearestNodeModulesBasePath(startDir: string): string {
+  let dir = startDir;
+  // Best-effort upward search for a directory containing node_modules.
+  // This matters in monorepos where workspace commands run with cwd set to a package dir
+  // but dependencies are hoisted to the repo root.
+  // If none is found, return the original startDir as a fallback.
+  while (true) {
+    if (hasUsableNodeModules(dir)) {
+      return dir;
+    }
+
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      return startDir;
+    }
+    dir = parent;
+  }
+}
+
+function normalizeModulesBasePath(inputPath: string): string {
+  const p = inputPath.trim();
+  if (!p) return inputPath;
+
+  // Accept either the node_modules directory itself or its parent.
+  if (path.basename(p) === 'node_modules') {
+    const parent = path.dirname(p);
+    return existsSync(path.join(parent, 'node_modules')) ? parent : parent;
+  }
+
+  if (hasUsableNodeModules(p)) {
+    return p;
+  }
+
+  return findNearestNodeModulesBasePath(p);
+}
 
 function getConfigPathFromEnv(): string | null {
   const p = process.env.PRODISCO_CONFIG_PATH || process.env.SANDBOX_CONFIG_PATH;
@@ -321,7 +373,8 @@ export class Executor {
 
   constructor(config: ExecutorConfig = {}) {
     this.allowedModules = config.allowedModules ? new Set(config.allowedModules) : parseAllowedModulesFromEnv();
-    this.basePath = config.modulesBasePath || process.env.SANDBOX_MODULES_BASE_PATH || process.cwd();
+    const requestedBasePath = config.modulesBasePath || process.env.SANDBOX_MODULES_BASE_PATH || process.cwd();
+    this.basePath = normalizeModulesBasePath(requestedBasePath);
     this.requireFromBase = createRequire(path.join(this.basePath, 'index.js'));
     this.prometheusUrl = config.prometheusUrl || process.env.PROMETHEUS_URL;
 
