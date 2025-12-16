@@ -43,6 +43,9 @@ const K8S_SETUP = `
   const k8s = require('@kubernetes/client-node');
   const kc = new k8s.KubeConfig();
   kc.loadFromDefault();
+
+  // client-node return shapes vary by version (some return { body }, some return body directly)
+  const unwrap = (res) => (res && res.body ? res.body : res);
 `;
 
 // Generate unique IDs for test isolation (avoid collision between src and dist tests)
@@ -99,7 +102,7 @@ describe.skipIf(!clusterAvailable)('Cluster Integration Tests', () => {
         code: `
           ${K8S_SETUP}
           const api = kc.makeApiClient(k8s.CoreV1Api);
-          const response = await api.listNamespace();
+          const response = unwrap(await api.listNamespace());
           const names = response.items.map(ns => ns.metadata?.name).filter(Boolean);
           console.log(JSON.stringify(names));
         `,
@@ -118,7 +121,7 @@ describe.skipIf(!clusterAvailable)('Cluster Integration Tests', () => {
         code: `
           ${K8S_SETUP}
           const api = kc.makeApiClient(k8s.CoreV1Api);
-          const response = await api.readNamespace({ name: 'default' });
+          const response = unwrap(await api.readNamespace({ name: 'default' }));
           console.log(JSON.stringify({
             name: response.metadata?.name,
             status: response.status?.phase,
@@ -140,7 +143,7 @@ describe.skipIf(!clusterAvailable)('Cluster Integration Tests', () => {
         code: `
           ${K8S_SETUP}
           const api = kc.makeApiClient(k8s.CoreV1Api);
-          const response = await api.listNamespacedPod({ namespace: 'kube-system' });
+          const response = unwrap(await api.listNamespacedPod({ namespace: 'kube-system' }));
           const pods = response.items.map(pod => ({
             name: pod.metadata?.name,
             status: pod.status?.phase,
@@ -166,7 +169,7 @@ describe.skipIf(!clusterAvailable)('Cluster Integration Tests', () => {
         code: `
           ${K8S_SETUP}
           const api = kc.makeApiClient(k8s.CoreV1Api);
-          const response = await api.listPodForAllNamespaces();
+          const response = unwrap(await api.listPodForAllNamespaces());
           console.log(response.items.length);
         `,
         timeoutMs: 30000,
@@ -184,7 +187,7 @@ describe.skipIf(!clusterAvailable)('Cluster Integration Tests', () => {
         code: `
           ${K8S_SETUP}
           const api = kc.makeApiClient(k8s.CoreV1Api);
-          const response = await api.listNode();
+          const response = unwrap(await api.listNode());
           const nodes = response.items.map(node => ({
             name: node.metadata?.name,
             ready: node.status?.conditions?.find(c => c.type === 'Ready')?.status === 'True',
@@ -207,7 +210,7 @@ describe.skipIf(!clusterAvailable)('Cluster Integration Tests', () => {
         code: `
           ${K8S_SETUP}
           const api = kc.makeApiClient(k8s.CoreV1Api);
-          const response = await api.listNode();
+          const response = unwrap(await api.listNode());
           const node = response.items[0];
           const resources = {
             cpu: node.status?.capacity?.cpu,
@@ -231,7 +234,7 @@ describe.skipIf(!clusterAvailable)('Cluster Integration Tests', () => {
         code: `
           ${K8S_SETUP}
           const api = kc.makeApiClient(k8s.CoreV1Api);
-          const response = await api.listNamespacedService({ namespace: 'default' });
+          const response = unwrap(await api.listNamespacedService({ namespace: 'default' }));
           const services = response.items.map(svc => ({
             name: svc.metadata?.name,
             type: svc.spec?.type,
@@ -256,7 +259,7 @@ describe.skipIf(!clusterAvailable)('Cluster Integration Tests', () => {
         code: `
           ${K8S_SETUP}
           const api = kc.makeApiClient(k8s.AppsV1Api);
-          const response = await api.listNamespacedDeployment({ namespace: 'kube-system' });
+          const response = unwrap(await api.listNamespacedDeployment({ namespace: 'kube-system' }));
           const deployments = response.items.map(dep => ({
             name: dep.metadata?.name,
             replicas: dep.spec?.replicas,
@@ -281,7 +284,7 @@ describe.skipIf(!clusterAvailable)('Cluster Integration Tests', () => {
         code: `
           ${K8S_SETUP}
           const api = kc.makeApiClient(k8s.CoreV1Api);
-          const response = await api.listNamespacedConfigMap({ namespace: 'kube-system' });
+          const response = unwrap(await api.listNamespacedConfigMap({ namespace: 'kube-system' }));
           const configmaps = response.items.map(cm => cm.metadata?.name).filter(Boolean);
           console.log(JSON.stringify(configmaps));
         `,
@@ -301,7 +304,7 @@ describe.skipIf(!clusterAvailable)('Cluster Integration Tests', () => {
         code: `
           ${K8S_SETUP}
           const api = kc.makeApiClient(k8s.CoreV1Api);
-          const response = await api.listEventForAllNamespaces({ limit: 10 });
+          const response = unwrap(await api.listEventForAllNamespaces({ limit: 10 }));
           const events = response.items.map(event => ({
             type: event.type,
             reason: event.reason,
@@ -507,7 +510,7 @@ describe.skipIf(!clusterAvailable || !prometheusAvailable)('Prometheus Integrati
           ${K8S_SETUP}
           // Get pods from Kubernetes
           const api = kc.makeApiClient(k8s.CoreV1Api);
-          const podsResponse = await api.listNamespacedPod({ namespace: 'kube-system', limit: 5 });
+          const podsResponse = unwrap(await api.listNamespacedPod({ namespace: 'kube-system', limit: 5 }));
           const podNames = podsResponse.items.map(p => p.metadata?.name).filter(Boolean);
 
           // Query Prometheus for container CPU metrics (available from cadvisor)
@@ -583,7 +586,7 @@ describe.skipIf(!clusterAvailable)('Streaming with Real K8s Calls', () => {
       ${K8S_SETUP}
       const api = kc.makeApiClient(k8s.CoreV1Api);
       console.log("Fetching pods...");
-      const response = await api.listPodForAllNamespaces();
+      const response = unwrap(await api.listPodForAllNamespaces());
       console.log("Found " + response.items.length + " pods");
       for (const pod of response.items.slice(0, 3)) {
         console.log("Pod: " + pod.metadata?.name);
@@ -614,7 +617,7 @@ describe.skipIf(!clusterAvailable)('Streaming with Real K8s Calls', () => {
       code: `
         ${K8S_SETUP}
         const api = kc.makeApiClient(k8s.CoreV1Api);
-        const response = await api.listNamespace();
+        const response = unwrap(await api.listNamespace());
         console.log("Namespaces: " + response.items.length);
       `,
       timeoutMs: 30000,

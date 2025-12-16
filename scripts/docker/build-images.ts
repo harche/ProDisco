@@ -3,6 +3,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+
+const localRequire = createRequire(import.meta.url);
 
 type LibraryEntry = {
   name: string;
@@ -62,8 +65,7 @@ function parseConfigFile(configPath: string): LibrariesConfigFile {
   } else if (ext === '.yaml' || ext === '.yml') {
     // YAML is optional here; we depend on the root workspace having it installed.
     // This script is for repo users/build pipelines, not the published package.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { parseAllDocuments } = require('yaml') as { parseAllDocuments: (s: string) => Array<{ contents: unknown; toJSON: () => unknown }> };
+    const { parseAllDocuments } = localRequire('yaml') as { parseAllDocuments: (s: string) => Array<{ contents: unknown; toJSON: () => unknown }> };
     const docs = parseAllDocuments(raw);
     const nonEmptyDocs = docs.filter((d) => d.contents !== null);
     if (nonEmptyDocs.length === 0) {
@@ -78,8 +80,7 @@ function parseConfigFile(configPath: string): LibrariesConfigFile {
     try {
       obj = JSON.parse(raw) as unknown;
     } catch {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { parse } = require('yaml') as { parse: (s: string) => unknown };
+      const { parse } = localRequire('yaml') as { parse: (s: string) => unknown };
       obj = parse(raw);
     }
   }
