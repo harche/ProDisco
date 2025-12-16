@@ -18,10 +18,12 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
+    "docker:build:config": "tsx scripts/docker/build-images.ts",
     "lint": "ESLINT_USE_FLAT_CONFIG=false eslint \"src/**/*.{ts,tsx}\"",
     "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:integration": "scripts/integration/run-kind-integration.sh",
+    "test:examples": "bash scripts/ci/examples-smoke.sh",
     "prepare": "husky"
   },
   "keywords": [

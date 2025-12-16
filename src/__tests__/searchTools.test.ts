@@ -2,7 +2,7 @@ import { describe, expect, it, afterAll } from 'vitest';
 import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
-import { searchToolsTool, searchToolsService } from '../tools/kubernetes/searchTools.js';
+import { searchToolsTool, searchToolsService } from '../tools/prodisco/searchTools.js';
 import { SCRIPTS_CACHE_DIR } from '../util/paths.js';
 
 // =============================================================================
@@ -183,7 +183,7 @@ const searchScripts = async (input: {
   };
 };
 
-describe('kubernetes.searchTools', () => {
+describe('prodisco.searchTools', () => {
   describe('Basic Functionality', () => {
     it('includes JSON schemas for inputs', async () => {
       const result = await searchTools({ resourceType: 'Pod', limit: 5 });
@@ -1071,9 +1071,9 @@ describe('kubernetes.searchTools', () => {
       const result = await searchTools({ resourceType: 'Pod' });
 
       // Usage now includes library import examples
-      expect(result.usage).toContain('LIBRARY IMPORTS');
-      expect(result.usage).toContain('PrometheusClient');
-      expect(result.usage).toContain('LokiClient');
+      expect(result.usage).toContain('ALLOWED IMPORTS');
+      expect(result.usage).toContain('require("@prodisco/prometheus-client")');
+      expect(result.usage).toContain('require("@prodisco/loki-client")');
     });
   });
 
@@ -1121,7 +1121,7 @@ describe('kubernetes.searchTools', () => {
   });
 });
 
-describe('kubernetes.searchTools - Scripts Mode', () => {
+describe('prodisco.searchTools - Scripts Mode', () => {
   // Test script is created at module load time (see top of file)
   // This ensures it exists before Orama DB is initialized
 
@@ -1340,7 +1340,7 @@ describe('kubernetes.searchTools - Scripts Mode', () => {
   });
 });
 
-describe('kubernetes.searchTools - Script Indexing', () => {
+describe('prodisco.searchTools - Script Indexing', () => {
   describe('Script Indexing at Search Time', () => {
     it('scripts are indexed and searchable', async () => {
       // Search for scripts should work
@@ -1396,7 +1396,7 @@ const searchPrometheus = async (input: {
   };
 };
 
-describe('kubernetes.searchTools - Prometheus Mode', () => {
+describe('prodisco.searchTools - Prometheus Mode', () => {
   describe('Basic Prometheus Mode Functionality', () => {
     it('returns prometheus mode result with correct structure', async () => {
       const result = await searchPrometheus({ mode: 'prometheus' });
@@ -1646,7 +1646,7 @@ const searchAnalytics = async (input: {
   };
 };
 
-describe('kubernetes.searchTools - Analytics Mode', () => {
+describe('prodisco.searchTools - Analytics Mode', () => {
   describe('Basic Analytics Mode Functionality', () => {
     it('returns analytics mode result with correct structure', async () => {
       const result = await searchAnalytics({ mode: 'analytics' });
@@ -2120,7 +2120,7 @@ const searchLoki = async (input: {
   };
 };
 
-describe('kubernetes.searchTools - Loki Mode', () => {
+describe('prodisco.searchTools - Loki Mode', () => {
   describe('Basic Loki Mode Functionality', () => {
     it('returns loki mode result with correct structure', async () => {
       const result = await searchLoki({ mode: 'loki' });

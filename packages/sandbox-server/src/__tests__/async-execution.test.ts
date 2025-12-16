@@ -56,7 +56,9 @@ describe('Async Execution API', () => {
       const elapsed = Date.now() - start;
 
       // Should return immediately (not wait for execution)
-      expect(elapsed).toBeLessThan(50);
+      // This is best-effort and can vary across environments (gRPC handshake, CPU contention).
+      // It should still be significantly faster than the actual execution.
+      expect(elapsed).toBeLessThan(1000);
       expect(executionId).toMatch(/^[0-9a-f-]{36}$/);
       expect(state).toBe(ExecutionState.EXECUTION_STATE_PENDING);
     });

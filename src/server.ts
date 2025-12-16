@@ -7,16 +7,23 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { logger } from './util/logger.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version?: string };
-import { searchToolsTool, warmupSearchIndex, shutdownSearchIndex } from './tools/kubernetes/searchTools.js';
-import { runSandboxTool } from './tools/kubernetes/runSandbox.js';
+import { createSearchToolsTool, warmupSearchIndex, shutdownSearchIndex, type SearchToolsRuntimeConfig } from './tools/prodisco/searchTools.js';
+import { createRunSandboxTool } from './tools/prodisco/runSandbox.js';
 import { getSandboxClient, closeSandboxClient } from '@prodisco/sandbox-server/client';
+import {
+  DEFAULT_LIBRARIES_CONFIG,
+  loadLibrariesConfigFile,
+  resolveNodeModulesBasePath,
+  type LibrarySpec,
+} from './config/libraries.js';
+import type { AnyToolDefinition } from './tools/types.js';
 
 // Track the sandbox server subprocess
 let sandboxProcess: ChildProcess | null = null;
@@ -28,194 +35,198 @@ import {
   listGeneratedFiles,
   readGeneratedFile,
 } from './resources/filesystem.js';
-import { probeClusterConnectivity } from './kube/client.js';
-import { SCRIPTS_CACHE_DIR } from './util/paths.js';
+import { PACKAGE_ROOT, SCRIPTS_CACHE_DIR } from './util/paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const GENERATED_DIR = path.resolve(__dirname, 'tools/kubernetes');
+const GENERATED_DIR = path.resolve(__dirname, 'tools/prodisco');
 
-const server = new McpServer(
-  {
-    name: 'kubernetes-mcp',
-    version: typeof pkg.version === 'string' ? pkg.version : '0.0.0',
-  },
-  {
-    instructions:
-      '**ALWAYS SEARCH BEFORE WRITING CODE.** ' +
-      'Call searchTools first to discover APIs, methods, and correct usage patterns. ' +
-      'Do NOT guess method names or parameters - search to find them. ' +
-      '\n\n' +
-      'WORKFLOW: ' +
-      '1. User asks about Kubernetes/Prometheus/Loki → Call searchTools with relevant query ' +
-      '2. Review search results to find correct APIs ' +
-      '3. Call runSandbox to execute code using discovered APIs ' +
-      '\n\n' +
-      'TOOLS: ' +
-      'searchTools - Discover APIs (K8s methods, Prometheus metrics, Loki queries, statistics functions). ' +
-      'runSandbox - Execute TypeScript with pre-configured k8s, kc (KubeConfig), and library imports.',
-  },
-);
+function formatLibrariesForAgent(libraries: LibrarySpec[]): string {
+  return libraries
+    .map((l) => (l.description ? `${l.name} (${l.description})` : l.name))
+    .join(', ');
+}
 
-// Expose generated TypeScript files as MCP resources using ResourceTemplate
-import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
+function buildServerInstructions(libraries: LibrarySpec[]): string {
+  const libs = formatLibrariesForAgent(libraries);
+  return (
+    '**ALWAYS SEARCH BEFORE WRITING CODE.** ' +
+    'Call prodisco.searchTools first to discover APIs, methods, and correct usage patterns. ' +
+    'Do NOT guess method names or parameters - search to find them. ' +
+    '\n\n' +
+    `CONFIGURED LIBRARIES: ${libs}` +
+    '\n\n' +
+    'WORKFLOW: ' +
+    '1. Call prodisco.searchTools with a relevant query ' +
+    '2. Review results to find correct APIs ' +
+    '3. Call prodisco.runSandbox to execute code using discovered APIs'
+  );
+}
 
-const resourceTemplate = new ResourceTemplate(
-  `file://${PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH}{path}`,
-  {
-    list: async () => {
-      const files = await listGeneratedFiles(GENERATED_DIR);
+function registerGeneratedResources(mcpServer: McpServer): void {
+  const resourceTemplate = new ResourceTemplate(
+    `file://${PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH}{path}`,
+    {
+      list: async () => {
+        const files = await listGeneratedFiles(GENERATED_DIR);
+        return {
+          resources: files.map((f) => ({
+            uri: f.uri,
+            name: f.name,
+            description: f.description,
+            mimeType: f.mimeType,
+          })),
+        };
+      },
+    },
+  );
+
+  mcpServer.registerResource(
+    'generated-typescript-files',
+    resourceTemplate,
+    {
+      description: 'Generated TypeScript modules for Kubernetes operations',
+    },
+    async (uri) => {
+      // Extract relative path from canonical URI
+      const requestedPath = decodeURIComponent(uri.pathname);
+      const normalizedRoot = PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH;
+
+      if (!requestedPath.startsWith(normalizedRoot)) {
+        throw new Error(`Resource ${requestedPath} is outside ${normalizedRoot}`);
+      }
+
+      const relativePosixPath = requestedPath.slice(normalizedRoot.length);
+      if (!relativePosixPath) {
+        throw new Error('Resource path missing');
+      }
+
+      const relativePath = relativePosixPath.split('/').join(path.sep);
+      const content = await readGeneratedFile(GENERATED_DIR, relativePath);
+
       return {
-        resources: files.map((f) => ({
-          uri: f.uri,
-          name: f.name,
-          description: f.description,
-          mimeType: f.mimeType,
-        })),
+        contents: [
+          {
+            uri: uri.toString(),
+            mimeType: 'text/typescript',
+            text: content,
+          },
+        ],
       };
     },
-  },
-);
+  );
 
-server.registerResource(
-  'generated-typescript-files',
-  resourceTemplate,
-  {
-    description: 'Generated TypeScript modules for Kubernetes operations',
-  },
-  async (uri) => {
-    // Extract relative path from canonical URI
-    const requestedPath = decodeURIComponent(uri.pathname);
-    const normalizedRoot = PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH;
+  logger.info(`Exposed ${GENERATED_DIR} as MCP resources`);
+}
 
-    if (!requestedPath.startsWith(normalizedRoot)) {
-      throw new Error(`Resource ${requestedPath} is outside ${normalizedRoot}`);
-    }
+function registerTools(
+  mcpServer: McpServer,
+  tools: { searchTools: AnyToolDefinition; runSandbox: AnyToolDefinition },
+): void {
+  const searchTools = tools.searchTools;
+  const runSandbox = tools.runSandbox;
 
-    const relativePosixPath = requestedPath.slice(normalizedRoot.length);
-    if (!relativePosixPath) {
-      throw new Error('Resource path missing');
-    }
+  // Register prodisco.searchTools helper as an exposed tool.
+  mcpServer.registerTool(
+    searchTools.name,
+    {
+      title: 'ProDisco Search Tools',
+      description: searchTools.description,
+      inputSchema: searchTools.schema,
+    },
+    async (args: Record<string, unknown>) => {
+      const parsedArgs = await searchTools.schema.parseAsync(args);
+      const result = await searchTools.execute(parsedArgs);
 
-    const relativePath = relativePosixPath.split('/').join(path.sep);
-    const content = await readGeneratedFile(GENERATED_DIR, relativePath);
-    
-    return {
-      contents: [
-        {
-          uri: uri.toString(),
-          mimeType: 'text/typescript',
-          text: content,
-        },
-      ],
-    };
-  },
-);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: result.summary,
+          },
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result.results, null, 2),
+          },
+        ],
+        structuredContent: result,
+      };
+    },
+  );
 
-logger.info(`Exposed ${GENERATED_DIR} as MCP resources`);
+  // Register prodisco.runSandbox tool for executing scripts in a sandboxed environment
+  mcpServer.registerTool(
+    runSandbox.name,
+    {
+      title: 'ProDisco Run Sandbox',
+      description: runSandbox.description,
+      inputSchema: runSandbox.schema,
+    },
+    async (args: Record<string, unknown>) => {
+      const parsedArgs = await runSandbox.schema.parseAsync(args);
+      const result = await runSandbox.execute(parsedArgs);
 
-// Register kubernetes.searchTools helper as an exposed tool.
-// This tool now supports both modes: 'methods' (API discovery) and 'types' (type definitions)
-server.registerTool(
-  searchToolsTool.name,
-  {
-    title: 'Kubernetes Search Tools',
-    description: searchToolsTool.description,
-    inputSchema: searchToolsTool.schema,
-  },
-  async (args: Record<string, unknown>) => {
-    const parsedArgs = await searchToolsTool.schema.parseAsync(args);
-    const result = await searchToolsTool.execute(parsedArgs);
+      // Build the output message based on mode
+      let text: string;
 
-    // Unified search results (includes methods and types)
-    return {
-      content: [
-        {
-          type: 'text',
-          text: result.summary,
-        },
-        {
-          type: 'text',
-          text: JSON.stringify(result.results, null, 2),
-        },
-      ],
-      structuredContent: result,
-    };
-  },
-);
-
-// Register kubernetes.runSandbox tool for executing scripts in a sandboxed environment
-server.registerTool(
-  runSandboxTool.name,
-  {
-    title: 'Kubernetes Run Sandbox',
-    description: runSandboxTool.description,
-    inputSchema: runSandboxTool.schema,
-  },
-  async (args: Record<string, unknown>) => {
-    const parsedArgs = await runSandboxTool.schema.parseAsync(args);
-    const result = await runSandboxTool.execute(parsedArgs);
-
-    // Build the output message based on mode
-    let text: string;
-
-    if ('error' in result && result.error && !('output' in result)) {
-      // Error result without output
-      text = `Error: ${result.error}`;
-    } else if (result.mode === 'execute' || result.mode === 'stream') {
-      // Execution results with output
-      const execResult = result as { success: boolean; output: string; error?: string; executionTimeMs: number; cachedScript?: string };
-      const cachedInfo = execResult.cachedScript ? ` [cached: ${execResult.cachedScript}]` : '';
-      if (execResult.success) {
-        text = `Execution successful${cachedInfo} (${execResult.executionTimeMs}ms)\n\nOutput:\n${execResult.output}`;
-      } else {
-        text = `Execution failed${cachedInfo} (${execResult.executionTimeMs}ms)\n\nError: ${execResult.error}\n\nOutput:\n${execResult.output}`;
-      }
-    } else if (result.mode === 'async') {
-      // Async mode - return execution ID
-      const asyncResult = result as { executionId: string; state: string; message: string };
-      text = `${asyncResult.message}\n\nExecution ID: ${asyncResult.executionId}\nState: ${asyncResult.state}`;
-    } else if (result.mode === 'status') {
-      // Status mode - return status and output
-      const statusResult = result as { executionId: string; state: string; output: string; errorOutput: string; result?: { success: boolean } };
-      const isComplete = statusResult.result !== undefined;
-      text = `Execution ${statusResult.executionId}\nState: ${statusResult.state}${isComplete ? ' (completed)' : ''}\n\nOutput:\n${statusResult.output}`;
-      if (statusResult.errorOutput) {
-        text += `\n\nErrors:\n${statusResult.errorOutput}`;
-      }
-    } else if (result.mode === 'cancel') {
-      // Cancel mode
-      const cancelResult = result as { success: boolean; executionId: string; state: string; message?: string };
-      text = cancelResult.success
-        ? `Execution ${cancelResult.executionId} cancelled. State: ${cancelResult.state}`
-        : `Failed to cancel execution ${cancelResult.executionId}: ${cancelResult.message || 'Unknown error'}`;
-    } else if (result.mode === 'list') {
-      // List mode
-      const listResult = result as { executions: Array<{ executionId: string; state: string; codePreview: string }>; totalCount: number };
-      if (listResult.executions.length === 0) {
-        text = 'No executions found.';
-      } else {
-        text = `Found ${listResult.totalCount} execution(s):\n\n`;
-        for (const exec of listResult.executions) {
-          text += `• ${exec.executionId} [${exec.state}]: ${exec.codePreview}\n`;
+      if ('error' in result && result.error && !('output' in result)) {
+        // Error result without output
+        text = `Error: ${result.error}`;
+      } else if (result.mode === 'execute' || result.mode === 'stream') {
+        // Execution results with output
+        const execResult = result as { success: boolean; output: string; error?: string; executionTimeMs: number; cachedScript?: string };
+        const cachedInfo = execResult.cachedScript ? ` [cached: ${execResult.cachedScript}]` : '';
+        if (execResult.success) {
+          text = `Execution successful${cachedInfo} (${execResult.executionTimeMs}ms)\n\nOutput:\n${execResult.output}`;
+        } else {
+          text = `Execution failed${cachedInfo} (${execResult.executionTimeMs}ms)\n\nError: ${execResult.error}\n\nOutput:\n${execResult.output}`;
         }
+      } else if (result.mode === 'async') {
+        // Async mode - return execution ID
+        const asyncResult = result as { executionId: string; state: string; message: string };
+        text = `${asyncResult.message}\n\nExecution ID: ${asyncResult.executionId}\nState: ${asyncResult.state}`;
+      } else if (result.mode === 'status') {
+        // Status mode - return status and output
+        const statusResult = result as { executionId: string; state: string; output: string; errorOutput: string; result?: { success: boolean } };
+        const isComplete = statusResult.result !== undefined;
+        text = `Execution ${statusResult.executionId}\nState: ${statusResult.state}${isComplete ? ' (completed)' : ''}\n\nOutput:\n${statusResult.output}`;
+        if (statusResult.errorOutput) {
+          text += `\n\nErrors:\n${statusResult.errorOutput}`;
+        }
+      } else if (result.mode === 'cancel') {
+        // Cancel mode
+        const cancelResult = result as { success: boolean; executionId: string; state: string; message?: string };
+        text = cancelResult.success
+          ? `Execution ${cancelResult.executionId} cancelled. State: ${cancelResult.state}`
+          : `Failed to cancel execution ${cancelResult.executionId}: ${cancelResult.message || 'Unknown error'}`;
+      } else if (result.mode === 'list') {
+        // List mode
+        const listResult = result as { executions: Array<{ executionId: string; state: string; codePreview: string }>; totalCount: number };
+        if (listResult.executions.length === 0) {
+          text = 'No executions found.';
+        } else {
+          text = `Found ${listResult.totalCount} execution(s):\n\n`;
+          for (const exec of listResult.executions) {
+            text += `• ${exec.executionId} [${exec.state}]: ${exec.codePreview}\n`;
+          }
+        }
+      } else {
+        // Fallback
+        text = JSON.stringify(result, null, 2);
       }
-    } else {
-      // Fallback
-      text = JSON.stringify(result, null, 2);
-    }
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text,
-        },
-      ],
-      structuredContent: result,
-    };
-  },
-);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text,
+          },
+        ],
+        structuredContent: result,
+      };
+    },
+  );
+}
 
 /**
  * Check if TCP transport is configured via environment variables.
@@ -251,8 +262,7 @@ async function startSandboxServer(): Promise<void> {
       throw new Error(`Remote sandbox server at ${host}:${port} is not reachable`);
     }
 
-    const healthStatus = await client.healthCheck();
-    logger.info(`Remote sandbox server is ready (context: ${healthStatus.kubernetesContext})`);
+    logger.info('Remote sandbox server is ready');
     return;
   }
 
@@ -328,8 +338,33 @@ function parseArgs(args: string[]): {
   transport: 'stdio' | 'http';
   host: string;
   port: number;
+  configPath?: string;
+  installMissing: boolean;
 } {
   const clearCache = args.includes('--clear-cache');
+
+  // --config <path> (optional)
+  const configIdx = args.indexOf('--config');
+  let configPath: string | undefined;
+  if (configIdx !== -1) {
+    const value = args[configIdx + 1];
+    if (!value || value.startsWith('--')) {
+      throw new Error('Missing value for --config <path>');
+    }
+    configPath = value;
+  }
+
+  // Environment fallback for config path
+  if (!configPath && process.env.PRODISCO_CONFIG_PATH) {
+    configPath = process.env.PRODISCO_CONFIG_PATH;
+  }
+
+  // --install-missing (optional, can also be set via env)
+  const envInstall = process.env.PRODISCO_INSTALL_MISSING;
+  const installMissing =
+    args.includes('--install-missing') ||
+    envInstall === '1' ||
+    envInstall === 'true';
 
   // Check for --transport flag
   const transportIdx = args.indexOf('--transport');
@@ -382,13 +417,13 @@ function parseArgs(args: string[]): {
     host = process.env.MCP_HOST;
   }
 
-  return { clearCache, transport, host, port };
+  return { clearCache, transport, host, port, configPath, installMissing };
 }
 
 /**
  * Start the MCP server with HTTP transport using StreamableHTTPServerTransport.
  */
-async function startHttpTransport(host: string, port: number): Promise<void> {
+async function startHttpTransport(mcpServer: McpServer, host: string, port: number): Promise<void> {
   // Track active transports by session ID
   const transports = new Map<string, StreamableHTTPServerTransport>();
 
@@ -432,7 +467,7 @@ async function startHttpTransport(host: string, port: number): Promise<void> {
         };
 
         // Connect the transport to the MCP server
-        await server.connect(transport);
+        await mcpServer.connect(transport);
         await transport.handleRequest(req, res);
       } else if (req.method === 'GET') {
         // SSE stream request without existing session - need to init first
@@ -456,8 +491,74 @@ async function startHttpTransport(host: string, port: number): Promise<void> {
   return new Promise((resolve, reject) => {
     httpServer!.on('error', reject);
     httpServer!.listen(port, host, () => {
-      logger.info(`Kubernetes MCP server ready on http://${host}:${port}/mcp`);
+      logger.info(`ProDisco MCP server ready on http://${host}:${port}/mcp`);
       resolve();
+    });
+  });
+}
+
+function packageInstallPath(basePath: string, packageName: string): string {
+  const nodeModulesPath = path.join(basePath, 'node_modules');
+  if (packageName.startsWith('@')) {
+    const parts = packageName.split('/');
+    if (parts.length >= 2) {
+      return path.join(nodeModulesPath, parts[0]!, parts[1]!);
+    }
+  }
+  return path.join(nodeModulesPath, packageName);
+}
+
+function isPackageInstalled(basePath: string, packageName: string): boolean {
+  return fs.existsSync(packageInstallPath(basePath, packageName));
+}
+
+async function ensureDepsCacheDir(basePath: string): Promise<void> {
+  await fs.promises.mkdir(basePath, { recursive: true });
+  const pkgJsonPath = path.join(basePath, 'package.json');
+  if (!fs.existsSync(pkgJsonPath)) {
+    await fs.promises.writeFile(
+      pkgJsonPath,
+      JSON.stringify({ name: 'prodisco-deps-cache', private: true }, null, 2),
+      'utf-8',
+    );
+  }
+}
+
+async function npmInstallPackages(cwd: string, packages: string[]): Promise<void> {
+  if (packages.length === 0) {
+    return;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      'npm',
+      ['install', '--no-audit', '--no-fund', '--no-progress', ...packages],
+      {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: process.env,
+      },
+    );
+
+    let stderr = '';
+    child.stdout?.on('data', (data: Buffer) => {
+      const line = data.toString().trim();
+      if (line) {
+        logger.info(`[npm] ${line}`);
+      }
+    });
+
+    child.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    child.on('error', (error) => reject(error));
+    child.on('exit', (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`npm install failed (exit ${code}): ${stderr.trim()}`));
+      }
     });
   });
 }
@@ -469,7 +570,7 @@ async function main() {
   // Show help
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`
-Kubernetes MCP Server - Progressive Disclosure
+ProDisco MCP Server - Progressive Disclosure
 
 Usage: prodisco-k8s [options]
 
@@ -479,10 +580,14 @@ Transport Options:
   --port <port>        HTTP port to listen on (default: 3000, implies --transport http)
 
 Other Options:
+  --config <path>      Path to YAML/JSON config listing libraries to index/allow
+  --install-missing    Auto-install missing libraries into .cache/deps (opt-in)
   --clear-cache        Clear the scripts cache on startup
   --help, -h           Show this help message
 
 Environment Variables:
+  PRODISCO_CONFIG_PATH         Path to YAML/JSON config listing libraries to index/allow
+  PRODISCO_INSTALL_MISSING     If set to 1/true, auto-install missing libraries into .cache/deps
   MCP_TRANSPORT        Transport mode (stdio or http)
   MCP_HOST             HTTP host to bind to
   MCP_PORT             HTTP port to listen on
@@ -490,6 +595,9 @@ Environment Variables:
 Examples:
   # Stdio mode (for Claude Desktop, claude mcp add)
   prodisco-k8s
+
+  # Use a custom libraries config (YAML/JSON)
+  prodisco-k8s --config prodisco.config.yaml
 
   # HTTP mode on default port
   prodisco-k8s --transport http
@@ -503,7 +611,75 @@ Examples:
     process.exit(0);
   }
 
-  const { clearCache, transport, host, port } = parseArgs(args);
+  const { clearCache, transport, host, port, configPath, installMissing } = parseArgs(args);
+
+  // Load libraries config (defaults to built-in list for backward compatibility)
+  const librariesConfig = configPath
+    ? await loadLibrariesConfigFile(configPath)
+    : DEFAULT_LIBRARIES_CONFIG;
+
+  const libraryNames = librariesConfig.libraries.map((l) => l.name);
+  logger.info(`Configured libraries: ${libraryNames.join(', ')}`);
+
+  // Resolve base path for node_modules
+  let modulesBasePath: string;
+
+  if (installMissing) {
+    modulesBasePath = path.join(PACKAGE_ROOT, '.cache', 'deps');
+    await ensureDepsCacheDir(modulesBasePath);
+
+    const missing = libraryNames.filter((name) => !isPackageInstalled(modulesBasePath, name));
+    if (missing.length > 0) {
+      logger.info(`Installing ${missing.length} missing package(s) into ${modulesBasePath}...`);
+      await npmInstallPackages(modulesBasePath, missing);
+    }
+
+    const stillMissing = libraryNames.filter((name) => !isPackageInstalled(modulesBasePath, name));
+    if (stillMissing.length > 0) {
+      throw new Error(
+        `Missing packages even after install: ${stillMissing.join(', ')}`
+      );
+    }
+  } else {
+    modulesBasePath = resolveNodeModulesBasePath({
+      startDir: PACKAGE_ROOT,
+      fallbackDir: process.cwd(),
+    });
+
+    const missing = libraryNames.filter((name) => !isPackageInstalled(modulesBasePath, name));
+    if (missing.length > 0) {
+      throw new Error(
+        `Missing packages: ${missing.join(', ')}. ` +
+        'Install them into your environment or start with --install-missing.'
+      );
+    }
+  }
+
+  logger.info(`Node modules base path: ${modulesBasePath}`);
+
+  // Configure sandbox allowlist for local sandbox-server subprocess
+  process.env.SANDBOX_ALLOWED_MODULES = JSON.stringify(libraryNames);
+  process.env.SANDBOX_MODULES_BASE_PATH = modulesBasePath;
+
+  const searchToolsRuntimeConfig: SearchToolsRuntimeConfig = {
+    libraries: librariesConfig.libraries,
+    basePath: modulesBasePath,
+  };
+  const searchTools = createSearchToolsTool(searchToolsRuntimeConfig);
+  const runSandbox = createRunSandboxTool({ libraries: librariesConfig.libraries });
+
+  // Create MCP server with dynamic instructions, then register resources/tools
+  const mcpServer = new McpServer(
+    {
+      name: 'kubernetes-mcp',
+      version: typeof pkg.version === 'string' ? pkg.version : '0.0.0',
+    },
+    {
+      instructions: buildServerInstructions(librariesConfig.libraries),
+    },
+  );
+  registerGeneratedResources(mcpServer);
+  registerTools(mcpServer, { searchTools, runSandbox });
 
   // Handle --clear-cache flag
   if (clearCache) {
@@ -524,28 +700,18 @@ Examples:
   // Start the sandbox gRPC server
   await startSandboxServer();
 
-  // Probe cluster connectivity before starting the server
-  // This ensures we fail fast if the cluster is not reachable
-  logger.info('Probing Kubernetes cluster connectivity...');
-  try {
-    await probeClusterConnectivity();
-    logger.info('Kubernetes cluster is reachable');
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.error(`Failed to connect to Kubernetes cluster: ${message}`);
-    throw new Error(`Kubernetes cluster is not accessible: ${message}`);
-  }
+  // No built-in cluster probes: ProDisco is library-agnostic; connectivity checks are up to user code.
 
   // Pre-warm the Orama search index to avoid delay on first search
-  await warmupSearchIndex();
+  await warmupSearchIndex(searchToolsRuntimeConfig);
 
   // Start the appropriate transport
   if (transport === 'http') {
-    await startHttpTransport(host, port);
+    await startHttpTransport(mcpServer, host, port);
   } else {
     const stdioTransport = new StdioServerTransport();
-    await server.connect(stdioTransport);
-    logger.info('Kubernetes MCP server ready on stdio');
+    await mcpServer.connect(stdioTransport);
+    logger.info('ProDisco MCP server ready on stdio');
   }
 }
 

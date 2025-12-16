@@ -65,9 +65,17 @@ else
   npm run build -w @prodisco/sandbox-server
 fi
 
-# Step 3: Build Docker image
-log "Building Docker image ${IMAGE_NAME}"
-docker build -f packages/sandbox-server/Dockerfile -t "$IMAGE_NAME" .
+# Step 3: Build Docker image from config (keeps image contents in sync with runtime library config)
+# Default to the shipped Kubernetes example config since these tests exec k8s client code in-cluster.
+LIBRARIES_CONFIG_PATH="${LIBRARIES_CONFIG_PATH:-${ROOT_DIR}/examples/prodisco.kubernetes.yaml}"
+IMAGE_TAG="${IMAGE_TAG:-test}"
+
+log "Building sandbox-server Docker image from config (${LIBRARIES_CONFIG_PATH})"
+npm run docker:build:config -- \
+  --config "${LIBRARIES_CONFIG_PATH}" \
+  --tag "${IMAGE_TAG}" \
+  --sandbox-image prodisco/sandbox-server \
+  --skip-mcp
 
 # Step 4: Load image into kind
 log "Loading image into kind cluster"

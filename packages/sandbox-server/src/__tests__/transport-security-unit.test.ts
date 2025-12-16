@@ -10,6 +10,7 @@ import * as grpc from '@grpc/grpc-js';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join } from 'node:path';
+import * as net from 'node:net';
 
 /**
  * Verify openssl is available - fail immediately if not.
@@ -33,6 +34,23 @@ function verifyOpenSslAvailable(): void {
 const isDistBuild = import.meta.url.includes('/dist/');
 const PORT_BASE = isDistBuild ? 57000 : 55000;
 verifyOpenSslAvailable();
+
+async function getFreeTcpPort(host: string): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, host, () => {
+      const addr = server.address();
+      if (!addr || typeof addr === 'string') {
+        server.close(() => reject(new Error('Failed to allocate a TCP port')));
+        return;
+      }
+      const port = addr.port;
+      server.close((err) => (err ? reject(err) : resolve(port)));
+    });
+  });
+}
 
 /**
  * Generate real self-signed certificates using OpenSSL.
@@ -1423,7 +1441,8 @@ describe('Default Values', () => {
   it('server defaults to 0.0.0.0 for TCP host', async () => {
     const { startServer } = await import('../server/index.js');
 
-    const testPort = PORT_BASE + 10;
+    // Avoid hard-coded ports that can be in use on CI runners.
+    const testPort = await getFreeTcpPort('0.0.0.0');
     process.env.SANDBOX_USE_TCP = 'true';
     process.env.SANDBOX_TCP_PORT = String(testPort);
     // No TCP_HOST set

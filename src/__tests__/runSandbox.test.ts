@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, unlinkSync, readFileSync, writeFile
 import { join } from 'path';
 import type { Server } from '@grpc/grpc-js';
 
-import { runSandboxTool } from '../tools/kubernetes/runSandbox.js';
+import { runSandboxTool } from '../tools/prodisco/runSandbox.js';
 import { SCRIPTS_CACHE_DIR } from '../util/paths.js';
 import { startServer } from '@prodisco/sandbox-server/server';
 import { closeSandboxClient, getSandboxClient } from '@prodisco/sandbox-server/client';
@@ -103,7 +103,7 @@ afterAll(() => {
   }
 });
 
-describe('kubernetes.runSandbox', () => {
+describe('prodisco.runSandbox', () => {
   describe('Basic Execution', () => {
     it('executes simple TypeScript code', async () => {
       const result = await runSandbox({
@@ -191,30 +191,33 @@ describe('kubernetes.runSandbox', () => {
   });
 
   describe('Sandbox Environment', () => {
-    it('provides k8s module', async () => {
+    it('allows requiring @kubernetes/client-node (if allowlisted)', async () => {
       const result = await runSandbox({
         code: `
-          console.log("k8s available:", typeof k8s !== 'undefined');
+          const k8s = require('@kubernetes/client-node');
+          console.log("k8s loaded:", typeof k8s !== 'undefined');
           console.log("CoreV1Api:", typeof k8s.CoreV1Api);
         `,
       });
 
       expect(result.success).toBe(true);
-      expect(result.output).toContain('k8s available: true');
+      expect(result.output).toContain('k8s loaded: true');
       expect(result.output).toContain('CoreV1Api: function');
     });
 
-    it('provides pre-configured kc (KubeConfig)', async () => {
+    it('can construct KubeConfig via @kubernetes/client-node', async () => {
       const result = await runSandbox({
         code: `
-          console.log("kc available:", typeof kc !== 'undefined');
+          const k8s = require('@kubernetes/client-node');
+          const kc = new k8s.KubeConfig();
           console.log("kc is KubeConfig:", kc.constructor.name);
+          console.log("has loadFromOptions:", typeof kc.loadFromOptions);
         `,
       });
 
       expect(result.success).toBe(true);
-      expect(result.output).toContain('kc available: true');
       expect(result.output).toContain('kc is KubeConfig: KubeConfig');
+      expect(result.output).toContain('has loadFromOptions: function');
     });
 
     it('provides require function for whitelisted modules', async () => {
@@ -231,16 +234,17 @@ describe('kubernetes.runSandbox', () => {
       expect(result.output).toContain('PrometheusClient: function');
     });
 
-    it('require returns k8s for @kubernetes/client-node', async () => {
+    it('require caches @kubernetes/client-node within an execution', async () => {
       const result = await runSandbox({
         code: `
-          const k8sModule = require('@kubernetes/client-node');
-          console.log("k8s via require:", k8sModule === k8s);
+          const k8s1 = require('@kubernetes/client-node');
+          const k8s2 = require('@kubernetes/client-node');
+          console.log("k8s require cached:", k8s1 === k8s2);
         `,
       });
 
       expect(result.success).toBe(true);
-      expect(result.output).toContain('k8s via require: true');
+      expect(result.output).toContain('k8s require cached: true');
     });
 
     it('throws error for non-whitelisted modules', async () => {
@@ -760,9 +764,18 @@ describe('kubernetes.runSandbox', () => {
   });
 
   describe('Kubernetes Integration', () => {
-    it('can create API client from kc', async () => {
+    it('can create API client from a minimally configured KubeConfig', async () => {
       const result = await runSandbox({
         code: `
+          const k8s = require('@kubernetes/client-node');
+          const kc = new k8s.KubeConfig();
+          kc.loadFromOptions({
+            clusters: [{ name: 'cluster', server: 'https://example.invalid' }],
+            users: [{ name: 'user' }],
+            contexts: [{ name: 'context', user: 'user', cluster: 'cluster' }],
+            currentContext: 'context',
+          });
+
           const api = kc.makeApiClient(k8s.CoreV1Api);
           console.log("API client created:", api.constructor.name);
         `,
@@ -777,6 +790,7 @@ describe('kubernetes.runSandbox', () => {
     it('can access different API classes', async () => {
       const result = await runSandbox({
         code: `
+          const k8s = require('@kubernetes/client-node');
           console.log("CoreV1Api:", typeof k8s.CoreV1Api);
           console.log("AppsV1Api:", typeof k8s.AppsV1Api);
           console.log("BatchV1Api:", typeof k8s.BatchV1Api);
@@ -835,7 +849,7 @@ describe('kubernetes.runSandbox', () => {
 
   describe('Tool Definition', () => {
     it('has correct name', () => {
-      expect(runSandboxTool.name).toBe('kubernetes.runSandbox');
+      expect(runSandboxTool.name).toBe('prodisco.runSandbox');
     });
 
     it('has description', () => {
@@ -1616,7 +1630,7 @@ describe('runSandbox - Mode Integration', () => {
 // Analytics Libraries Integration Tests
 // ============================================================================
 
-describe('kubernetes.runSandbox - Analytics Libraries Integration', () => {
+describe('prodisco.runSandbox - Analytics Libraries Integration', () => {
   describe('simple-statistics Integration', () => {
     it('can require and use simple-statistics', async () => {
       const result = await runSandbox({

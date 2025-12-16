@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 
-import { searchToolsTool, searchToolsService } from '../tools/kubernetes/searchTools.js';
+import { searchToolsTool, searchToolsService } from '../tools/prodisco/searchTools.js';
 
 // Helper to execute type search using the new unified approach
 async function executeTypeSearch(methodName: string, options?: { library?: string; limit?: number }) {
@@ -14,7 +14,7 @@ async function executeTypeSearch(methodName: string, options?: { library?: strin
   return result;
 }
 
-describe('kubernetes.searchTools (type documents in Orama)', () => {
+describe('prodisco.searchTools (type documents in Orama)', () => {
   beforeAll(async () => {
     // Ensure the search index is initialized
     await searchToolsService.initialize();

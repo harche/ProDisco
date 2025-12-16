@@ -247,29 +247,33 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
       // Start execution in background
       executionRegistry.setState(execution.id, 2); // RUNNING
 
-      executor.executeStreaming({
-        code,
-        timeoutMs,
-        signal: execution.abortController.signal,
-        onOutput: (output, isError) => {
-          executionRegistry.appendOutput(execution.id, output, isError);
-        },
-      }).then(async (result) => {
-        // Cache successful new executions
-        let cacheEntry = undefined;
-        if (result.success && !isCached) {
-          cacheEntry = await cacheManager.cache(code);
-        }
+      // Defer actual execution to a later turn of the event loop so the gRPC response
+      // can be flushed before any expensive work (TypeScript transform, module preload, etc).
+      setTimeout(() => {
+        executor.executeStreaming({
+          code,
+          timeoutMs,
+          signal: execution.abortController.signal,
+          onOutput: (output, isError) => {
+            executionRegistry.appendOutput(execution.id, output, isError);
+          },
+        }).then(async (result) => {
+          // Cache successful new executions
+          let cacheEntry = undefined;
+          if (result.success && !isCached) {
+            cacheEntry = await cacheManager.cache(code);
+          }
 
-        const finalState = resultToState(result);
-        executionRegistry.setResult(execution.id, {
-          success: result.success,
-          error: result.error,
-          executionTimeMs: result.executionTimeMs,
-          state: finalState,
-          cached: cacheEntry,
+          const finalState = resultToState(result);
+          executionRegistry.setResult(execution.id, {
+            success: result.success,
+            error: result.error,
+            executionTimeMs: result.executionTimeMs,
+            state: finalState,
+            cached: cacheEntry,
+          });
         });
-      });
+      }, 0);
     },
 
     // =========================================================================

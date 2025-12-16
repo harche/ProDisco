@@ -300,9 +300,14 @@ describe.skipIf(!shouldRun)('Kind Cluster TLS Integration Tests', () => {
     it('accesses Kubernetes API from sandbox', async () => {
       const result = await client!.execute({
         code: `
+          const k8s = require('@kubernetes/client-node');
+          const kc = new k8s.KubeConfig();
+          kc.loadFromCluster();
+
           const api = kc.makeApiClient(k8s.CoreV1Api);
-          const response = await api.listNamespace();
-          const names = response.items.map(ns => ns.metadata?.name).filter(Boolean);
+          const res = await api.listNamespace();
+          const body = (res && res.body) ? res.body : res;
+          const names = (body.items || []).map(ns => ns.metadata?.name).filter(Boolean);
           console.log(JSON.stringify(names.includes('default')));
         `,
         timeoutMs: 30000,
@@ -536,9 +541,14 @@ spec:
   it('accesses Kubernetes API over mTLS', async () => {
     const result = await client!.execute({
       code: `
+        const k8s = require('@kubernetes/client-node');
+        const kc = new k8s.KubeConfig();
+        kc.loadFromCluster();
+
         const api = kc.makeApiClient(k8s.CoreV1Api);
-        const response = await api.listNamespace();
-        console.log(response.items.length > 0 ? 'success' : 'fail');
+        const res = await api.listNamespace();
+        const body = (res && res.body) ? res.body : res;
+        console.log((body.items || []).length > 0 ? 'success' : 'fail');
       `,
       timeoutMs: 30000,
     });

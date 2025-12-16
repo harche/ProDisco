@@ -9,6 +9,11 @@ import { z } from 'zod';
 import type { ToolDefinition } from '../types.js';
 import { SCRIPTS_CACHE_DIR } from '../../util/paths.js';
 import { logger } from '../../util/logger.js';
+import {
+  DEFAULT_LIBRARIES_CONFIG,
+  resolveNodeModulesBasePath,
+  type LibrarySpec,
+} from '../../config/libraries.js';
 
 import {
   LibraryIndexer,
@@ -25,26 +30,60 @@ import {
 /** Maximum number of relevant scripts to show in method search results */
 const MAX_RELEVANT_SCRIPTS = 5;
 
-// ============================================================================
-// Indexed Libraries
-// ============================================================================
+export type SearchToolsRuntimeConfig = {
+  libraries: LibrarySpec[];
+  /** Base directory that contains `node_modules/` for resolving packages */
+  basePath: string;
+};
 
-/**
- * Library names that are indexed and searchable.
- * These are the valid values for the `library` filter parameter.
- */
-const INDEXED_LIBRARIES = [
-  '@kubernetes/client-node',
-  '@prodisco/prometheus-client',
-  '@prodisco/loki-client',
-  'simple-statistics',
-] as const;
+function getDefaultRuntimeConfig(): SearchToolsRuntimeConfig {
+  return {
+    libraries: DEFAULT_LIBRARIES_CONFIG.libraries,
+    basePath: resolveNodeModulesBasePath(),
+  };
+}
+
+function normalizeLibraryNames(libraries: LibrarySpec[]): string[] {
+  return libraries.map((l) => l.name).slice().sort();
+}
+
+function isSameRuntimeConfig(a: SearchToolsRuntimeConfig, b: SearchToolsRuntimeConfig): boolean {
+  if (a.basePath !== b.basePath) {
+    return false;
+  }
+  const aNames = normalizeLibraryNames(a.libraries);
+  const bNames = normalizeLibraryNames(b.libraries);
+  if (aNames.length !== bNames.length) {
+    return false;
+  }
+  for (let i = 0; i < aNames.length; i++) {
+    if (aNames[i] !== bNames[i]) {
+      return false;
+    }
+  }
+  return true;
+}
 
 // ============================================================================
 // Input Schema
 // ============================================================================
 
-const SearchToolsInputSchema = z.object({
+function formatLibraryDescribe(libraries: LibrarySpec[]): string {
+  return libraries
+    .map((l) => `"${l.name}"${l.description ? ` (${l.description})` : ''}`)
+    .join(', ');
+}
+
+function createSearchToolsInputSchema(libraries: LibrarySpec[]) {
+  if (libraries.length === 0) {
+    throw new Error('At least one library must be configured for searchTools');
+  }
+
+  const libraryNames = libraries.map((l) => l.name);
+  // z.enum requires a non-empty tuple type; we already validated libraries.length > 0 above.
+  const libraryEnumValues = [libraryNames[0]!, ...libraryNames.slice(1), 'all'] as [string, ...string[]];
+
+  return z.object({
   // === Search by name ===
   methodName: z
     .string()
@@ -64,16 +103,12 @@ const SearchToolsInputSchema = z.object({
     .describe('Filter by category (e.g., list, create, read, delete, patch for methods; class, interface, enum for types)'),
 
   library: z
-    .enum([...INDEXED_LIBRARIES, 'all'])
+    .enum(libraryEnumValues)
     .optional()
     .default('all')
     .describe(
       'Filter by library: ' +
-      '"@kubernetes/client-node" (Kubernetes API client), ' +
-      '"@prodisco/prometheus-client" (Prometheus queries & metric discovery), ' +
-      '"@prodisco/loki-client" (Loki log queries), ' +
-      '"simple-statistics" (statistical analysis functions), ' +
-      'or "all"'
+      `${formatLibraryDescribe(libraries)}, or "all"`
     ),
 
   exclude: z
@@ -106,7 +141,10 @@ const SearchToolsInputSchema = z.object({
     .default(0)
     .optional()
     .describe('Number of results to skip for pagination (default: 0)'),
-});
+  });
+}
+
+type SearchToolsInput = z.infer<ReturnType<typeof createSearchToolsInputSchema>>;
 
 // ============================================================================
 // Result Types
@@ -164,15 +202,9 @@ type SearchToolsResult = {
 // Package Configuration
 // ============================================================================
 
-/**
- * Libraries to index - generic extraction via TypeScript AST
- */
-const PACKAGES_TO_INDEX: PackageConfig[] = [
-  { name: '@kubernetes/client-node' },
-  { name: '@prodisco/prometheus-client' },
-  { name: '@prodisco/loki-client' },
-  { name: 'simple-statistics' },
-];
+function toPackageConfigs(libraries: LibrarySpec[]): PackageConfig[] {
+  return libraries.map((l) => ({ name: l.name }));
+}
 
 // ============================================================================
 // Search Tools Service
@@ -184,6 +216,17 @@ const PACKAGES_TO_INDEX: PackageConfig[] = [
 class SearchToolsService {
   private indexer: LibraryIndexer | null = null;
   private initialized = false;
+  private runtimeConfig: SearchToolsRuntimeConfig = getDefaultRuntimeConfig();
+
+  configure(config: SearchToolsRuntimeConfig): void {
+    if (this.initialized) {
+      if (isSameRuntimeConfig(this.runtimeConfig, config)) {
+        return;
+      }
+      throw new Error('SearchToolsService is already initialized; shutdown before reconfiguring');
+    }
+    this.runtimeConfig = config;
+  }
 
   /**
    * Initialize the search service
@@ -195,11 +238,31 @@ class SearchToolsService {
 
     // Create and initialize the library indexer
     this.indexer = new LibraryIndexer({
-      packages: PACKAGES_TO_INDEX,
+      packages: toPackageConfigs(this.runtimeConfig.libraries),
+      basePath: this.runtimeConfig.basePath,
     });
 
     const initResult = await this.indexer.initialize();
     logger.info(`Search index initialized: ${initResult.indexed} documents indexed`);
+
+    // Enforce current limitation: only packages with TypeScript type definitions are supported for indexing.
+    // If a configured package has no .d.ts files (or cannot be resolved), fail fast with a clear error.
+    const fatalIndexErrors = initResult.errors
+      .filter((e) =>
+        typeof e.message === 'string' && (
+          e.message.includes('No .d.ts files found for package:') ||
+          e.message.includes('Could not resolve package:')
+        )
+      )
+      .map((e) => `${e.file}: ${e.message}`);
+
+    if (fatalIndexErrors.length > 0) {
+      throw new Error(
+        'One or more configured libraries cannot be indexed because they do not provide TypeScript type definitions (.d.ts).\n' +
+        'ProDisco currently supports TypeScript-typed libraries only.\n' +
+        fatalIndexErrors.map((m) => `- ${m}`).join('\n')
+      );
+    }
 
     if (initResult.errors.length > 0) {
       logger.warn(`Index initialization had ${initResult.errors.length} errors`);
@@ -315,7 +378,7 @@ export const searchToolsService = new SearchToolsService();
 /**
  * Execute search and format results
  */
-async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>): Promise<SearchToolsResult> {
+async function executeSearchMode(runtimeConfig: SearchToolsRuntimeConfig, input: SearchToolsInput): Promise<SearchToolsResult> {
   const {
     methodName,
     documentType = 'all',
@@ -352,20 +415,6 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
 
   // Build summary
   let summary = '';
-
-  // Add workflow guidance based on library filter
-  if (!library || library === 'all' || library === '@prodisco/prometheus-client') {
-    summary += '**PROMETHEUS WORKFLOW:**\n';
-    summary += '1. Create search engine: `const search = new MetricSearchEngine(new PrometheusClient({ endpoint: process.env.PROMETHEUS_URL }))`\n';
-    summary += '2. Search metrics semantically: `const metrics = await search.search("memory usage")` - returns ranked results by name AND description\n';
-    summary += '3. Execute PromQL with discovered metrics: `await client.executeRange("metric_name", { start, end, step })`\n\n';
-  }
-
-  if (!library || library === 'all' || library === '@prodisco/loki-client') {
-    summary += '**LOKI WORKFLOW:**\n';
-    summary += '1. Query logs: `await loki.queryRange({ query: \'{namespace="default"}\', start, end })`\n';
-    summary += '2. Access results: `result.streams[i].labels`, `result.streams[i].entries[j].line`\n\n';
-  }
 
   summary += formatted.summary + '\n\n';
 
@@ -407,26 +456,25 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
     summary += 'No results found. Try:\n';
     summary += '- Different query term\n';
     summary += '- Omit filters to see more results\n';
-    summary += `- Use library filter: ${INDEXED_LIBRARIES.join(', ')}\n`;
+    summary += `- Use library filter: ${runtimeConfig.libraries.map((l) => l.name).join(', ')}\n`;
   }
 
-  const usage =
-    'USAGE:\n' +
-    '- New code: runSandbox({ code: "..." })\n' +
-    '- Cached script: runSandbox({ cached: "script-name.ts" })\n' +
-    '- Execution modes: "execute" (blocking), "stream" (real-time), "async" (non-blocking)\n' +
-    '\n' +
-    'LIBRARY IMPORTS:\n' +
-    '- Prometheus: const { PrometheusClient, MetricSearchEngine } = require("@prodisco/prometheus-client");\n' +
-    '- Loki: const { LokiClient } = require("@prodisco/loki-client");\n' +
-    '- Analytics: require("simple-statistics")\n' +
-    '- K8s: k8s and kc (KubeConfig) are pre-configured globals\n' +
-    '\n' +
-    'METRIC DISCOVERY (semantic search):\n' +
-    '- const client = new PrometheusClient({ endpoint: process.env.PROMETHEUS_URL });\n' +
-    '- const search = new MetricSearchEngine(client);\n' +
-    '- await search.search("memory usage") → finds metrics by name AND description\n' +
-    '- await search.search("http requests", { type: "counter" }) → filter by metric type';
+  const importLines: string[] = [];
+  for (const lib of runtimeConfig.libraries) {
+    const comment = lib.description ? ` // ${lib.description}` : '';
+    importLines.push(`- ${lib.name}: require("${lib.name}")${comment}`);
+  }
+
+  const usageLines: string[] = [];
+  usageLines.push('USAGE:');
+  usageLines.push('- New code: runSandbox({ code: "..." })');
+  usageLines.push('- Cached script: runSandbox({ cached: "script-name.ts" })');
+  usageLines.push('- Execution modes: "execute" (blocking), "stream" (real-time), "async" (non-blocking)');
+  usageLines.push('');
+  usageLines.push('ALLOWED IMPORTS (require):');
+  usageLines.push(...importLines);
+
+  const usage = usageLines.join('\n');
 
   // Map results to expected format
   const results = formatted.items.map((item) => ({
@@ -473,7 +521,8 @@ async function executeSearchMode(input: z.infer<typeof SearchToolsInputSchema>):
 /**
  * Pre-warm the search index during server startup.
  */
-export async function warmupSearchIndex(): Promise<void> {
+export async function warmupSearchIndex(runtimeConfig: SearchToolsRuntimeConfig = getDefaultRuntimeConfig()): Promise<void> {
+  searchToolsService.configure(runtimeConfig);
   await searchToolsService.initialize();
 }
 
@@ -488,22 +537,34 @@ export async function shutdownSearchIndex(): Promise<void> {
 // Main Tool Export
 // ============================================================================
 
-export const searchToolsTool: ToolDefinition<SearchToolsResult, typeof SearchToolsInputSchema> = {
-  name: 'kubernetes.searchTools',
-  description:
-    '**BROWSE API DOCUMENTATION.** Find API methods by name from indexed libraries. ' +
-    'Use methodName to search (e.g., "readLog", "listPod") - this does NOT query actual data. ' +
-    '\n\n' +
-    'EXAMPLES: ' +
-    'methodName: "readLog" → finds readNamespacedPodLog. ' +
-    'methodName: "listPod" → finds listPodForAllNamespaces. ' +
-    'methodName: "executeRange" → finds PrometheusClient.executeRange(). ' +
-    '\n\n' +
-    'INDEXED: @kubernetes/client-node, @prodisco/prometheus-client, @prodisco/loki-client, simple-statistics. ' +
-    '\n\n' +
-    'FILTERS: library, documentType (method|type|function|script), category',
-  schema: SearchToolsInputSchema,
-  async execute(input) {
-    return executeSearchMode(input);
-  },
-};
+function formatLibrariesForDisplay(libraries: LibrarySpec[]): string {
+  return libraries
+    .map((l) => (l.description ? `${l.name} (${l.description})` : l.name))
+    .join(', ');
+}
+
+export function createSearchToolsTool(runtimeConfig: SearchToolsRuntimeConfig) {
+  // Keep the service config in lockstep with the schema/description we expose.
+  searchToolsService.configure(runtimeConfig);
+
+  const schema = createSearchToolsInputSchema(runtimeConfig.libraries);
+  const indexed = formatLibrariesForDisplay(runtimeConfig.libraries);
+
+  return {
+    name: 'prodisco.searchTools',
+    description:
+      '**BROWSE API DOCUMENTATION.** Find methods/types/functions by name from indexed TypeScript libraries. ' +
+      'Use methodName to search (this does NOT query live cluster data). ' +
+      '\n\n' +
+      `INDEXED: ${indexed}. ` +
+      '\n\n' +
+      'FILTERS: library, documentType (method|type|function|script), category',
+    schema,
+    async execute(input: z.infer<typeof schema>) {
+      return executeSearchMode(runtimeConfig, input);
+    },
+  } satisfies ToolDefinition<SearchToolsResult, typeof schema>;
+}
+
+// Backward-compatible default export (used by tooling/metadata); runtime server should call createSearchToolsTool()
+export const searchToolsTool = createSearchToolsTool(getDefaultRuntimeConfig());

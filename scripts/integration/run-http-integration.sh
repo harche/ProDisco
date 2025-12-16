@@ -45,13 +45,24 @@ fi
 # Use the cluster
 kubectl cluster-info --context kind-http-int
 
-# Build Docker image
-log_info "Building MCP server Docker image..."
-docker build -t prodisco/mcp-server:test -f "${PROJECT_ROOT}/Dockerfile" "${PROJECT_ROOT}"
+# Build Docker image from config (keeps image contents in sync with runtime library config)
+# Default to the shipped Kubernetes example config since this integration test queries k8s APIs.
+LIBRARIES_CONFIG_PATH="${LIBRARIES_CONFIG_PATH:-${PROJECT_ROOT}/examples/prodisco.kubernetes.yaml}"
+IMAGE_TAG="${IMAGE_TAG:-test}"
+
+log_info "Building MCP server Docker image from config (${LIBRARIES_CONFIG_PATH})..."
+(
+  cd "${PROJECT_ROOT}"
+  npm run docker:build:config -- \
+    --config "${LIBRARIES_CONFIG_PATH}" \
+    --tag "${IMAGE_TAG}" \
+    --mcp-image prodisco/mcp-server \
+    --skip-sandbox
+)
 
 # Load image into Kind
 log_info "Loading image into Kind cluster..."
-kind load docker-image prodisco/mcp-server:test --name http-int
+kind load docker-image "prodisco/mcp-server:${IMAGE_TAG}" --name http-int
 
 # Apply Kubernetes manifests
 log_info "Deploying MCP server..."
@@ -122,27 +133,27 @@ echo "Tools list response:"
 echo "$TOOLS_RESPONSE" | head -50
 
 # Verify tools are present
-if echo "$TOOLS_RESPONSE" | grep -q "kubernetes.searchTools"; then
-    log_info "kubernetes.searchTools found!"
+if echo "$TOOLS_RESPONSE" | grep -q "prodisco.searchTools"; then
+    log_info "prodisco.searchTools found!"
 else
-    log_error "kubernetes.searchTools not found in response!"
+    log_error "prodisco.searchTools not found in response!"
     exit 1
 fi
 
-if echo "$TOOLS_RESPONSE" | grep -q "kubernetes.runSandbox"; then
-    log_info "kubernetes.runSandbox found!"
+if echo "$TOOLS_RESPONSE" | grep -q "prodisco.runSandbox"; then
+    log_info "prodisco.runSandbox found!"
 else
-    log_error "kubernetes.runSandbox not found in response!"
+    log_error "prodisco.runSandbox not found in response!"
     exit 1
 fi
 
-# Test tool call - searchTools (using unified schema: query, documentType, category)
-log_info "Testing kubernetes.searchTools..."
+# Test tool call - searchTools (current schema: methodName, documentType, library, category)
+log_info "Testing prodisco.searchTools..."
 SEARCH_RESPONSE=$(curl -s -X POST http://localhost:3000/mcp \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -H "mcp-session-id: $SESSION_ID" \
-    -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kubernetes.searchTools","arguments":{"query":"Pod","documentType":"kubernetes","category":"list","limit":5}}}')
+    -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"prodisco.searchTools","arguments":{"methodName":"listNamespace","documentType":"method","library":"@kubernetes/client-node","category":"list","limit":5}}}')
 
 echo "Search tools response:"
 echo "$SEARCH_RESPONSE" | head -30

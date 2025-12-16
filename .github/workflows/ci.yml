@@ -231,7 +231,7 @@ jobs:
 
       - name: Build and load Docker image
         run: |
-          docker build -t prodisco/mcp-server:test .
+          npm run docker:build:config -- --config examples/prodisco.kubernetes.yaml --tag test --mcp-image prodisco/mcp-server --skip-sandbox
           kind load docker-image prodisco/mcp-server:test --name http-int
 
       - name: Deploy MCP server
@@ -282,10 +282,10 @@ jobs:
             -H "mcp-session-id: $SESSION_ID" \
             -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')
           echo "$TOOLS"
-          echo "$TOOLS" | grep -q "kubernetes.searchTools"
-          echo "$TOOLS" | grep -q "kubernetes.runSandbox"
+          echo "$TOOLS" | grep -q "prodisco.searchTools"
+          echo "$TOOLS" | grep -q "prodisco.runSandbox"
 
-      - name: Test kubernetes.searchTools
+      - name: Test prodisco.searchTools
         run: |
           # Get session ID
           INIT_RESPONSE=$(curl -s -i -X POST http://localhost:3000/mcp \
@@ -294,12 +294,12 @@ jobs:
             -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-test","version":"1.0.0"}}}')
           SESSION_ID=$(echo "$INIT_RESPONSE" | grep -i "mcp-session-id:" | cut -d' ' -f2 | tr -d '\r')
 
-          # Call searchTools with unified schema (query, documentType, category)
+          # Call searchTools with current schema (methodName, documentType, library, category)
           RESULT=$(curl -s -X POST http://localhost:3000/mcp \
             -H "Content-Type: application/json" \
             -H "Accept: application/json, text/event-stream" \
             -H "mcp-session-id: $SESSION_ID" \
-            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"kubernetes.searchTools","arguments":{"query":"Pod","documentType":"kubernetes","category":"list","limit":3}}}')
+            -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"prodisco.searchTools","arguments":{"methodName":"listNamespace","documentType":"method","library":"@kubernetes/client-node","limit":3}}}')
           echo "$RESULT"
           echo "$RESULT" | grep -q "result"
 
@@ -363,7 +363,7 @@ jobs:
 
       - name: Build and load Docker image
         run: |
-          docker build -f packages/sandbox-server/Dockerfile -t prodisco/sandbox-server:test .
+          npm run docker:build:config -- --config examples/prodisco.kubernetes.yaml --tag test --sandbox-image prodisco/sandbox-server --skip-mcp
           kind load docker-image prodisco/sandbox-server:test --name prodisco-test
 
       - name: Create namespace

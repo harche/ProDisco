@@ -414,8 +414,8 @@ describe('SandboxService', () => {
     });
   });
 
-  describe('execute - Kubernetes Context', () => {
-    it('provides k8s library in sandbox', async () => {
+  describe('execute - Convenience Globals', () => {
+    it('does not provide any Kubernetes convenience globals (k8s/kc)', async () => {
       const service = createSandboxService({ cacheDir: testCacheDir });
 
       const request: ExecuteRequest = {
@@ -432,27 +432,7 @@ describe('SandboxService', () => {
       );
 
       expect(response.success).toBe(true);
-      expect(response.output).toBe('object object');
-    });
-
-    it('provides pre-configured KubeConfig', async () => {
-      const service = createSandboxService({ cacheDir: testCacheDir });
-
-      const request: ExecuteRequest = {
-        source: {
-          $case: 'code',
-          code: 'console.log(typeof kc.getCurrentContext);'
-        },
-        timeoutMs: undefined,
-      };
-
-      const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
-        service.execute,
-        request
-      );
-
-      expect(response.success).toBe(true);
-      expect(response.output).toBe('function');
+      expect(response.output).toBe('undefined undefined');
     });
   });
 

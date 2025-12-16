@@ -205,35 +205,14 @@ describe('Integration Tests - Client/Server Communication', () => {
     });
   });
 
-  describe('Kubernetes Context', () => {
-    it('provides k8s library in sandbox', async () => {
+  describe('Convenience Globals', () => {
+    it('does not provide any Kubernetes convenience globals (k8s/kc)', async () => {
       const result = await client.execute({
-        code: 'console.log(typeof k8s.KubeConfig)',
+        code: 'console.log(typeof k8s, typeof kc)',
       });
 
       expect(result.success).toBe(true);
-      expect(result.output).toBe('function');
-    });
-
-    it('provides pre-configured KubeConfig', async () => {
-      const result = await client.execute({
-        code: 'console.log(typeof kc.getCurrentContext)',
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.output).toBe('function');
-    });
-
-    it('can create API clients', async () => {
-      const result = await client.execute({
-        code: `
-          const api = kc.makeApiClient(k8s.CoreV1Api);
-          console.log(typeof api);
-        `,
-      });
-
-      expect(result.success).toBe(true);
-      expect(result.output).toBe('object');
+      expect(result.output).toBe('undefined undefined');
     });
   });
 

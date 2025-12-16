@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ToolDefinition } from '../types.js';
 import { getSandboxClient, ExecutionState } from '@prodisco/sandbox-server/client';
 import { searchToolsService } from './searchTools.js';
+import { DEFAULT_LIBRARIES_CONFIG, type LibrarySpec } from '../../config/libraries.js';
 
 // ============================================================================
 // Schema Definition
@@ -527,46 +528,82 @@ async function executeListMode(
 // Tool Definition
 // ============================================================================
 
-export const runSandboxTool: ToolDefinition<RunSandboxResult, typeof RunSandboxInputSchema> = {
-  name: 'kubernetes.runSandbox',
-  description:
-    '**PREREQUISITE: Call searchTools first** to discover correct API methods and parameters. ' +
-    'Do NOT guess - search to find available APIs before writing code. ' +
-    '\n\n' +
-    'Execute TypeScript code in a sandboxed environment for Kubernetes and Prometheus operations. ' +
-    'MODES: ' +
-    '• execute (default): Blocking execution, waits for completion. Params: code OR cached (required), timeout. ' +
-    '• stream: Real-time output streaming. Params: code OR cached (required), timeout. ' +
-    '• async: Start execution and return immediately with execution ID. Params: code OR cached (required), timeout. ' +
-    '• status: Get status of async execution. Params: executionId (required), wait (optional). ' +
-    '• cancel: Cancel a running execution. Params: executionId (required). ' +
-    '• list: List active/recent executions. Params: states (optional), limit (optional). ' +
-    '\n\n' +
-    'The sandbox provides: k8s, kc (pre-configured KubeConfig), console, process.env, require("@prodisco/prometheus-client").',
-  schema: RunSandboxInputSchema,
-
-  async execute(input) {
-    const { mode = 'execute' } = input;
-
-    switch (mode) {
-      case 'execute':
-        return executeExecuteMode(input);
-      case 'stream':
-        return executeStreamMode(input);
-      case 'async':
-        return executeAsyncMode(input);
-      case 'status':
-        return executeStatusMode(input);
-      case 'cancel':
-        return executeCancelMode(input);
-      case 'list':
-        return executeListMode(input);
-      default:
-        return {
-          mode: mode as string,
-          success: false,
-          error: `Unknown mode: ${mode}`,
-        };
-    }
-  },
+export type RunSandboxRuntimeConfig = {
+  libraries: LibrarySpec[];
 };
+
+function formatAllowedImportsForDescription(libraries: LibrarySpec[]): string {
+  const lines: string[] = [];
+  for (const lib of libraries) {
+    if (lib.name === '@kubernetes/client-node') {
+      lines.push(`- require("@kubernetes/client-node")${lib.description ? ` // ${lib.description}` : ''}`);
+      continue;
+    }
+    if (lib.name === '@prodisco/prometheus-client') {
+      lines.push(`- require("@prodisco/prometheus-client")${lib.description ? ` // ${lib.description}` : ''}`);
+      continue;
+    }
+    if (lib.name === '@prodisco/loki-client') {
+      lines.push(`- require("@prodisco/loki-client")${lib.description ? ` // ${lib.description}` : ''}`);
+      continue;
+    }
+    lines.push(`- require("${lib.name}")${lib.description ? ` // ${lib.description}` : ''}`);
+  }
+
+  return lines.join('\n');
+}
+
+export function createRunSandboxTool(runtimeConfig: RunSandboxRuntimeConfig) {
+  const allowedImports = formatAllowedImportsForDescription(runtimeConfig.libraries);
+
+  return {
+    name: 'prodisco.runSandbox',
+    description:
+      '**PREREQUISITE: Call searchTools first** to discover correct API methods and parameters. ' +
+      'Do NOT guess - search to find available APIs before writing code. ' +
+      '\n\n' +
+      'Execute TypeScript code in a sandboxed environment. ' +
+      'MODES: ' +
+      '• execute (default): Blocking execution, waits for completion. Params: code OR cached (required), timeout. ' +
+      '• stream: Real-time output streaming. Params: code OR cached (required), timeout. ' +
+      '• async: Start execution and return immediately with execution ID. Params: code OR cached (required), timeout. ' +
+      '• status: Get status of async execution. Params: executionId (required), wait (optional). ' +
+      '• cancel: Cancel a running execution. Params: executionId (required). ' +
+      '• list: List active/recent executions. Params: states (optional), limit (optional). ' +
+      '\n\n' +
+      'Sandbox provides console + process.env and restricts require() to an allowlist.\n' +
+      'ALLOWED IMPORTS:\n' +
+      allowedImports,
+    schema: RunSandboxInputSchema,
+
+    async execute(input: z.infer<typeof RunSandboxInputSchema>) {
+      const { mode = 'execute' } = input;
+
+      switch (mode) {
+        case 'execute':
+          return executeExecuteMode(input);
+        case 'stream':
+          return executeStreamMode(input);
+        case 'async':
+          return executeAsyncMode(input);
+        case 'status':
+          return executeStatusMode(input);
+        case 'cancel':
+          return executeCancelMode(input);
+        case 'list':
+          return executeListMode(input);
+        default:
+          return {
+            mode: mode as string,
+            success: false,
+            error: `Unknown mode: ${mode}`,
+          };
+      }
+    },
+  } satisfies ToolDefinition<RunSandboxResult, typeof RunSandboxInputSchema>;
+}
+
+// Backward-compatible default export (used by tooling/metadata); runtime server should call createRunSandboxTool()
+export const runSandboxTool = createRunSandboxTool({
+  libraries: DEFAULT_LIBRARIES_CONFIG.libraries,
+});
