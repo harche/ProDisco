@@ -18,7 +18,7 @@
   - `script` — cached scripts previously run in the sandbox
   - `all` — search across everything above
 - **`library`**: enum (optional, default: `all`)
-  - Values come from your startup config (plus `all`). Example: `@kubernetes/client-node`, `pg-mem`, `simple-statistics`
+  - Values come from your startup config (plus `all`). Example: `pg-mem`, `simple-statistics`, `@prodisco/prometheus-client`
 - **`category`**: string (optional)
   - A lightweight grouping derived during indexing (e.g. `list` / `create` / `delete` for methods, or `class` / `interface` for types). Exact values depend on the libraries you configured.
 - **`exclude`**: object (optional)
@@ -39,19 +39,20 @@
 
 ```ts
 // Search broadly by name (methods/types/functions/scripts)
-{ methodName: "listPod" }
+// Replace the placeholders with terms relevant to your configured libraries.
+{ methodName: "<search-term>" }
 
-// Constrain to a specific configured library
-{ methodName: "newDb", library: "pg-mem" }
+// Constrain to a specific configured library (replace with one from your config)
+{ methodName: "<search-term>", library: "<library>" }
 
-// Only TypeScript types
-{ methodName: "V1Deployment", documentType: "type", library: "@kubernetes/client-node" }
+// Only TypeScript types (classes/interfaces/enums/type aliases)
+{ methodName: "<type-or-class-name>", documentType: "type" }
 
-// Only functions in a utility library
-{ documentType: "function", library: "simple-statistics", methodName: "zScore" }
+// Only functions
+{ documentType: "function", methodName: "<function-name>" }
 
 // Only cached scripts
-{ documentType: "script", methodName: "deployment" }
+{ documentType: "script", methodName: "<keyword>" }
 ```
 
 ---
