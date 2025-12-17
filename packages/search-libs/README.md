@@ -2,6 +2,18 @@
 
 A generic library indexing + search solution using [Orama](https://orama.com/). Extract types, methods, and functions from TypeScript libraries (via `.d.ts`) and **ESM JavaScript libraries** (best-effort), index TypeScript scripts, and provide unified structured search for AI agents.
 
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [API Reference](#api-reference)
+- [Document Types](#document-types)
+- [Architecture](#architecture)
+- [How Library Indexing Works](#how-library-indexing-works-typescript--javascript)
+- [Extending the Schema](#extending-the-schema)
+- [License](#license)
+
 ## Features
 
 - **Generic Library Extraction**: Extract types (classes, interfaces, enums, type-aliases) and methods/functions from npm packages using TypeScript AST parsing (TypeScript `.d.ts` + ESM JavaScript fallback)
