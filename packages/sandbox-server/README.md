@@ -451,4 +451,4 @@ See [docs/grpc-sandbox-architecture.md](../../docs/grpc-sandbox-architecture.md)
 
 ## License
 
-See the repository root for license information.
+MIT

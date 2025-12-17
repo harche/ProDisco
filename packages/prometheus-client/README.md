@@ -2,6 +2,16 @@
 
 Typed Prometheus client with semantic metric discovery for AI agents. Wraps the `prometheus-query` library with a clean TypeScript interface.
 
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [API Reference](#api-reference)
+- [Types](#types)
+- [Environment Variables](#environment-variables)
+- [License](#license)
+
 ## Features
 
 - **Semantic Metric Search**: Find metrics by natural language queries (e.g., "memory usage")
@@ -199,4 +209,4 @@ interface TimeRange {
 
 ## License
 
-ISC
+MIT
