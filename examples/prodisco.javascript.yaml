@@ -1,0 +1,5 @@
+libraries:
+  - name: "my-esm-js-lib"
+    description: "ESM-only JavaScript library (no .d.ts) used to demo JS indexing fallback"
+
+

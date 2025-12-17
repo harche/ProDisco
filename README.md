@@ -4,7 +4,7 @@ ProDisco is a **progressive-disclosure MCP server framework**: you provide a lis
 
 **Kubernetes/observability is just one example** configuration (see `examples/`). You can equally build an MCP server around AWS/GCP SDKs, Postgres clients, internal TypeScript SDKs, etc.
 
-> Current limitation: ProDisco indexes APIs from TypeScript declaration files (`.d.ts`). Libraries must ship typings (or have typings installed). Pure JavaScript-only packages without typings are not supported for indexing yet.
+> Note: ProDisco prefers indexing APIs from TypeScript declaration files (`.d.ts`). If a library ships no `.d.ts`, ProDisco can fall back to indexing **ESM JavaScript** exports (best-effort; types default to `any`). CommonJS-only JavaScript packages without typings are not supported.
 
 Demo use-cases (optional):
 

@@ -1,8 +1,8 @@
 # searchTools Reference
 
-`prodisco.searchTools` is a unified interface for discovering **methods**, **types**, and **functions** across **startup-configured TypeScript libraries**. Use it to find the correct APIs (names, parameters, return types) **before** writing code for `prodisco.runSandbox`.
+`prodisco.searchTools` is a unified interface for discovering **methods**, **types**, and **functions** across your **startup-configured libraries**. ProDisco prefers indexing from TypeScript typings (`.d.ts`) when available, and can fall back to indexing **ESM JavaScript** exports for JS-only libraries (best-effort).
 
-> Current limitation: ProDisco indexes APIs from TypeScript declaration files (`.d.ts`). Libraries must ship typings (or have typings installed). Pure JavaScript-only packages without typings are not supported for indexing yet.
+> Note: Pure CommonJS-only JavaScript packages without typings are not supported for indexing. For JavaScript-only libraries, ProDisco currently supports **ESM** packages (e.g., `"type": "module"` or `.mjs`) with static exports.
 
 ---
 
@@ -12,8 +12,8 @@
 
 - **`methodName`**: string (optional) — search term (method/type/function name)
 - **`documentType`**: enum (optional, default: `all`)
-  - `method` — class methods and instance APIs extracted from `.d.ts`
-  - `type` — classes/interfaces/enums/types extracted from `.d.ts`
+  - `method` — class methods and instance APIs extracted from `.d.ts` (or ESM JS fallback)
+  - `type` — classes/interfaces/enums/types extracted from `.d.ts` (or ESM JS fallback for exported classes)
   - `function` — standalone exported functions
   - `script` — cached scripts previously run in the sandbox
   - `all` — search across everything above
