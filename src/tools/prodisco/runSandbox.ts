@@ -11,7 +11,7 @@ import { DEFAULT_LIBRARIES_CONFIG, type LibrarySpec } from '../../config/librari
 const RunSandboxInputSchema = z.object({
   // Mode selection - determines which operation to perform
   mode: z
-    .enum(['execute', 'stream', 'async', 'status', 'cancel', 'list'])
+    .enum(['execute', 'stream', 'async', 'status', 'cancel', 'list', 'test'])
     .default('execute')
     .optional()
     .describe(
@@ -21,7 +21,8 @@ const RunSandboxInputSchema = z.object({
       '"async" - start execution and return immediately with execution ID; ' +
       '"status" - get status and output of an async execution; ' +
       '"cancel" - cancel a running execution; ' +
-      '"list" - list active and recent executions'
+      '"list" - list active and recent executions; ' +
+      '"test" - run tests using uvu framework with structured results'
     ),
 
   // === Execute/Stream/Async mode parameters ===
@@ -47,6 +48,10 @@ const RunSandboxInputSchema = z.object({
     .describe('(list mode) Maximum number of results'),
   includeCompletedWithinMs: z.number().int().nonnegative().optional()
     .describe('(list mode) Include completed executions from last N milliseconds'),
+
+  // === Test mode parameters ===
+  tests: z.string().optional()
+    .describe('(test mode) Test code using pre-injected test() and assert. IMPORTANT: Do NOT import test/assert, do NOT call test.run() - they are already provided. Example: test("adds numbers", () => { assert.is(add(1,2), 3); }); Available: assert.is(a,b), assert.ok(val), assert.equal(obj1,obj2), assert.not(val), assert.throws(fn)'),
 });
 
 // ============================================================================
@@ -167,6 +172,27 @@ type ListModeResult = {
   totalCount: number;
 };
 
+// Result type for test mode (run tests)
+type TestModeResult = {
+  mode: 'test';
+  success: boolean;
+  summary: {
+    total: number;
+    passed: number;
+    failed: number;
+    skipped: number;
+  };
+  tests: Array<{
+    name: string;
+    passed: boolean;
+    error?: string;
+    durationMs: number;
+  }>;
+  output: string;
+  executionTimeMs: number;
+  error?: string;
+};
+
 // Error result type
 type ErrorResult = {
   mode: string;
@@ -182,6 +208,7 @@ type RunSandboxResult =
   | StatusModeResult
   | CancelModeResult
   | ListModeResult
+  | TestModeResult
   | ErrorResult;
 
 // ============================================================================
@@ -524,6 +551,49 @@ async function executeListMode(
   }
 }
 
+/**
+ * Test mode - run tests using uvu framework
+ */
+async function executeTestMode(
+  input: z.infer<typeof RunSandboxInputSchema>
+): Promise<TestModeResult | ErrorResult> {
+  const { code, tests, timeout = 30000 } = input;
+
+  if (!tests) {
+    return {
+      mode: 'test',
+      success: false,
+      error: '"tests" parameter is required for test mode',
+    };
+  }
+
+  try {
+    const client = getSandboxClient();
+
+    const result = await client.executeTest({
+      code,
+      tests,
+      timeoutMs: timeout,
+    });
+
+    return {
+      mode: 'test',
+      success: result.success,
+      summary: result.summary,
+      tests: result.tests,
+      output: result.output,
+      executionTimeMs: result.executionTimeMs,
+      error: result.error,
+    };
+  } catch (error) {
+    return {
+      mode: 'test',
+      success: false,
+      error: `gRPC error: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 // ============================================================================
 // Tool Definition
 // ============================================================================
@@ -563,6 +633,11 @@ export function createRunSandboxTool(runtimeConfig: RunSandboxRuntimeConfig) {
       'Do NOT guess - search to find available APIs before writing code. ' +
       '\n\n' +
       'Execute TypeScript code in a sandboxed environment. ' +
+      '\n\n' +
+      '**BEST PRACTICE**: When writing complex logic, data transformations, or code you are uncertain about, ' +
+      'use `mode: "test"` first to validate your implementation with unit tests before running in production. ' +
+      'This helps catch bugs early and ensures correctness. ' +
+      '\n\n' +
       'MODES: ' +
       '• execute (default): Blocking execution, waits for completion. Params: code OR cached (required), timeout. ' +
       '• stream: Real-time output streaming. Params: code OR cached (required), timeout. ' +
@@ -570,6 +645,10 @@ export function createRunSandboxTool(runtimeConfig: RunSandboxRuntimeConfig) {
       '• status: Get status of async execution. Params: executionId (required), wait (optional). ' +
       '• cancel: Cancel a running execution. Params: executionId (required). ' +
       '• list: List active/recent executions. Params: states (optional), limit (optional). ' +
+      '• test: Run unit tests with structured results. Params: tests (required), code (optional implementation to test), timeout. ' +
+      'CRITICAL: test() and assert are pre-injected globals - do NOT import them, do NOT call test.run(). ' +
+      'Just write: test("name", () => { assert.is(actual, expected); }); ' +
+      'Available assertions: assert.is(a,b), assert.ok(val), assert.equal(obj1,obj2), assert.not(val), assert.throws(fn). ' +
       '\n\n' +
       'Sandbox provides console + process.env and restricts require() to an allowlist.\n' +
       'ALLOWED IMPORTS:\n' +
@@ -592,6 +671,8 @@ export function createRunSandboxTool(runtimeConfig: RunSandboxRuntimeConfig) {
           return executeCancelMode(input);
         case 'list':
           return executeListMode(input);
+        case 'test':
+          return executeTestMode(input);
         default:
           return {
             mode: mode as string,

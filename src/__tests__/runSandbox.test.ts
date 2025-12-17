@@ -13,7 +13,7 @@ const TEST_SOCKET_PATH = '/tmp/prodisco-sandbox-test.sock';
 
 // Helper to execute runSandbox with proper typing
 const runSandbox = runSandboxTool.execute.bind(runSandboxTool) as (input: {
-  mode?: 'execute' | 'stream' | 'async' | 'status' | 'cancel' | 'list';
+  mode?: 'execute' | 'stream' | 'async' | 'status' | 'cancel' | 'list' | 'test';
   code?: string;
   cached?: string;
   timeout?: number;
@@ -23,6 +23,7 @@ const runSandbox = runSandboxTool.execute.bind(runSandboxTool) as (input: {
   states?: Array<'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'timeout'>;
   limit?: number;
   includeCompletedWithinMs?: number;
+  tests?: string;
 }) => ReturnType<typeof runSandboxTool.execute>;
 
 // Test cached script for Cached Script Execution tests
@@ -1790,4 +1791,342 @@ describe('prodisco.runSandbox - Analytics Libraries Integration', () => {
       expect(statusResult.output).toContain('done');
     });
   });
+});
+
+// ============================================================================
+// Test Mode Tests
+// ============================================================================
+
+describe('runSandbox - Test Mode', () => {
+    describe('Basic Test Execution', () => {
+      it('runs passing tests and returns success', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          code: `
+            function add(a: number, b: number): number {
+              return a + b;
+            }
+          `,
+          tests: `
+            test("adds positive numbers", () => {
+              assert.is(add(1, 2), 3);
+            });
+            test("adds negative numbers", () => {
+              assert.is(add(-1, -2), -3);
+            });
+          `,
+        });
+
+        expect(result.mode).toBe('test');
+        expect(result.success).toBe(true);
+        expect(result.summary).toEqual({
+          total: 2,
+          passed: 2,
+          failed: 0,
+          skipped: 0,
+        });
+        expect(result.tests).toHaveLength(2);
+        expect(result.tests[0].name).toBe('adds positive numbers');
+        expect(result.tests[0].passed).toBe(true);
+        expect(result.tests[1].name).toBe('adds negative numbers');
+        expect(result.tests[1].passed).toBe(true);
+      });
+
+      it('runs failing tests and returns failure', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          code: `
+            function multiply(a: number, b: number): number {
+              return a + b; // Bug: should be a * b
+            }
+          `,
+          tests: `
+            test("multiplies numbers", () => {
+              assert.is(multiply(2, 3), 6);
+            });
+          `,
+        });
+
+        expect(result.mode).toBe('test');
+        expect(result.success).toBe(false);
+        expect(result.summary.total).toBe(1);
+        expect(result.summary.passed).toBe(0);
+        expect(result.summary.failed).toBe(1);
+        expect(result.tests[0].passed).toBe(false);
+        expect(result.tests[0].error).toBeDefined();
+      });
+
+      it('handles mixed passing and failing tests', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("passing test", () => {
+              assert.is(1 + 1, 2);
+            });
+            test("failing test", () => {
+              assert.is(1 + 1, 3);
+            });
+            test("another passing test", () => {
+              assert.ok(true);
+            });
+          `,
+        });
+
+        expect(result.mode).toBe('test');
+        expect(result.success).toBe(false);
+        expect(result.summary).toEqual({
+          total: 3,
+          passed: 2,
+          failed: 1,
+          skipped: 0,
+        });
+      });
+    });
+
+    describe('Test Assertions', () => {
+      it('supports assert.is for strict equality', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("assert.is works", () => {
+              assert.is(1, 1);
+              assert.is("hello", "hello");
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+      });
+
+      it('supports assert.equal for deep equality', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("assert.equal works", () => {
+              assert.equal({ a: 1 }, { a: 1 });
+              assert.equal([1, 2, 3], [1, 2, 3]);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+      });
+
+      it('supports assert.ok for truthy values', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("assert.ok works", () => {
+              assert.ok(true);
+              assert.ok(1);
+              assert.ok("truthy");
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+      });
+
+      it('supports assert.not for falsy values', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("assert.not works", () => {
+              assert.not(false);
+              assert.not(0);
+              assert.not("");
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+      });
+
+      it('supports assert.throws for error checking', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("assert.throws works", () => {
+              assert.throws(() => {
+                throw new Error("expected");
+              });
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+      });
+    });
+
+    describe('Async Tests', () => {
+      it('handles async test functions', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("async test with Promise.resolve", async () => {
+              const value = await Promise.resolve(42);
+              assert.is(value, 42);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.tests[0].passed).toBe(true);
+      });
+
+      it('handles async tests with setTimeout', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("async test with delay", async () => {
+              await new Promise(r => setTimeout(r, 10));
+              assert.ok(true);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+      });
+    });
+
+    describe('Error Handling', () => {
+      it('returns error when tests parameter is missing', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+        });
+
+        expect(result.mode).toBe('test');
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('tests');
+      });
+
+      it('returns error when tests parameter is empty', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: '',
+        });
+
+        expect(result.mode).toBe('test');
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+
+      it('handles syntax errors in test code', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("broken", () => {
+              const x = {
+            });
+          `,
+        });
+
+        expect(result.mode).toBe('test');
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+
+      it('handles runtime errors in tests', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("runtime error", () => {
+              const obj: any = null;
+              obj.foo.bar;
+            });
+          `,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.tests[0].passed).toBe(false);
+        expect(result.tests[0].error).toBeDefined();
+      });
+    });
+
+    describe('Test Result Structure', () => {
+      it('includes execution time for each test', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("test with measurable duration", () => {
+              let sum = 0;
+              for (let i = 0; i < 10000; i++) sum += i;
+              assert.ok(true);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.tests[0].durationMs).toBeGreaterThanOrEqual(0);
+      });
+
+      it('includes overall execution time', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("quick test", () => {
+              assert.ok(true);
+            });
+          `,
+        });
+
+        expect(result.executionTimeMs).toBeGreaterThanOrEqual(0);
+      });
+
+      it('returns proper mode identifier', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            test("simple", () => { assert.ok(true); });
+          `,
+        });
+
+        expect(result.mode).toBe('test');
+      });
+    });
+
+    describe('Implementation Code Separation', () => {
+      it('tests implementation provided in code parameter', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          code: `
+            function fibonacci(n: number): number[] {
+              if (n <= 0) return [];
+              if (n === 1) return [0];
+              const seq = [0, 1];
+              for (let i = 2; i < n; i++) {
+                seq.push(seq[i-1] + seq[i-2]);
+              }
+              return seq;
+            }
+          `,
+          tests: `
+            test("fibonacci(5) returns correct sequence", () => {
+              assert.equal(fibonacci(5), [0, 1, 1, 2, 3]);
+            });
+            test("fibonacci(0) returns empty array", () => {
+              assert.equal(fibonacci(0), []);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.summary.passed).toBe(2);
+      });
+
+      it('can define functions inline in tests without code parameter', async () => {
+        const result = await runSandbox({
+          mode: 'test',
+          tests: `
+            function double(x: number) { return x * 2; }
+
+            test("double works", () => {
+              assert.is(double(5), 10);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+      });
+    });
 });
