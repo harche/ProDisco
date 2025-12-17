@@ -31,6 +31,9 @@ service SandboxService {
 
   // ClearCache removes all cached entries
   rpc ClearCache(ClearCacheRequest) returns (ClearCacheResponse);
+
+  // ExecuteTest runs code with tests and returns structured results
+  rpc ExecuteTest(ExecuteTestRequest) returns (ExecuteTestResponse);
 }
 
 message ExecuteRequest {
@@ -260,4 +263,71 @@ message ExecutionInfo {
 message ListExecutionsResponse {
   // List of execution summaries
   repeated ExecutionInfo executions = 1;
+}
+
+// ============================================================================
+// Test Execution Messages
+// ============================================================================
+
+// ExecuteTestRequest runs code with tests and returns structured results
+message ExecuteTestRequest {
+  // Implementation code to test (optional - tests may be self-contained)
+  optional string code = 1;
+
+  // Test code using uvu framework
+  string tests = 2;
+
+  // Execution timeout in milliseconds
+  optional int32 timeout_ms = 3;
+}
+
+// TestResult represents a single test result
+message TestResult {
+  // Name of the test
+  string name = 1;
+
+  // Whether the test passed
+  bool passed = 2;
+
+  // Error message if the test failed
+  optional string error = 3;
+
+  // Duration of the test in milliseconds
+  int64 duration_ms = 4;
+}
+
+// TestSummary contains aggregated test results
+message TestSummary {
+  // Total number of tests
+  int32 total = 1;
+
+  // Number of passed tests
+  int32 passed = 2;
+
+  // Number of failed tests
+  int32 failed = 3;
+
+  // Number of skipped tests
+  int32 skipped = 4;
+}
+
+// ExecuteTestResponse contains the test execution results
+message ExecuteTestResponse {
+  // Whether all tests passed
+  bool success = 1;
+
+  // Summary of test results
+  TestSummary summary = 2;
+
+  // Individual test results
+  repeated TestResult tests = 3;
+
+  // Captured console output
+  string output = 4;
+
+  // Total execution time in milliseconds
+  int64 execution_time_ms = 5;
+
+  // Error message if test execution itself failed
+  optional string error = 6;
 }

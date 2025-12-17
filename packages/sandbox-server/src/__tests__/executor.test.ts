@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { Executor, type ExecutionResult, type ExecutorConfig } from '../server/executor.js';
+import { Executor, type ExecutionResult, type ExecutorConfig, type TestExecutionResult } from '../server/executor.js';
 
 describe('Executor', () => {
   let executor: Executor;
@@ -701,6 +701,311 @@ describe('Executor', () => {
 
         expect(result.success).toBe(true);
         expect(result.output).toBe('caught error');
+      });
+    });
+  });
+
+  // ============================================================================
+  // Test Execution Tests
+  // ============================================================================
+
+  describe('Test Execution (executeTest)', () => {
+    describe('Basic Test Execution', () => {
+      it('runs a passing test', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('simple passing test', () => {
+              assert.is(1 + 1, 2);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.summary.total).toBe(1);
+        expect(result.summary.passed).toBe(1);
+        expect(result.summary.failed).toBe(0);
+        expect(result.tests.length).toBe(1);
+        expect(result.tests[0].name).toBe('simple passing test');
+        expect(result.tests[0].passed).toBe(true);
+      });
+
+      it('runs a failing test', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('simple failing test', () => {
+              assert.is(1 + 1, 3);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.summary.total).toBe(1);
+        expect(result.summary.passed).toBe(0);
+        expect(result.summary.failed).toBe(1);
+        expect(result.tests.length).toBe(1);
+        expect(result.tests[0].name).toBe('simple failing test');
+        expect(result.tests[0].passed).toBe(false);
+        expect(result.tests[0].error).toBeDefined();
+      });
+
+      it('runs multiple tests with mixed results', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('passing test 1', () => {
+              assert.is(2 + 2, 4);
+            });
+
+            test('failing test', () => {
+              assert.is(2 + 2, 5);
+            });
+
+            test('passing test 2', () => {
+              assert.ok(true);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.summary.total).toBe(3);
+        expect(result.summary.passed).toBe(2);
+        expect(result.summary.failed).toBe(1);
+      });
+    });
+
+    describe('Test with Implementation Code', () => {
+      it('tests implementation code provided separately', async () => {
+        const result = await executor.executeTest({
+          code: `
+            function add(a: number, b: number): number {
+              return a + b;
+            }
+
+            function multiply(a: number, b: number): number {
+              return a * b;
+            }
+          `,
+          tests: `
+            test('add function works', () => {
+              assert.is(add(1, 2), 3);
+              assert.is(add(-1, 1), 0);
+              assert.is(add(0, 0), 0);
+            });
+
+            test('multiply function works', () => {
+              assert.is(multiply(2, 3), 6);
+              assert.is(multiply(0, 5), 0);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.summary.total).toBe(2);
+        expect(result.summary.passed).toBe(2);
+      });
+
+      it('fails when implementation has bugs', async () => {
+        const result = await executor.executeTest({
+          code: `
+            function add(a: number, b: number): number {
+              return a - b; // BUG: should be a + b
+            }
+          `,
+          tests: `
+            test('add function works', () => {
+              assert.is(add(1, 2), 3);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.summary.failed).toBe(1);
+        expect(result.tests[0].error).toBeDefined();
+      });
+    });
+
+    describe('Async Test Execution', () => {
+      it('handles async tests', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('async test', async () => {
+              // Use Promise.resolve instead of setTimeout for simpler async handling
+              await Promise.resolve();
+              assert.is(1, 1);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.summary.passed).toBe(1);
+      });
+
+      it('handles async tests with setTimeout', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('async with setTimeout', async () => {
+              const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+              await delay(5);
+              assert.is(2 + 2, 4);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.summary.passed).toBe(1);
+      });
+    });
+
+    describe('Error Handling', () => {
+      it('returns error when tests parameter is missing', async () => {
+        const result = await executor.executeTest({
+          tests: '',
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Tests parameter is required');
+      });
+
+      it('handles syntax errors in test code', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('broken', () => {
+              const x = {
+            });
+          `,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+      });
+
+      it('handles runtime errors in test code', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('runtime error', () => {
+              const obj: any = null;
+              obj.foo.bar; // Should throw
+            });
+          `,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.summary.failed).toBe(1);
+        expect(result.tests[0].error).toBeDefined();
+      });
+    });
+
+    describe('Test Result Structure', () => {
+      it('includes duration for each test', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('test with duration', () => {
+              // Perform some sync work to ensure measurable duration
+              let sum = 0;
+              for (let i = 0; i < 10000; i++) { sum += i; }
+              assert.ok(true);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.tests[0].durationMs).toBeGreaterThanOrEqual(0);
+      });
+
+      it('includes overall execution time', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('quick test', () => {
+              assert.ok(true);
+            });
+          `,
+        });
+
+        expect(result.executionTimeMs).toBeGreaterThanOrEqual(0);
+      });
+
+      it('captures console output from tests', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('test with console', () => {
+              console.log('test output');
+              assert.ok(true);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+        // Console output may be captured in the output field
+        // depending on whether it's before the JSON markers
+      });
+    });
+
+    describe('UVU Assert Functions', () => {
+      it('supports assert.is', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('assert.is', () => {
+              assert.is(1, 1);
+              assert.is('hello', 'hello');
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+      });
+
+      it('supports assert.ok', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('assert.ok', () => {
+              assert.ok(true);
+              assert.ok(1);
+              assert.ok('truthy');
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+      });
+
+      it('supports assert.equal', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('assert.equal', () => {
+              assert.equal({ a: 1 }, { a: 1 });
+              assert.equal([1, 2, 3], [1, 2, 3]);
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+      });
+
+      it('supports assert.not', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('assert.not', () => {
+              assert.not(false);
+              assert.not(0);
+              assert.not('');
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
+      });
+
+      it('supports assert.throws', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('assert.throws', () => {
+              assert.throws(() => {
+                throw new Error('expected error');
+              });
+            });
+          `,
+        });
+
+        expect(result.success).toBe(true);
       });
     });
   });

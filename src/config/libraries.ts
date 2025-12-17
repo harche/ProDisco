@@ -22,6 +22,7 @@ export const DEFAULT_LIBRARIES_CONFIG: LibrariesConfig = {
     { name: '@prodisco/prometheus-client', description: 'Prometheus queries & metric discovery' },
     { name: '@prodisco/loki-client', description: 'Loki LogQL querying' },
     { name: 'simple-statistics', description: 'Statistics helpers' },
+    { name: 'uvu', description: 'Lightweight test runner for sandbox testing' },
   ],
 };
 

@@ -15,6 +15,8 @@ import {
   type CacheEntry,
   type ListCacheResponse,
   type ClearCacheResponse,
+  type ExecuteTestRequest,
+  type ExecuteTestResponse,
   ExecutionState,
 } from '../generated/sandbox.js';
 
@@ -107,6 +109,33 @@ export interface ExecutionSummary {
   codePreview: string;
   isCached: boolean;
   cachedName?: string;
+}
+
+export interface ExecuteTestOptions {
+  code?: string;
+  tests: string;
+  timeoutMs?: number;
+}
+
+export interface TestResultItem {
+  name: string;
+  passed: boolean;
+  error?: string;
+  durationMs: number;
+}
+
+export interface TestExecutionResult {
+  success: boolean;
+  summary: {
+    total: number;
+    passed: number;
+    failed: number;
+    skipped: number;
+  };
+  tests: TestResultItem[];
+  output: string;
+  executionTimeMs: number;
+  error?: string;
 }
 
 const VALID_TRANSPORT_MODES: TransportMode[] = ['insecure', 'tls', 'mtls'];
@@ -298,6 +327,42 @@ export class SandboxClient {
               createdAtMs: Number(response.cached.createdAtMs),
               contentHash: response.cached.contentHash,
             } : undefined,
+          });
+        } else {
+          reject(new Error('No response received'));
+        }
+      });
+    });
+  }
+
+  /**
+   * Execute tests in the sandbox.
+   * Returns structured test results.
+   */
+  async executeTest(options: ExecuteTestOptions): Promise<TestExecutionResult> {
+    const request: ExecuteTestRequest = {
+      tests: options.tests,
+      code: options.code,
+      timeoutMs: options.timeoutMs,
+    };
+
+    return new Promise((resolve, reject) => {
+      this.client.executeTest(request, (error, response) => {
+        if (error) {
+          reject(error);
+        } else if (response) {
+          resolve({
+            success: response.success,
+            summary: response.summary ?? { total: 0, passed: 0, failed: 0, skipped: 0 },
+            tests: response.tests.map(t => ({
+              name: t.name,
+              passed: t.passed,
+              error: t.error ?? undefined,
+              durationMs: Number(t.durationMs),
+            })),
+            output: response.output,
+            executionTimeMs: Number(response.executionTimeMs),
+            error: response.error ?? undefined,
           });
         } else {
           reject(new Error('No response received'));
@@ -813,6 +878,8 @@ export type {
   CacheEntry,
   ListCacheResponse,
   ClearCacheResponse,
+  ExecuteTestRequest,
+  ExecuteTestResponse,
 };
 
 export { ExecutionState };

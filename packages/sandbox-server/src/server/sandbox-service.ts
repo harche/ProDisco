@@ -17,6 +17,8 @@ import type {
   ListCacheResponse,
   ClearCacheRequest,
   ClearCacheResponse,
+  ExecuteTestRequest,
+  ExecuteTestResponse,
   ExecutionState,
 } from '../generated/sandbox.js';
 import { Executor } from './executor.js';
@@ -425,6 +427,50 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
     ) => {
       const deleted = cacheManager.clear();
       callback(null, { deletedCount: String(deleted) });
+    },
+
+    // =========================================================================
+    // ExecuteTest (run tests with structured results)
+    // =========================================================================
+    executeTest: async (
+      call: grpc.ServerUnaryCall<ExecuteTestRequest, ExecuteTestResponse>,
+      callback: grpc.sendUnaryData<ExecuteTestResponse>
+    ) => {
+      const { code, tests, timeoutMs } = call.request;
+
+      // Validate tests parameter
+      if (!tests || tests.trim().length === 0) {
+        callback(null, {
+          success: false,
+          summary: { total: 0, passed: 0, failed: 0, skipped: 0 },
+          tests: [],
+          output: '',
+          executionTimeMs: '0',
+          error: 'Tests parameter is required',
+        });
+        return;
+      }
+
+      // Execute tests using the executor
+      const result = await executor.executeTest({
+        code: code ?? undefined,
+        tests,
+        timeoutMs: timeoutMs ?? 30000,
+      });
+
+      callback(null, {
+        success: result.success,
+        summary: result.summary,
+        tests: result.tests.map(t => ({
+          name: t.name,
+          passed: t.passed,
+          error: t.error,
+          durationMs: String(t.durationMs),
+        })),
+        output: result.output,
+        executionTimeMs: String(result.executionTimeMs),
+        error: result.error,
+      });
     },
   };
 }

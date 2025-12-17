@@ -30,6 +30,7 @@ This document describes the gRPC-based sandbox execution architecture used in Pr
   - [Streaming Execution](#3-streaming-execution)
   - [Async Execution with Polling](#4-async-execution-with-polling)
   - [Execution Cancellation](#5-execution-cancellation)
+  - [Test Execution](#6-test-execution)
 - [Error Handling](#error-handling)
 - [Configuration](#configuration)
   - [Transport Configuration](#transport-configuration)
@@ -184,6 +185,9 @@ service SandboxService {
   rpc CancelExecution(CancelExecutionRequest) returns (CancelExecutionResponse);
   rpc ListExecutions(ListExecutionsRequest) returns (ListExecutionsResponse);
 
+  // Test execution (unit testing with structured results)
+  rpc ExecuteTest(ExecuteTestRequest) returns (ExecuteTestResponse);
+
   // Health and cache management
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
   rpc ListCache(ListCacheRequest) returns (ListCacheResponse);
@@ -200,6 +204,7 @@ The API supports three execution modes for different use cases:
 | **Synchronous** | `Execute` | Simple scripts, short execution time |
 | **Streaming** | `ExecuteStream` | Real-time output display, long-running scripts |
 | **Async** | `ExecuteAsync` + polling | Background execution, cancellation support |
+| **Test** | `ExecuteTest` | Unit testing with structured results |
 
 ### Core Messages
 
@@ -321,6 +326,41 @@ message ExecutionInfo {
 }
 ```
 
+### Test Execution Messages
+
+```protobuf
+message ExecuteTestRequest {
+  optional string code = 1;       // Implementation code to test
+  string tests = 2;               // Test code using uvu assertions
+  optional int32 timeout_ms = 3;
+}
+
+message ExecuteTestResponse {
+  bool success = 1;               // True if all tests passed
+  TestSummary summary = 2;
+  repeated TestResult tests = 3;
+  string output = 4;              // Console output from tests
+  int64 execution_time_ms = 5;
+  optional string error = 6;      // Error if execution failed before tests ran
+}
+
+message TestSummary {
+  int32 total = 1;
+  int32 passed = 2;
+  int32 failed = 3;
+  int32 skipped = 4;
+}
+
+message TestResult {
+  string name = 1;
+  bool passed = 2;
+  optional string error = 3;      // Assertion error message if failed
+  int64 duration_ms = 4;
+}
+```
+
+**Note:** The `uvu` testing framework is automatically available in test mode. Do not import it - `test()` and `assert` are pre-injected globals.
+
 ---
 
 ## Component Details
@@ -356,9 +396,9 @@ async function startSandboxServer(): Promise<void> {
 The MCP tool exposes all gRPC execution methods through a unified multi-mode API:
 
 ```typescript
-// Schema with 6 execution modes
+// Schema with 7 execution modes
 const RunSandboxInputSchema = z.object({
-  mode: z.enum(['execute', 'stream', 'async', 'status', 'cancel', 'list']).default('execute'),
+  mode: z.enum(['execute', 'stream', 'async', 'status', 'cancel', 'list', 'test']).default('execute'),
 
   // Execute/Stream/Async mode
   code: z.string().optional(),
@@ -374,6 +414,9 @@ const RunSandboxInputSchema = z.object({
   states: z.array(z.enum(['pending', 'running', 'completed', 'failed', 'cancelled', 'timeout'])).optional(),
   limit: z.number().max(100).default(10).optional(),
   includeCompletedWithinMs: z.number().optional(),
+
+  // Test mode
+  tests: z.string().optional(),  // Test code using uvu assertions
 });
 
 async execute(input) {
@@ -392,6 +435,8 @@ async execute(input) {
       return executeCancelMode(input);   // Cancel running execution
     case 'list':
       return executeListMode(input);     // List active/recent executions
+    case 'test':
+      return executeTestMode(input);     // Unit testing with structured results
   }
 }
 ```
@@ -795,6 +840,103 @@ Client                          Server
   v                               v
 ```
 
+### 6. Test Execution
+
+```
+User -> MCP Server -> runSandbox Tool -> gRPC Client
+                                           |
+                                           v
+                                      ExecuteTestRequest
+                                      { code: "function add(a,b) {...}",
+                                        tests: "test('adds', () => {...})" }
+                                           |
+                                           v (Unix Socket)
+                                           |
+                    gRPC Server <----------+
+                         |
+                         v
+                    SandboxService.ExecuteTest()
+                         |
+                         v
+                    Executor.executeTest()
+                         |
+                         v
+                    Build test harness:
+                    - Inject test() and assert globals
+                    - Combine code + tests
+                    - Execute in VM
+                    - Parse structured results
+                         |
+                         v
+                    ExecuteTestResponse
+                    { success: true,
+                      summary: { total: 2, passed: 2, failed: 0 },
+                      tests: [{ name: "adds", passed: true, durationMs: 1 }] }
+                         |
+                         v (Unix Socket)
+                         |
+User <-- MCP Server <-- runSandbox Tool <-- gRPC Client
+```
+
+**Test Mode Usage Example:**
+
+```typescript
+// Test implementation code before running in production
+const result = await runSandbox({
+  mode: 'test',
+  code: `
+    function fibonacci(n: number): number[] {
+      if (n <= 0) return [];
+      if (n === 1) return [0];
+      const seq = [0, 1];
+      for (let i = 2; i < n; i++) {
+        seq.push(seq[i-1] + seq[i-2]);
+      }
+      return seq;
+    }
+  `,
+  tests: `
+    test("fibonacci(0) returns empty array", () => {
+      assert.equal(fibonacci(0), []);
+    });
+
+    test("fibonacci(5) returns correct sequence", () => {
+      assert.equal(fibonacci(5), [0, 1, 1, 2, 3]);
+    });
+
+    test("each number is sum of previous two", () => {
+      const seq = fibonacci(10);
+      for (let i = 2; i < seq.length; i++) {
+        assert.is(seq[i], seq[i-1] + seq[i-2]);
+      }
+    });
+  `,
+});
+
+// Result:
+// {
+//   mode: 'test',
+//   success: true,
+//   summary: { total: 3, passed: 3, failed: 0, skipped: 0 },
+//   tests: [
+//     { name: 'fibonacci(0) returns empty array', passed: true, durationMs: 0 },
+//     { name: 'fibonacci(5) returns correct sequence', passed: true, durationMs: 0 },
+//     { name: 'each number is sum of previous two', passed: true, durationMs: 1 }
+//   ],
+//   executionTimeMs: 45
+// }
+```
+
+**Available Assertions (from uvu/assert):**
+
+| Assertion | Description |
+|-----------|-------------|
+| `assert.is(a, b)` | Strict equality (`===`) |
+| `assert.equal(a, b)` | Deep equality for objects/arrays |
+| `assert.ok(val)` | Truthy check |
+| `assert.not(val)` | Falsy check |
+| `assert.throws(fn)` | Expects function to throw |
+
 ---
 
 ## Error Handling
@@ -808,6 +950,8 @@ Client                          Server
 | Module not allowed | `PERMISSION_DENIED` | Attempted to require blocked module |
 | Runtime error | `INTERNAL` | Uncaught exception during execution |
 | Already cancelled | `FAILED_PRECONDITION` | Execution already in terminal state |
+| Tests missing | `INVALID_ARGUMENT` | Test mode requires `tests` parameter |
+| Test assertion failed | (success=false) | Test returned in result with error message |
 
 ---
 

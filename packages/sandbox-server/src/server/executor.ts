@@ -17,6 +17,33 @@ export interface StreamingExecutionResult extends ExecutionResult {
   timedOut: boolean;
 }
 
+export interface TestResultItem {
+  name: string;
+  passed: boolean;
+  error?: string;
+  durationMs: number;
+}
+
+export interface TestExecutionResult {
+  success: boolean;
+  summary: {
+    total: number;
+    passed: number;
+    failed: number;
+    skipped: number;
+  };
+  tests: TestResultItem[];
+  output: string;
+  executionTimeMs: number;
+  error?: string;
+}
+
+export interface ExecuteTestOptions {
+  code?: string;
+  tests: string;
+  timeoutMs?: number;
+}
+
 export type OutputCallback = (output: string, isError: boolean) => void;
 
 export interface ExecutorConfig {
@@ -39,6 +66,7 @@ const DEFAULT_ALLOWED_MODULES = [
   '@prodisco/prometheus-client',
   '@prodisco/loki-client',
   'simple-statistics',
+  'uvu',
 ];
 
 const localRequire = createRequire(import.meta.url);
@@ -373,6 +401,10 @@ export class Executor {
 
   constructor(config: ExecutorConfig = {}) {
     this.allowedModules = config.allowedModules ? new Set(config.allowedModules) : parseAllowedModulesFromEnv();
+
+    // Always include 'uvu' - it's required internally for test mode
+    this.allowedModules.add('uvu');
+
     const requestedBasePath = config.modulesBasePath || process.env.SANDBOX_MODULES_BASE_PATH || process.cwd();
     this.basePath = normalizeModulesBasePath(requestedBasePath);
     this.requireFromBase = createRequire(path.join(this.basePath, 'index.js'));
@@ -733,6 +765,156 @@ export class Executor {
         executionTimeMs: Date.now() - startTime,
         cancelled: false,
         timedOut: false,
+      };
+    }
+  }
+
+  /**
+   * Execute tests using the uvu framework.
+   * @param options - Test execution options
+   */
+  async executeTest(options: ExecuteTestOptions): Promise<TestExecutionResult> {
+    const { code = '', tests, timeoutMs = 30000 } = options;
+
+    if (!tests || tests.trim().length === 0) {
+      return {
+        success: false,
+        summary: { total: 0, passed: 0, failed: 0, skipped: 0 },
+        tests: [],
+        output: '',
+        executionTimeMs: 0,
+        error: 'Tests parameter is required',
+      };
+    }
+
+    // Build the test harness code
+    const harnessCode = this.buildTestHarnessCode(code, tests);
+
+    // Execute the harness code
+    const result = await this.execute(harnessCode, timeoutMs);
+
+    // Parse the test results from the output
+    return this.parseTestResults(result);
+  }
+
+  /**
+   * Build the test harness code that wraps uvu to capture structured results.
+   *
+   * Note: Instead of using uvu's suite (which has async scheduling issues in the sandbox),
+   * we create a simple synchronous test runner that captures results directly.
+   */
+  private buildTestHarnessCode(code: string, tests: string): string {
+    return `
+// === Test Harness Setup ===
+const __testResults__: Array<{ name: string; passed: boolean; error?: string; durationMs: number }> = [];
+const __pendingTests__: Array<{ name: string; fn: () => void | Promise<void> }> = [];
+
+// Get uvu/assert for assertions
+const assert = require('uvu/assert');
+
+// Simple test registration function
+const test = (name: string, fn: () => void | Promise<void>) => {
+  __pendingTests__.push({ name, fn });
+};
+
+// === Implementation Code ===
+${code}
+
+// === Test Code ===
+${tests}
+
+// === Run Tests and Output Results ===
+// Note: We use a plain async block that is awaited by the outer wrapper
+// Run all registered tests sequentially
+for (const t of __pendingTests__) {
+  const startTime = Date.now();
+  const testResult = { name: t.name, passed: true, error: undefined as string | undefined, durationMs: 0 };
+  try {
+    await t.fn();
+  } catch (e) {
+    testResult.passed = false;
+    testResult.error = e instanceof Error ? e.message : String(e);
+  } finally {
+    testResult.durationMs = Date.now() - startTime;
+    __testResults__.push(testResult);
+  }
+}
+
+const __summary__ = {
+  total: __testResults__.length,
+  passed: __testResults__.filter(t => t.passed).length,
+  failed: __testResults__.filter(t => !t.passed).length,
+  skipped: 0
+};
+
+// Output structured results with markers
+console.log('__TEST_RESULTS_JSON_START__');
+console.log(JSON.stringify({ summary: __summary__, tests: __testResults__ }));
+console.log('__TEST_RESULTS_JSON_END__');
+`;
+  }
+
+  /**
+   * Parse test results from the execution output.
+   */
+  private parseTestResults(result: ExecutionResult): TestExecutionResult {
+    const { output, executionTimeMs, error: execError } = result;
+
+    // If execution itself failed before tests could run
+    if (!result.success && !output.includes('__TEST_RESULTS_JSON_START__')) {
+      return {
+        success: false,
+        summary: { total: 0, passed: 0, failed: 0, skipped: 0 },
+        tests: [],
+        output,
+        executionTimeMs,
+        error: execError || 'Test execution failed',
+      };
+    }
+
+    const startMarker = '__TEST_RESULTS_JSON_START__';
+    const endMarker = '__TEST_RESULTS_JSON_END__';
+
+    const startIdx = output.indexOf(startMarker);
+    const endIdx = output.indexOf(endMarker);
+
+    if (startIdx === -1 || endIdx === -1) {
+      return {
+        success: false,
+        summary: { total: 0, passed: 0, failed: 0, skipped: 0 },
+        tests: [],
+        output,
+        executionTimeMs,
+        error: 'Test results not found in output. Ensure tests are properly defined.',
+      };
+    }
+
+    const jsonStr = output.slice(startIdx + startMarker.length, endIdx).trim();
+
+    try {
+      const parsed = JSON.parse(jsonStr) as {
+        summary: { total: number; passed: number; failed: number; skipped: number };
+        tests: TestResultItem[];
+      };
+
+      // Clean output: remove the JSON markers section
+      const cleanOutput = output.slice(0, startIdx).trim();
+
+      return {
+        success: parsed.summary.failed === 0,
+        summary: parsed.summary,
+        tests: parsed.tests,
+        output: cleanOutput,
+        executionTimeMs,
+      };
+    } catch (e) {
+      return {
+        success: false,
+        summary: { total: 0, passed: 0, failed: 0, skipped: 0 },
+        tests: [],
+        output,
+        executionTimeMs,
+        error: `Failed to parse test results: ${e instanceof Error ? e.message : String(e)}`,
       };
     }
   }
