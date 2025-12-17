@@ -103,6 +103,9 @@ export function extractMethodsFromClass(
   // Use resolved name if provided, otherwise use the internal name
   const className = resolvedClassName ?? classNode.name.text;
   const methods: ExtractedMethod[] = [];
+  const defaultReturnType = filePath.endsWith('.js') || filePath.endsWith('.mjs') || filePath.endsWith('.cjs')
+    ? 'any'
+    : 'void';
 
   for (const member of classNode.members) {
     // Handle method declarations
@@ -122,7 +125,7 @@ export function extractMethodsFromClass(
         `${methodName} method of ${className}`;
 
       const parameters = extractParameterInfo(member.parameters, sourceFile);
-      const returnType = member.type?.getText(sourceFile) || 'void';
+      const returnType = member.type?.getText(sourceFile) || defaultReturnType;
       const isStatic = isStaticMethod(member);
       const isAsync = isAsyncMethod(member, sourceFile);
 
@@ -153,7 +156,7 @@ export function extractMethodsFromClass(
         `${methodName} method of ${className}`;
 
       const parameters = extractParameterInfo(member.parameters, sourceFile);
-      const returnType = member.type?.getText(sourceFile) || 'void';
+      const returnType = member.type?.getText(sourceFile) || defaultReturnType;
       const isAsync = isAsyncMethod(member, sourceFile);
 
       methods.push({
@@ -186,6 +189,9 @@ export function extractMethodsFromInterface(
 
   const interfaceName = interfaceNode.name.text;
   const methods: ExtractedMethod[] = [];
+  const defaultReturnType = filePath.endsWith('.js') || filePath.endsWith('.mjs') || filePath.endsWith('.cjs')
+    ? 'any'
+    : 'void';
 
   for (const member of interfaceNode.members) {
     if (ts.isMethodSignature(member) && member.name) {
@@ -201,7 +207,7 @@ export function extractMethodsFromInterface(
         `${methodName} method of ${interfaceName}`;
 
       const parameters = extractParameterInfo(member.parameters, sourceFile);
-      const returnType = member.type?.getText(sourceFile) || 'void';
+      const returnType = member.type?.getText(sourceFile) || defaultReturnType;
       const isAsync = isAsyncMethod(member, sourceFile);
 
       methods.push({

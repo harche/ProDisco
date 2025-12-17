@@ -458,4 +458,106 @@ describe('extractFromPackage', () => {
       expect(result.types.length + result.methods.length).toBeGreaterThanOrEqual(0);
     }
   });
+
+  it('extracts from an ESM JavaScript package without .d.ts via source fallback', () => {
+    const basePath = `/tmp/search-libs-js-fallback-test-${Date.now()}`;
+    const pkgDir = join(basePath, 'node_modules', 'my-esm-js-lib');
+
+    try {
+      mkdirSync(pkgDir, { recursive: true });
+
+      writeFileSync(
+        join(pkgDir, 'package.json'),
+        JSON.stringify(
+          {
+            name: 'my-esm-js-lib',
+            version: '1.0.0',
+            type: 'module',
+            exports: {
+              '.': {
+                import: './index.js',
+              },
+            },
+          },
+          null,
+          2
+        )
+      );
+
+      writeFileSync(
+        join(pkgDir, 'index.js'),
+        [
+          "export { foo, internalFn as publicFn } from './a.js';",
+          "import { importedFn as localImported } from './a.js';",
+          'export { localImported as importedFnPublic };',
+          "export * from './b.js';",
+          '',
+        ].join('\n')
+      );
+
+      writeFileSync(
+        join(pkgDir, 'a.js'),
+        [
+          '/** Exported foo. */',
+          'export function foo() { return 1; }',
+          '',
+          '/** Internal name, exported as publicFn from entry. */',
+          'export function internalFn() { return 2; }',
+          '',
+          '/** Exported, then re-exported via import+export as importedFnPublic. */',
+          'export function importedFn() { return 3; }',
+          '',
+          '/** Not exported - should NOT be indexed. */',
+          'function helper() { return 4; }',
+          '',
+        ].join('\n')
+      );
+
+      writeFileSync(
+        join(pkgDir, 'b.js'),
+        [
+          '/** Exported class. */',
+          'export class MyClass {',
+          '  greet(name) { return `hi ${name}`; }',
+          '  helper() { return 0; }',
+          '}',
+          '',
+          '/** Internal class - should NOT be indexed. */',
+          'class Internal {',
+          '  doIt() { return 123; }',
+          '}',
+          '',
+        ].join('\n')
+      );
+
+      const result = extractFromPackage({
+        packageName: 'my-esm-js-lib',
+        basePath,
+      });
+
+      expect(result.errors).toHaveLength(0);
+
+      // Functions
+      expect(result.functions.some((f) => f.name === 'foo')).toBe(true);
+      expect(result.functions.some((f) => f.name === 'publicFn')).toBe(true);
+      expect(result.functions.some((f) => f.name === 'internalFn')).toBe(false);
+      expect(result.functions.some((f) => f.name === 'importedFnPublic')).toBe(true);
+      expect(result.functions.some((f) => f.name === 'importedFn')).toBe(false);
+      expect(result.functions.some((f) => f.name === 'helper')).toBe(false);
+
+      // Types (classes)
+      expect(result.types.some((t) => t.name === 'MyClass')).toBe(true);
+      expect(result.types.some((t) => t.name === 'Internal')).toBe(false);
+
+      // Methods
+      expect(
+        result.methods.some((m) => m.className === 'MyClass' && m.name === 'greet')
+      ).toBe(true);
+      expect(result.methods.some((m) => m.className === 'Internal')).toBe(false);
+    } finally {
+      if (existsSync(basePath)) {
+        rmSync(basePath, { recursive: true });
+      }
+    }
+  });
 });

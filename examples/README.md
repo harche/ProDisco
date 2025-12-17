@@ -6,8 +6,9 @@ This directory includes runnable library config files:
 
 - `prodisco.postgres.yaml` (uses `pg-mem`)
 - `prodisco.kubernetes.yaml` (uses `@kubernetes/client-node`)
+- `prodisco.javascript.yaml` (uses `my-esm-js-lib`, an ESM-only JavaScript example)
 
-> Current limitation: ProDisco indexes APIs from TypeScript declaration files (`.d.ts`). Libraries must ship typings (or have typings installed). Pure JavaScript-only packages without typings are not supported for indexing yet.
+> Note: ProDisco indexes APIs from TypeScript declaration files (`.d.ts`) when available. If a library ships no `.d.ts`, ProDisco can fall back to indexing **ESM JavaScript** source (best-effort; types default to `any`). CommonJS-only packages without typings are not supported.
 
 ---
 
@@ -115,6 +116,63 @@ const names = (res.body.items || [])
   .filter(Boolean);
 
 console.log(JSON.stringify(names, null, 2));
+```
+
+---
+
+## Example 3: JavaScript (ESM-only, no typings) with `my-esm-js-lib`
+
+This example demonstrates indexing a **JavaScript-only ESM** library that ships **no `.d.ts`**. The library is a tiny local fixture shipped in this repo at `examples/my-esm-js-lib/`.
+
+### 1) Install the example library
+
+Install the local package into your project `node_modules` (do this once):
+
+```bash
+npm install ./examples/my-esm-js-lib
+```
+
+### 2) Config
+
+Use: `examples/prodisco.javascript.yaml` (this repo ships it).
+
+### 3) Run ProDisco
+
+Run without `--install-missing` (this example library is local, not published to npm):
+
+```bash
+node dist/server.js --config examples/prodisco.javascript.yaml
+```
+
+### 4) Discover the API
+
+Call `prodisco.searchTools` with:
+
+- `methodName: "publicFn"` (or `methodName: "MyClass"`)
+- `library: "my-esm-js-lib"`
+
+You should **not** see internal/non-exported symbols (e.g. `nonExportedFn`, `Internal`).
+
+### 5) Execute in sandbox
+
+Run with `prodisco.runSandbox`:
+
+```ts
+const lib = require("my-esm-js-lib");
+
+console.log(lib.foo());
+console.log(lib.publicFn());
+
+const c = new lib.MyClass();
+console.log(c.greet("ada"));
+```
+
+Expected output:
+
+```txt
+1
+2
+hi ada
 ```
 
 

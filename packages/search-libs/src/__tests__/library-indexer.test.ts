@@ -100,6 +100,290 @@ describe('LibraryIndexer', () => {
     }, 30000); // Allow 30s for large package indexing
   });
 
+  describe('end-to-end package indexing (fixtures)', () => {
+    it('indexes and searches a TypeScript declaration package fixture (.d.ts)', async () => {
+      const basePath = `/tmp/search-libs-ts-fixture-${Date.now()}`;
+      const pkgDir = join(basePath, 'node_modules', 'my-ts-lib');
+      const distDir = join(pkgDir, 'dist');
+
+      let indexer: LibraryIndexer | undefined;
+
+      try {
+        mkdirSync(distDir, { recursive: true });
+
+        writeFileSync(
+          join(pkgDir, 'package.json'),
+          JSON.stringify(
+            {
+              name: 'my-ts-lib',
+              version: '1.0.0',
+              types: 'dist/index.d.ts',
+            },
+            null,
+            2
+          )
+        );
+
+        writeFileSync(
+          join(distDir, 'index.d.ts'),
+          [
+            "export { InternalApi as Api } from './api';",
+            "export { add } from './functions';",
+            "export * from './types';",
+            '',
+          ].join('\n')
+        );
+
+        writeFileSync(
+          join(distDir, 'types.d.ts'),
+          [
+            '/** Item model. */',
+            'export interface Item {',
+            '  id: string;',
+            '  name?: string;',
+            '}',
+            '',
+          ].join('\n')
+        );
+
+        writeFileSync(
+          join(distDir, 'functions.d.ts'),
+          [
+            '/** Add two numbers. */',
+            'export declare function add(a: number, b: number): number;',
+            '',
+          ].join('\n')
+        );
+
+        writeFileSync(
+          join(distDir, 'api.d.ts'),
+          [
+            "import type { Item } from './types';",
+            '',
+            '/** Public API (aliased from InternalApi). */',
+            'export declare class InternalApi {',
+            '  /** List items in a namespace. */',
+            '  listItems(namespace: string): Promise<Item[]>;',
+            '  /** Get a single item. */',
+            '  getItem(name: string, namespace?: string): Promise<Item>;',
+            '  _internal(): void;',
+            '}',
+            '',
+            '/** Not exported from the package entry - should not have methods indexed. */',
+            'export declare class InternalHidden {',
+            '  secret(): void;',
+            '}',
+            '',
+          ].join('\n')
+        );
+
+        indexer = new LibraryIndexer({
+          basePath,
+          packages: [{ name: 'my-ts-lib' }],
+        });
+
+        const init = await indexer.initialize();
+        expect(init.errors).toHaveLength(0);
+        expect(init.packageCounts['my-ts-lib']).toBeGreaterThan(0);
+
+        // Method indexing should reflect the public alias: InternalApi -> Api
+        const methods = await indexer.search({
+          query: 'listItems',
+          documentType: 'method',
+          library: 'my-ts-lib',
+          limit: 10,
+        });
+        expect(methods.results.some((r) => r.name === 'listItems' && r.className === 'Api')).toBe(true);
+        expect(methods.results.some((r) => r.className === 'InternalApi')).toBe(false);
+
+        // Private/internal method should not be indexed
+        const internalMethod = await indexer.search({
+          query: '_internal',
+          documentType: 'method',
+          library: 'my-ts-lib',
+          limit: 10,
+        });
+        expect(internalMethod.results.length).toBe(0);
+
+        // Non-exported class should not have its methods indexed
+        const secret = await indexer.search({
+          query: 'secret',
+          documentType: 'method',
+          library: 'my-ts-lib',
+          limit: 10,
+        });
+        expect(secret.results.length).toBe(0);
+
+        // Types should be searchable
+        const types = await indexer.search({
+          query: 'Item',
+          documentType: 'type',
+          library: 'my-ts-lib',
+          limit: 10,
+        });
+        expect(types.results.some((r) => r.name === 'Item')).toBe(true);
+
+        // Functions should be searchable
+        const funcs = await indexer.search({
+          query: 'add',
+          documentType: 'function',
+          library: 'my-ts-lib',
+          limit: 10,
+        });
+        expect(funcs.results.some((r) => r.name === 'add')).toBe(true);
+      } finally {
+        if (indexer) {
+          await indexer.shutdown();
+        }
+        if (existsSync(basePath)) {
+          rmSync(basePath, { recursive: true });
+        }
+      }
+    });
+
+    it('indexes and searches an ESM JavaScript package fixture (.js) via source fallback', async () => {
+      const basePath = `/tmp/search-libs-js-fixture-${Date.now()}`;
+      const pkgDir = join(basePath, 'node_modules', 'my-esm-js-lib');
+
+      let indexer: LibraryIndexer | undefined;
+
+      try {
+        mkdirSync(pkgDir, { recursive: true });
+
+        writeFileSync(
+          join(pkgDir, 'package.json'),
+          JSON.stringify(
+            {
+              name: 'my-esm-js-lib',
+              version: '1.0.0',
+              type: 'module',
+              exports: {
+                '.': {
+                  import: './index.js',
+                },
+              },
+            },
+            null,
+            2
+          )
+        );
+
+        writeFileSync(
+          join(pkgDir, 'index.js'),
+          [
+            "export { foo, internalFn as publicFn } from './a.js';",
+            "import { importedFn as localImported } from './a.js';",
+            'export { localImported as importedFnPublic };',
+            "export * from './b.js';",
+            '',
+          ].join('\n')
+        );
+
+        writeFileSync(
+          join(pkgDir, 'a.js'),
+          [
+            '/** Exported foo. */',
+            'export function foo() { return 1; }',
+            '',
+            '/** Internal name, exported as publicFn from entry. */',
+            'export function internalFn() { return 2; }',
+            '',
+            '/** Exported, then re-exported via import+export as importedFnPublic. */',
+            'export function importedFn() { return 3; }',
+            '',
+            '/** Not exported - should NOT be indexed. */',
+            'function nonExportedFn() { return 4; }',
+            '',
+          ].join('\n')
+        );
+
+        writeFileSync(
+          join(pkgDir, 'b.js'),
+          [
+            '/** Exported class. */',
+            'export class MyClass {',
+            '  greet(name) { return `hi ${name}`; }',
+            '}',
+            '',
+            '/** Internal class - should NOT be indexed. */',
+            'class Internal {',
+            '  doIt() { return 123; }',
+            '}',
+            '',
+          ].join('\n')
+        );
+
+        indexer = new LibraryIndexer({
+          basePath,
+          packages: [{ name: 'my-esm-js-lib' }],
+        });
+
+        const init = await indexer.initialize();
+        expect(init.errors).toHaveLength(0);
+        expect(init.packageCounts['my-esm-js-lib']).toBeGreaterThan(0);
+
+        // Public functions should be searchable and use the public names
+        const publicFn = await indexer.search({
+          query: 'publicFn',
+          documentType: 'function',
+          library: 'my-esm-js-lib',
+          limit: 10,
+        });
+        expect(publicFn.results.some((r) => r.name === 'publicFn')).toBe(true);
+        expect(publicFn.results.some((r) => r.name === 'internalFn')).toBe(false);
+
+        const imported = await indexer.search({
+          query: 'importedFnPublic',
+          documentType: 'function',
+          library: 'my-esm-js-lib',
+          limit: 10,
+        });
+        expect(imported.results.some((r) => r.name === 'importedFnPublic')).toBe(true);
+        expect(imported.results.some((r) => r.name === 'importedFn')).toBe(false);
+
+        // Non-exported helper function should not be indexed
+        const nonExported = await indexer.search({
+          query: 'nonExportedFn',
+          library: 'my-esm-js-lib',
+          limit: 10,
+        });
+        expect(nonExported.results.length).toBe(0);
+
+        // Exported class should be indexed as a type and its methods should be indexed
+        const typeRes = await indexer.search({
+          query: 'MyClass',
+          documentType: 'type',
+          library: 'my-esm-js-lib',
+          limit: 10,
+        });
+        expect(typeRes.results.some((r) => r.name === 'MyClass')).toBe(true);
+
+        const greet = await indexer.search({
+          query: 'greet',
+          documentType: 'method',
+          library: 'my-esm-js-lib',
+          limit: 10,
+        });
+        expect(greet.results.some((r) => r.name === 'greet' && r.className === 'MyClass')).toBe(true);
+
+        // Internal class should not be indexed (no type doc, no method docs)
+        const internalClass = await indexer.search({
+          query: 'Internal',
+          library: 'my-esm-js-lib',
+          limit: 10,
+        });
+        expect(internalClass.results.some((r) => r.name === 'Internal')).toBe(false);
+      } finally {
+        if (indexer) {
+          await indexer.shutdown();
+        }
+        if (existsSync(basePath)) {
+          rmSync(basePath, { recursive: true });
+        }
+      }
+    });
+  });
+
   describe('addScript', () => {
     it('adds a script to the index', async () => {
       const indexer = new LibraryIndexer({ packages: [] });

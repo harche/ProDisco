@@ -12,12 +12,24 @@ import {
   isAsyncMethod,
 } from './ast-parser.js';
 
+export interface ExtractFunctionsOptions {
+  /** If provided, only functions whose *local* name is in the set will be returned. */
+  allowlist?: Set<string>;
+  /** Optional rename map from localName -> publicName */
+  aliases?: Map<string, string>;
+}
+
+function isJavaScriptFile(filePath: string): boolean {
+  return filePath.endsWith('.js') || filePath.endsWith('.mjs') || filePath.endsWith('.cjs');
+}
+
 /**
  * Extract all exported functions from a TypeScript file
  */
 export function extractFunctionsFromFile(
   filePath: string,
-  libraryName: string
+  libraryName: string,
+  options?: ExtractFunctionsOptions
 ): ExtractedFunction[] {
   if (!existsSync(filePath)) {
     return [];
@@ -27,12 +39,38 @@ export function extractFunctionsFromFile(
   const sourceFile = createSourceFile(filePath, sourceCode);
 
   const functions: ExtractedFunction[] = [];
+  const allowlist = options?.allowlist;
+  const aliases = options?.aliases;
+  const defaultReturnType = isJavaScriptFile(filePath) ? 'any' : 'void';
+
+  function pushWithAlias(func: ExtractedFunction) {
+    const publicName = aliases?.get(func.name) ?? func.name;
+    if (publicName !== func.name) {
+      func = {
+        ...func,
+        name: publicName,
+        signature: buildSignature(publicName, func.parameters, func.returnType),
+      };
+    }
+    functions.push(func);
+  }
 
   function visit(node: ts.Node) {
     // Extract function declarations
     if (ts.isFunctionDeclaration(node) && node.name) {
-      const extracted = extractFunctionDeclaration(node, sourceFile, libraryName, filePath);
-      if (extracted) functions.push(extracted);
+      const localName = node.name.text;
+      if (allowlist && !allowlist.has(localName)) {
+        // Not part of the public surface (or not requested)
+      } else {
+        const extracted = extractFunctionDeclaration(
+          node,
+          sourceFile,
+          libraryName,
+          filePath,
+          defaultReturnType
+        );
+        if (extracted) pushWithAlias(extracted);
+      }
     }
 
     // Extract exported variable declarations that are arrow functions
@@ -40,23 +78,28 @@ export function extractFunctionsFromFile(
       const isExported = node.modifiers?.some(
         (m) => m.kind === ts.SyntaxKind.ExportKeyword
       );
-      if (isExported) {
-        for (const decl of node.declarationList.declarations) {
-          if (
-            ts.isIdentifier(decl.name) &&
-            decl.initializer &&
-            (ts.isArrowFunction(decl.initializer) ||
-              ts.isFunctionExpression(decl.initializer))
-          ) {
-            const extracted = extractArrowFunction(
-              decl,
-              decl.initializer,
-              sourceFile,
-              libraryName,
-              filePath
-            );
-            if (extracted) functions.push(extracted);
-          }
+      for (const decl of node.declarationList.declarations) {
+        if (
+          ts.isIdentifier(decl.name) &&
+          decl.initializer &&
+          (ts.isArrowFunction(decl.initializer) ||
+            ts.isFunctionExpression(decl.initializer))
+        ) {
+          const localName = decl.name.text;
+          const shouldInclude = allowlist
+            ? allowlist.has(localName)
+            : isExported;
+          if (!shouldInclude) continue;
+
+          const extracted = extractArrowFunction(
+            decl,
+            decl.initializer,
+            sourceFile,
+            libraryName,
+            filePath,
+            defaultReturnType
+          );
+          if (extracted) pushWithAlias(extracted);
         }
       }
     }
@@ -75,7 +118,8 @@ function extractFunctionDeclaration(
   node: ts.FunctionDeclaration,
   sourceFile: ts.SourceFile,
   libraryName: string,
-  filePath: string
+  filePath: string,
+  defaultReturnType: string
 ): ExtractedFunction | null {
   if (!node.name) return null;
 
@@ -88,7 +132,7 @@ function extractFunctionDeclaration(
 
   const description = getJSDocDescription(node) || `${name} function`;
   const parameters = extractParameterInfo(node.parameters, sourceFile);
-  const returnType = node.type?.getText(sourceFile) || 'void';
+  const returnType = node.type?.getText(sourceFile) || defaultReturnType;
   const signature = buildSignature(name, parameters, returnType);
 
   return {
@@ -110,7 +154,8 @@ function extractArrowFunction(
   func: ts.ArrowFunction | ts.FunctionExpression,
   sourceFile: ts.SourceFile,
   libraryName: string,
-  filePath: string
+  filePath: string,
+  defaultReturnType: string
 ): ExtractedFunction | null {
   if (!ts.isIdentifier(decl.name)) return null;
 
@@ -130,11 +175,10 @@ function extractArrowFunction(
 
   // Get return type from function or infer from arrow function
   let returnType = func.type?.getText(sourceFile);
-  if (!returnType && ts.isArrowFunction(func)) {
-    // For arrow functions without explicit return type, try to infer
-    returnType = 'any';
+  if (!returnType) {
+    // For JS (and TS without annotations), we default to a safe "any"
+    returnType = defaultReturnType === 'any' ? 'any' : ts.isArrowFunction(func) ? 'any' : defaultReturnType;
   }
-  returnType = returnType || 'void';
 
   const signature = buildSignature(name, parameters, returnType);
 

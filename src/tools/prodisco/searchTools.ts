@@ -2,7 +2,7 @@
  * Search Tools - Unified search for methods and types across libraries
  *
  * This is a thin wrapper around @prodisco/search-libs.
- * It provides the MCP tool interface for searching indexed TypeScript libraries.
+ * It provides the MCP tool interface for searching indexed libraries (TypeScript typings preferred; ESM JavaScript fallback supported).
  */
 
 import { z } from 'zod';
@@ -91,7 +91,8 @@ function createSearchToolsInputSchema(libraries: LibrarySpec[]) {
     .describe(
       'Search for API members by name (methods/types/functions/scripts). ' +
       'Use a class/type/function/method name or keyword relevant to the libraries you configured. ' +
-      'Searches indexed TypeScript typings only (no code execution).'
+      'Searches indexed library APIs (prefers TypeScript typings; falls back to ESM JavaScript exports when typings are absent). ' +
+      'No code execution.'
     ),
 
   // === Filter parameters ===
@@ -215,7 +216,7 @@ function toPackageConfigs(libraries: LibrarySpec[]): PackageConfig[] {
 // ============================================================================
 
 /**
- * SearchToolsService - Indexes TypeScript library APIs for search
+ * SearchToolsService - Indexes library APIs for search (TypeScript typings preferred; ESM JS fallback supported)
  */
 class SearchToolsService {
   private indexer: LibraryIndexer | null = null;
@@ -249,12 +250,11 @@ class SearchToolsService {
     const initResult = await this.indexer.initialize();
     logger.info(`Search index initialized: ${initResult.indexed} documents indexed`);
 
-    // Enforce current limitation: only packages with TypeScript type definitions are supported for indexing.
-    // If a configured package has no .d.ts files (or cannot be resolved), fail fast with a clear error.
+    // Fail fast if a configured package cannot be indexed (e.g., missing package, no typings and no parsable ESM entry).
     const fatalIndexErrors = initResult.errors
       .filter((e) =>
         typeof e.message === 'string' && (
-          e.message.includes('No .d.ts files found for package:') ||
+          e.message.includes('No .d.ts files found') ||
           e.message.includes('Could not resolve package:')
         )
       )
@@ -262,8 +262,9 @@ class SearchToolsService {
 
     if (fatalIndexErrors.length > 0) {
       throw new Error(
-        'One or more configured libraries cannot be indexed because they do not provide TypeScript type definitions (.d.ts).\n' +
-        'ProDisco currently supports TypeScript-typed libraries only.\n' +
+        'One or more configured libraries cannot be indexed.\n' +
+        'Supported: packages with TypeScript typings (.d.ts), or JavaScript-only ESM packages with static exports.\n' +
+        'Not supported: CommonJS-only JavaScript packages without typings.\n' +
         fatalIndexErrors.map((m) => `- ${m}`).join('\n')
       );
     }
