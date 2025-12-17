@@ -2,11 +2,11 @@
 
 ProDisco is a **progressive-disclosure MCP server framework**: you provide a list of TypeScript libraries, ProDisco indexes their APIs for discovery, and a sandbox executes code that uses only those libraries. It follows Anthropic's [Progressive Disclosure](https://www.anthropic.com/engineering/code-execution-with-mcp) pattern: the MCP server exposes search tools which surface library APIs, agents discover them to write code, execute it in a sandbox, and only the final console output returns to the agent.
 
-**Kubernetes/observability is just one default example** configuration. You can equally build an MCP server around AWS/GCP SDKs, Postgres clients, internal TypeScript SDKs, etc.
+**Kubernetes/observability is just one example** configuration (see `examples/`). You can equally build an MCP server around AWS/GCP SDKs, Postgres clients, internal TypeScript SDKs, etc.
 
 > Current limitation: ProDisco indexes APIs from TypeScript declaration files (`.d.ts`). Libraries must ship typings (or have typings installed). Pure JavaScript-only packages without typings are not supported for indexing yet.
 
-Default demo use-cases (optional):
+Demo use-cases (optional):
 
 - **Kubernetes access** via `@kubernetes/client-node`
 - **Prometheus metrics** via `@prodisco/prometheus-client`
@@ -248,11 +248,12 @@ Search and browse extracted API documentation for your **startup-configured Type
 **Examples:**
 
 ```typescript
-// Find Pod-related methods by name
-{ methodName: "listPod" }
+// Search broadly by name (methods/types/functions/scripts)
+// Replace the placeholders with terms relevant to your configured libraries.
+{ methodName: "<search-term>" }
 
-// Filter by document type and library
-{ methodName: "Pod", documentType: "method", library: "@kubernetes/client-node" }
+// Filter by document type (methods/types/functions/scripts)
+{ methodName: "<search-term>", documentType: "method" }
 
 // Find Loki query methods
 { documentType: "method", library: "@prodisco/loki-client", category: "query" }
@@ -266,11 +267,11 @@ Search and browse extracted API documentation for your **startup-configured Type
 // Search cached scripts
 { documentType: "script", methodName: "deployment" }
 
-// Get TypeScript type definitions
-{ methodName: "V1Deployment", documentType: "type" }
+// Get TypeScript type definitions (classes/interfaces/enums/type aliases)
+{ methodName: "<type-or-class-name>", documentType: "type" }
 
 // Exclude certain categories/libraries
-{ methodName: "Pod", exclude: { categories: ["delete"], libraries: ["@kubernetes/client-node"] } }
+{ methodName: "query", exclude: { categories: ["delete"], libraries: ["some-library"] } }
 ```
 
 For comprehensive documentation, see [docs/search-tools.md](docs/search-tools.md).

@@ -1,7 +1,7 @@
 /**
  * Search Tools - Unified search for methods and types across libraries
  *
- * This is a thin wrapper around @prodisco/search-libs and @prodisco/prometheus-client.
+ * This is a thin wrapper around @prodisco/search-libs.
  * It provides the MCP tool interface for searching indexed TypeScript libraries.
  */
 
@@ -88,7 +88,11 @@ function createSearchToolsInputSchema(libraries: LibrarySpec[]) {
   methodName: z
     .string()
     .optional()
-    .describe('Search for API methods by name (e.g., "readLog", "listPod", "executeRange"). Searches method names in the indexed documentation.'),
+    .describe(
+      'Search for API members by name (methods/types/functions/scripts). ' +
+      'Use a class/type/function/method name or keyword relevant to the libraries you configured. ' +
+      'Searches indexed TypeScript typings only (no code execution).'
+    ),
 
   // === Filter parameters ===
   documentType: z
@@ -419,7 +423,7 @@ async function executeSearchMode(runtimeConfig: SearchToolsRuntimeConfig, input:
   summary += formatted.summary + '\n\n';
 
   formatted.items.forEach((item, idx) => {
-    // Show className for methods (e.g., "CoreV1Api.listPodForAllNamespaces")
+    // Show className for methods (e.g., "SomeApi.someMethod")
     const displayName = item.className ? `${item.className}.${item.name}` : item.name;
     summary += `${offset + idx + 1}. **${displayName}** (${item.type})\n`;
     summary += `   Library: ${item.library} | Category: ${item.category}\n`;
@@ -554,7 +558,7 @@ export function createSearchToolsTool(runtimeConfig: SearchToolsRuntimeConfig) {
     name: 'prodisco.searchTools',
     description:
       '**BROWSE API DOCUMENTATION.** Find methods/types/functions by name from indexed TypeScript libraries. ' +
-      'Use methodName to search (this does NOT query live cluster data). ' +
+      'Use methodName to search (this searches indexed TypeScript typings only; it does NOT execute code or call external services). ' +
       '\n\n' +
       `INDEXED: ${indexed}. ` +
       '\n\n' +
