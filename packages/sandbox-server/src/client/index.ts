@@ -18,6 +18,12 @@ import {
   type ExecuteTestRequest,
   type ExecuteTestResponse,
   ExecutionState,
+  // LSP types
+  type LspWorkspaceSymbolResponse,
+  type LspHoverResponse,
+  type LspLocationsResponse,
+  type LspDocumentSymbolResponse,
+  LspSymbolKind,
 } from '../generated/sandbox.js';
 
 const DEFAULT_SOCKET_PATH = '/tmp/prodisco-sandbox.sock';
@@ -136,6 +142,49 @@ export interface TestExecutionResult {
   output: string;
   executionTimeMs: number;
   error?: string;
+}
+
+// ===========================================================================
+// LSP Types
+// ===========================================================================
+
+export interface LspRange {
+  startLine: number;
+  startCharacter: number;
+  endLine: number;
+  endCharacter: number;
+}
+
+export interface LspLocation {
+  uri: string;
+  range: LspRange;
+}
+
+export interface LspSymbolInfo {
+  name: string;
+  kind: LspSymbolKind;
+  library: string;
+  containerName: string;
+  location: LspLocation;
+}
+
+export interface LspWorkspaceSymbolResult {
+  symbols: LspSymbolInfo[];
+  totalMatches: number;
+}
+
+export interface LspHoverResult {
+  contents: string;
+  range?: LspRange;
+}
+
+export interface LspDocumentSymbol {
+  name: string;
+  kind: LspSymbolKind;
+  detail: string;
+  range: LspRange;
+  selectionRange: LspRange;
+  children: LspDocumentSymbol[];
 }
 
 const VALID_TRANSPORT_MODES: TransportMode[] = ['insecure', 'tls', 'mtls'];
@@ -857,6 +906,188 @@ export class SandboxClient {
     });
   }
 
+  // ===========================================================================
+  // LSP Operations
+  // ===========================================================================
+
+  /**
+   * Search for symbols by name across the workspace.
+   *
+   * @param query - The search query (partial match supported)
+   * @param limit - Maximum number of results to return
+   */
+  async lspWorkspaceSymbol(query: string, limit?: number): Promise<LspWorkspaceSymbolResult> {
+    return new Promise((resolve, reject) => {
+      this.client.lspWorkspaceSymbol({ query, limit }, (error, response) => {
+        if (error) {
+          reject(error);
+        } else if (response) {
+          resolve({
+            symbols: response.symbols.map(s => ({
+              name: s.name,
+              kind: s.kind,
+              library: s.library,
+              containerName: s.containerName,
+              location: {
+                uri: s.location?.uri ?? '',
+                range: {
+                  startLine: s.location?.range?.startLine ?? 0,
+                  startCharacter: s.location?.range?.startCharacter ?? 0,
+                  endLine: s.location?.range?.endLine ?? 0,
+                  endCharacter: s.location?.range?.endCharacter ?? 0,
+                },
+              },
+            })),
+            totalMatches: response.totalMatches,
+          });
+        } else {
+          reject(new Error('No response received'));
+        }
+      });
+    });
+  }
+
+  /**
+   * Get hover information (type info and documentation) at a position.
+   *
+   * @param filePath - Absolute path to the file
+   * @param line - Line number (1-based)
+   * @param character - Character offset (0-based)
+   */
+  async lspHover(filePath: string, line: number, character: number): Promise<LspHoverResult> {
+    return new Promise((resolve, reject) => {
+      this.client.lspHover({ filePath, line, character }, (error, response) => {
+        if (error) {
+          reject(error);
+        } else if (response) {
+          resolve({
+            contents: response.contents,
+            range: response.range ? {
+              startLine: response.range.startLine,
+              startCharacter: response.range.startCharacter,
+              endLine: response.range.endLine,
+              endCharacter: response.range.endCharacter,
+            } : undefined,
+          });
+        } else {
+          reject(new Error('No response received'));
+        }
+      });
+    });
+  }
+
+  /**
+   * Find where a symbol is defined.
+   *
+   * @param filePath - Absolute path to the file
+   * @param line - Line number (1-based)
+   * @param character - Character offset (0-based)
+   */
+  async lspGoToDefinition(filePath: string, line: number, character: number): Promise<LspLocation[]> {
+    return new Promise((resolve, reject) => {
+      this.client.lspGoToDefinition({ filePath, line, character }, (error, response) => {
+        if (error) {
+          reject(error);
+        } else if (response) {
+          resolve(response.locations.map(loc => ({
+            uri: loc.uri,
+            range: {
+              startLine: loc.range?.startLine ?? 0,
+              startCharacter: loc.range?.startCharacter ?? 0,
+              endLine: loc.range?.endLine ?? 0,
+              endCharacter: loc.range?.endCharacter ?? 0,
+            },
+          })));
+        } else {
+          reject(new Error('No response received'));
+        }
+      });
+    });
+  }
+
+  /**
+   * Find all references to a symbol.
+   *
+   * @param filePath - Absolute path to the file
+   * @param line - Line number (1-based)
+   * @param character - Character offset (0-based)
+   * @param includeDeclaration - Include the declaration in results (default: true)
+   */
+  async lspFindReferences(
+    filePath: string,
+    line: number,
+    character: number,
+    includeDeclaration: boolean = true
+  ): Promise<LspLocation[]> {
+    return new Promise((resolve, reject) => {
+      this.client.lspFindReferences({ filePath, line, character, includeDeclaration }, (error, response) => {
+        if (error) {
+          reject(error);
+        } else if (response) {
+          resolve(response.locations.map(loc => ({
+            uri: loc.uri,
+            range: {
+              startLine: loc.range?.startLine ?? 0,
+              startCharacter: loc.range?.startCharacter ?? 0,
+              endLine: loc.range?.endLine ?? 0,
+              endCharacter: loc.range?.endCharacter ?? 0,
+            },
+          })));
+        } else {
+          reject(new Error('No response received'));
+        }
+      });
+    });
+  }
+
+  /**
+   * List all symbols in a document.
+   *
+   * @param filePath - Absolute path to the file
+   */
+  async lspDocumentSymbol(filePath: string): Promise<LspDocumentSymbol[]> {
+    return new Promise((resolve, reject) => {
+      this.client.lspDocumentSymbol({ filePath }, (error, response) => {
+        if (error) {
+          reject(error);
+        } else if (response) {
+          // Convert proto symbols to client types (recursive)
+          function convertSymbol(s: {
+            name: string;
+            kind: LspSymbolKind;
+            detail: string;
+            range?: { startLine: number; startCharacter: number; endLine: number; endCharacter: number };
+            selectionRange?: { startLine: number; startCharacter: number; endLine: number; endCharacter: number };
+            children: unknown[];
+          }): LspDocumentSymbol {
+            return {
+              name: s.name,
+              kind: s.kind,
+              detail: s.detail,
+              range: {
+                startLine: s.range?.startLine ?? 0,
+                startCharacter: s.range?.startCharacter ?? 0,
+                endLine: s.range?.endLine ?? 0,
+                endCharacter: s.range?.endCharacter ?? 0,
+              },
+              selectionRange: {
+                startLine: s.selectionRange?.startLine ?? 0,
+                startCharacter: s.selectionRange?.startCharacter ?? 0,
+                endLine: s.selectionRange?.endLine ?? 0,
+                endCharacter: s.selectionRange?.endCharacter ?? 0,
+              },
+              children: s.children.map(c => convertSymbol(c as typeof s)),
+            };
+          }
+
+          resolve(response.symbols.map(convertSymbol));
+        } else {
+          reject(new Error('No response received'));
+        }
+      });
+    });
+  }
+
   /**
    * Close the client connection.
    */
@@ -882,7 +1113,7 @@ export type {
   ExecuteTestResponse,
 };
 
-export { ExecutionState };
+export { ExecutionState, LspSymbolKind };
 
 // Singleton client instance
 let globalClient: SandboxClient | null = null;

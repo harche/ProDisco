@@ -1,9 +1,10 @@
-import type { AnyToolDefinition } from '../types.js';
+/**
+ * ProDisco tools index
+ *
+ * Note: Tools are created dynamically in server.ts with runtime configuration.
+ * This module exports metadata for documentation/tooling purposes.
+ */
 import { prodiscoToolMetadata } from './metadata.js';
-
-export const prodiscoTools: AnyToolDefinition[] = [
-  ...prodiscoToolMetadata.map((entry) => entry.tool),
-];
 
 export { prodiscoToolMetadata };
 

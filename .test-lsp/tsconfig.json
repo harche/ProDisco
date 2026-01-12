@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "strict": false,
+    "skipLibCheck": false,
+    "noEmit": true,
+    "baseUrl": "..",
+    "paths": {
+      "*": [
+        "node_modules/*"
+      ]
+    }
+  },
+  "include": [
+    "./*.ts",
+    "../node_modules/@kubernetes/client-node/**/*.d.ts"
+  ]
+}

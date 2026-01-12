@@ -206,10 +206,13 @@ export async function startServer(config: ServerConfig = {}): Promise<grpc.Serve
 
   const server = new grpc.Server();
 
-  // Create service with k8s/prometheus context
+  // Create service with k8s/prometheus context and LSP configuration
+  console.log('[SandboxServer] SANDBOX_MODULES_BASE_PATH env:', process.env.SANDBOX_MODULES_BASE_PATH || '(not set)');
   const sandboxService = createSandboxService({
     prometheusUrl: config.prometheusUrl || process.env.PROMETHEUS_URL,
     cacheDir: config.cacheDir || process.env.SCRIPTS_CACHE_DIR,
+    lspBasePath: process.env.SANDBOX_MODULES_BASE_PATH,
+    scriptsCacheDir: process.env.SCRIPTS_CACHE_DIR,
   });
 
   server.addService(SandboxServiceService, sandboxService);

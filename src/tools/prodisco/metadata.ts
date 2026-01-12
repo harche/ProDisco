@@ -2,18 +2,20 @@
  * ProDisco tool metadata
  *
  * Exports:
- * - searchTools: API method discovery (mode: 'methods'), type definitions (mode: 'types'),
- *   script search (mode: 'scripts'), and Prometheus methods (mode: 'prometheus')
+ * - lspTools: API discovery via Language Server Protocol (workspaceSymbol, hover, goToDefinition, findReferences, documentSymbol)
  * - runSandbox: Execute TypeScript scripts in a sandboxed environment
+ *
+ * Note: Tools are created dynamically in server.ts with runtime configuration.
+ * This module provides static metadata for documentation/tooling purposes.
  */
 
-import { searchToolsTool } from './searchTools.js';
 import { runSandboxTool } from './runSandbox.js';
 
 export const prodiscoToolMetadata = [
   {
-    tool: searchToolsTool,
-    sourceModulePath: './searchTools.ts',
+    name: 'prodisco.lsp',
+    description: 'API discovery via Language Server Protocol',
+    sourceModulePath: './lspTools.ts',
   },
   {
     tool: runSandboxTool,

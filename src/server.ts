@@ -14,8 +14,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json') as { version?: string };
-import { createSearchToolsTool, warmupSearchIndex, shutdownSearchIndex, type SearchToolsRuntimeConfig } from './tools/prodisco/searchTools.js';
 import { createRunSandboxTool } from './tools/prodisco/runSandbox.js';
+import { createLspToolsTool, type LspToolsRuntimeConfig } from './tools/prodisco/lspTools.js';
 import { getSandboxClient, closeSandboxClient } from '@prodisco/sandbox-server/client';
 import {
   DEFAULT_LIBRARIES_CONFIG,
@@ -51,14 +51,14 @@ function buildServerInstructions(libraries: LibrarySpec[]): string {
   const libs = formatLibrariesForAgent(libraries);
   return (
     '**ALWAYS SEARCH BEFORE WRITING CODE.** ' +
-    'Call prodisco.searchTools first to discover APIs, methods, and correct usage patterns. ' +
+    'Call prodisco.lsp with mode="workspaceSymbol" to discover APIs, methods, and correct usage patterns. ' +
     'Do NOT guess method names or parameters - search to find them. ' +
     '\n\n' +
     `CONFIGURED LIBRARIES: ${libs}` +
     '\n\n' +
     'WORKFLOW: ' +
-    '1. Call prodisco.searchTools with a relevant query ' +
-    '2. Review results to find correct APIs ' +
+    '1. Call prodisco.lsp mode="workspaceSymbol" with a relevant query ' +
+    '2. Use prodisco.lsp mode="hover" to get detailed type info ' +
     '3. Call prodisco.runSandbox to execute code using discovered APIs'
   );
 }
@@ -121,38 +121,10 @@ function registerGeneratedResources(mcpServer: McpServer): void {
 
 function registerTools(
   mcpServer: McpServer,
-  tools: { searchTools: AnyToolDefinition; runSandbox: AnyToolDefinition },
+  tools: { runSandbox: AnyToolDefinition; lspTools: AnyToolDefinition },
 ): void {
-  const searchTools = tools.searchTools;
   const runSandbox = tools.runSandbox;
-
-  // Register prodisco.searchTools helper as an exposed tool.
-  mcpServer.registerTool(
-    searchTools.name,
-    {
-      title: 'ProDisco Search Tools',
-      description: searchTools.description,
-      inputSchema: searchTools.schema,
-    },
-    async (args: Record<string, unknown>) => {
-      const parsedArgs = await searchTools.schema.parseAsync(args);
-      const result = await searchTools.execute(parsedArgs);
-
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: result.summary,
-          },
-          {
-            type: 'text' as const,
-            text: JSON.stringify(result.results, null, 2),
-          },
-        ],
-        structuredContent: result,
-      };
-    },
-  );
+  const lspTools = tools.lspTools;
 
   // Register prodisco.runSandbox tool for executing scripts in a sandboxed environment
   mcpServer.registerTool(
@@ -210,6 +182,27 @@ function registerTools(
             text += `• ${exec.executionId} [${exec.state}]: ${exec.codePreview}\n`;
           }
         }
+      } else if (result.mode === 'test') {
+        // Test mode - return test results
+        const testResult = result as {
+          success: boolean;
+          passed: number;
+          failed: number;
+          skipped: number;
+          total: number;
+          duration: number;
+          results: Array<{ name: string; passed: boolean; message?: string; duration: number }>;
+        };
+        const status = testResult.success ? 'PASSED' : 'FAILED';
+        text = `Tests ${status}: ${testResult.passed}/${testResult.total} passed (${testResult.duration}ms)\n\n`;
+        for (const test of testResult.results) {
+          const icon = test.passed ? '✓' : '✗';
+          text += `${icon} ${test.name}`;
+          if (test.message) {
+            text += `: ${test.message}`;
+          }
+          text += '\n';
+        }
       } else {
         // Fallback
         text = JSON.stringify(result, null, 2);
@@ -223,6 +216,35 @@ function registerTools(
           },
         ],
         structuredContent: result,
+      };
+    },
+  );
+
+  // Register prodisco.lsp for API discovery via Language Server Protocol
+  mcpServer.registerTool(
+    lspTools.name,
+    {
+      title: 'ProDisco LSP',
+      description: lspTools.description,
+      inputSchema: lspTools.schema,
+    },
+    async (args: Record<string, unknown>) => {
+      const parsedArgs = await lspTools.schema.parseAsync(args);
+      const result = await lspTools.execute(parsedArgs);
+
+      // lspTools returns content directly
+      if (result.content) {
+        return result;
+      }
+
+      // Fallback
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(result, null, 2),
+          },
+        ],
       };
     },
   );
@@ -661,26 +683,6 @@ Examples:
   process.env.SANDBOX_ALLOWED_MODULES = JSON.stringify(libraryNames);
   process.env.SANDBOX_MODULES_BASE_PATH = modulesBasePath;
 
-  const searchToolsRuntimeConfig: SearchToolsRuntimeConfig = {
-    libraries: librariesConfig.libraries,
-    basePath: modulesBasePath,
-  };
-  const searchTools = createSearchToolsTool(searchToolsRuntimeConfig);
-  const runSandbox = createRunSandboxTool({ libraries: librariesConfig.libraries });
-
-  // Create MCP server with dynamic instructions, then register resources/tools
-  const mcpServer = new McpServer(
-    {
-      name: 'kubernetes-mcp',
-      version: typeof pkg.version === 'string' ? pkg.version : '0.0.0',
-    },
-    {
-      instructions: buildServerInstructions(librariesConfig.libraries),
-    },
-  );
-  registerGeneratedResources(mcpServer);
-  registerTools(mcpServer, { searchTools, runSandbox });
-
   // Handle --clear-cache flag
   if (clearCache) {
     logger.info('Clearing scripts cache...');
@@ -697,13 +699,33 @@ Examples:
   await fs.promises.mkdir(SCRIPTS_CACHE_DIR, { recursive: true });
   logger.info(`Scripts cache directory: ${SCRIPTS_CACHE_DIR}`);
 
-  // Start the sandbox gRPC server
+  // Start the sandbox gRPC server (includes LSP server)
   await startSandboxServer();
 
-  // No built-in cluster probes: ProDisco is library-agnostic; connectivity checks are up to user code.
+  // Create tools after sandbox server is ready
+  const runSandbox = createRunSandboxTool({ libraries: librariesConfig.libraries });
 
-  // Pre-warm the Orama search index to avoid delay on first search
-  await warmupSearchIndex(searchToolsRuntimeConfig);
+  // Create LSP tools for API discovery (uses sandbox client for LSP operations)
+  const sandboxClient = getSandboxClient();
+  const lspToolsConfig: LspToolsRuntimeConfig = {
+    libraries: librariesConfig.libraries,
+  };
+  const lspTools = createLspToolsTool(lspToolsConfig, sandboxClient);
+
+  // Create MCP server with dynamic instructions, then register resources/tools
+  const mcpServer = new McpServer(
+    {
+      name: 'kubernetes-mcp',
+      version: typeof pkg.version === 'string' ? pkg.version : '0.0.0',
+    },
+    {
+      instructions: buildServerInstructions(librariesConfig.libraries),
+    },
+  );
+  registerGeneratedResources(mcpServer);
+  registerTools(mcpServer, { runSandbox, lspTools });
+
+  // No built-in cluster probes: ProDisco is library-agnostic; connectivity checks are up to user code.
 
   // Start the appropriate transport
   if (transport === 'http') {
@@ -731,8 +753,10 @@ async function shutdown(signal: string): Promise<void> {
       logger.info('HTTP server stopped');
     }
 
+    // Close the sandbox client connection
+    closeSandboxClient();
+
     stopSandboxServer();
-    await shutdownSearchIndex();
     logger.info('Shutdown complete');
     process.exit(0);
   } catch (error) {

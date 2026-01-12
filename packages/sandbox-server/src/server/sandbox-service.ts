@@ -20,14 +20,33 @@ import type {
   ExecuteTestRequest,
   ExecuteTestResponse,
   ExecutionState,
+  // LSP types
+  LspWorkspaceSymbolRequest,
+  LspWorkspaceSymbolResponse,
+  LspPositionRequest,
+  LspHoverResponse,
+  LspLocationsResponse,
+  LspReferencesRequest,
+  LspDocumentRequest,
+  LspDocumentSymbolResponse,
+  LspSymbolKind,
+  LspSymbolInfo,
+  LspLocation,
+  LspRange,
+  LspDocumentSymbol,
 } from '../generated/sandbox.js';
 import { Executor } from './executor.js';
 import { CacheManager } from './cache-manager.js';
 import { ExecutionRegistry } from './execution-registry.js';
+import { LspManager } from './lsp-manager.js';
 
 export interface SandboxServiceConfig {
   prometheusUrl?: string;
   cacheDir?: string;
+  /** Base path for node_modules (for LSP) */
+  lspBasePath?: string;
+  /** Scripts cache directory (for LSP) */
+  scriptsCacheDir?: string;
 }
 
 /**
@@ -48,12 +67,72 @@ function resultToState(result: { success: boolean; cancelled: boolean; timedOut:
 }
 
 /**
+ * Map LSP SymbolKind to proto LspSymbolKind
+ */
+function toLspSymbolKind(kind: number): LspSymbolKind {
+  // LSP SymbolKind values match our proto values
+  return kind as LspSymbolKind;
+}
+
+/**
+ * Convert a file path to a file URI
+ */
+function pathToUri(filePath: string): string {
+  if (filePath.startsWith('file://')) {
+    return filePath;
+  }
+  return `file://${filePath}`;
+}
+
+/**
+ * Extract library name from a file path
+ */
+function extractLibraryFromPath(filePath: string): string {
+  const nodeModulesIndex = filePath.indexOf('node_modules');
+  if (nodeModulesIndex === -1) {
+    return 'local';
+  }
+
+  const afterNodeModules = filePath.slice(nodeModulesIndex + 'node_modules/'.length);
+
+  // Handle scoped packages (@org/package)
+  if (afterNodeModules.startsWith('@')) {
+    const parts = afterNodeModules.split('/');
+    if (parts.length >= 2) {
+      return `${parts[0]}/${parts[1]}`;
+    }
+  }
+
+  // Regular package
+  const firstSlash = afterNodeModules.indexOf('/');
+  if (firstSlash !== -1) {
+    return afterNodeModules.slice(0, firstSlash);
+  }
+
+  return afterNodeModules;
+}
+
+/**
  * Create the gRPC service handlers for SandboxService.
  */
 export function createSandboxService(config: SandboxServiceConfig = {}): SandboxServiceServer {
   const executor = new Executor({ prometheusUrl: config.prometheusUrl });
   const cacheManager = new CacheManager({ cacheDir: config.cacheDir });
   const executionRegistry = new ExecutionRegistry();
+
+  // Initialize LspManager if configured
+  let lspManager: LspManager | null = null;
+  console.log('[SandboxService] lspBasePath config:', config.lspBasePath || '(not set)');
+  if (config.lspBasePath) {
+    lspManager = new LspManager({
+      basePath: config.lspBasePath,
+      scriptsCacheDir: config.scriptsCacheDir,
+    });
+    // Start LSP server (async, but we don't await here)
+    lspManager.start().catch((error) => {
+      console.error('[SandboxService] Failed to start LSP server:', error);
+    });
+  }
 
   /**
    * Resolve code from request (either direct code or cached script).
@@ -471,6 +550,254 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
         executionTimeMs: String(result.executionTimeMs),
         error: result.error,
       });
+    },
+
+    // =========================================================================
+    // LSP Operations
+    // =========================================================================
+
+    // LspWorkspaceSymbol - Search for symbols by name across the workspace
+    lspWorkspaceSymbol: async (
+      call: grpc.ServerUnaryCall<LspWorkspaceSymbolRequest, LspWorkspaceSymbolResponse>,
+      callback: grpc.sendUnaryData<LspWorkspaceSymbolResponse>
+    ) => {
+      if (!lspManager) {
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: 'LSP server not configured',
+        });
+        return;
+      }
+
+      try {
+        // Wait for LSP server to be ready before processing request
+        await lspManager.waitForReady();
+
+        const { query, limit } = call.request;
+        const symbols = await lspManager.workspaceSymbol(query);
+
+        // Apply limit if specified
+        const limitedSymbols = limit ? symbols.slice(0, limit) : symbols;
+
+        // Convert to proto format
+        const protoSymbols: LspSymbolInfo[] = limitedSymbols.map((sym) => {
+          const uri = sym.location.uri;
+          const filePath = uri.startsWith('file://') ? uri.slice(7) : uri;
+
+          return {
+            name: sym.name,
+            kind: toLspSymbolKind(sym.kind),
+            library: extractLibraryFromPath(filePath),
+            containerName: sym.containerName ?? '',
+            location: {
+              uri,
+              range: {
+                startLine: sym.location.range.start.line + 1, // Convert to 1-based
+                startCharacter: sym.location.range.start.character,
+                endLine: sym.location.range.end.line + 1,
+                endCharacter: sym.location.range.end.character,
+              },
+            },
+          };
+        });
+
+        callback(null, {
+          symbols: protoSymbols,
+          totalMatches: symbols.length,
+        });
+      } catch (error) {
+        callback({
+          code: grpc.status.INTERNAL,
+          message: `LSP error: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    },
+
+    // LspHover - Get type information and documentation at a position
+    lspHover: async (
+      call: grpc.ServerUnaryCall<LspPositionRequest, LspHoverResponse>,
+      callback: grpc.sendUnaryData<LspHoverResponse>
+    ) => {
+      if (!lspManager) {
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: 'LSP server not configured',
+        });
+        return;
+      }
+
+      try {
+        // Wait for LSP server to be ready before processing request
+        await lspManager.waitForReady();
+
+        const { filePath, line, character } = call.request;
+        const hover = await lspManager.hover(filePath, line, character);
+
+        if (!hover) {
+          callback(null, { contents: '', range: undefined });
+          return;
+        }
+
+        // Extract contents as string
+        let contents = '';
+        const hoverContents = hover.contents;
+        if (typeof hoverContents === 'string') {
+          contents = hoverContents;
+        } else if (Array.isArray(hoverContents)) {
+          contents = hoverContents
+            .map((c) => (typeof c === 'string' ? c : (c as { value: string }).value))
+            .join('\n\n');
+        } else if (hoverContents && typeof hoverContents === 'object') {
+          contents = (hoverContents as { value: string }).value ?? '';
+        }
+
+        const range = hover.range
+          ? {
+              startLine: hover.range.start.line + 1,
+              startCharacter: hover.range.start.character,
+              endLine: hover.range.end.line + 1,
+              endCharacter: hover.range.end.character,
+            }
+          : undefined;
+
+        callback(null, { contents, range });
+      } catch (error) {
+        callback({
+          code: grpc.status.INTERNAL,
+          message: `LSP error: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    },
+
+    // LspGoToDefinition - Find where a symbol is defined
+    lspGoToDefinition: async (
+      call: grpc.ServerUnaryCall<LspPositionRequest, LspLocationsResponse>,
+      callback: grpc.sendUnaryData<LspLocationsResponse>
+    ) => {
+      if (!lspManager) {
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: 'LSP server not configured',
+        });
+        return;
+      }
+
+      try {
+        // Wait for LSP server to be ready before processing request
+        await lspManager.waitForReady();
+
+        const { filePath, line, character } = call.request;
+        const locations = await lspManager.goToDefinition(filePath, line, character);
+
+        const protoLocations: LspLocation[] = locations.map((loc) => ({
+          uri: loc.uri,
+          range: {
+            startLine: loc.range.start.line + 1,
+            startCharacter: loc.range.start.character,
+            endLine: loc.range.end.line + 1,
+            endCharacter: loc.range.end.character,
+          },
+        }));
+
+        callback(null, { locations: protoLocations });
+      } catch (error) {
+        callback({
+          code: grpc.status.INTERNAL,
+          message: `LSP error: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    },
+
+    // LspFindReferences - Find all references to a symbol
+    lspFindReferences: async (
+      call: grpc.ServerUnaryCall<LspReferencesRequest, LspLocationsResponse>,
+      callback: grpc.sendUnaryData<LspLocationsResponse>
+    ) => {
+      if (!lspManager) {
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: 'LSP server not configured',
+        });
+        return;
+      }
+
+      try {
+        // Wait for LSP server to be ready before processing request
+        await lspManager.waitForReady();
+
+        const { filePath, line, character, includeDeclaration } = call.request;
+        const locations = await lspManager.findReferences(filePath, line, character, includeDeclaration);
+
+        const protoLocations: LspLocation[] = locations.map((loc) => ({
+          uri: loc.uri,
+          range: {
+            startLine: loc.range.start.line + 1,
+            startCharacter: loc.range.start.character,
+            endLine: loc.range.end.line + 1,
+            endCharacter: loc.range.end.character,
+          },
+        }));
+
+        callback(null, { locations: protoLocations });
+      } catch (error) {
+        callback({
+          code: grpc.status.INTERNAL,
+          message: `LSP error: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    },
+
+    // LspDocumentSymbol - List all symbols in a document
+    lspDocumentSymbol: async (
+      call: grpc.ServerUnaryCall<LspDocumentRequest, LspDocumentSymbolResponse>,
+      callback: grpc.sendUnaryData<LspDocumentSymbolResponse>
+    ) => {
+      if (!lspManager) {
+        callback({
+          code: grpc.status.UNAVAILABLE,
+          message: 'LSP server not configured',
+        });
+        return;
+      }
+
+      try {
+        // Wait for LSP server to be ready before processing request
+        await lspManager.waitForReady();
+
+        const { filePath } = call.request;
+        const symbols = await lspManager.documentSymbol(filePath);
+
+        // Convert DocumentSymbol[] to proto format (recursive)
+        function convertSymbol(sym: { name: string; kind: number; detail?: string; range: { start: { line: number; character: number }; end: { line: number; character: number } }; selectionRange: { start: { line: number; character: number }; end: { line: number; character: number } }; children?: unknown[] }): LspDocumentSymbol {
+          return {
+            name: sym.name,
+            kind: toLspSymbolKind(sym.kind),
+            detail: sym.detail ?? '',
+            range: {
+              startLine: sym.range.start.line + 1,
+              startCharacter: sym.range.start.character,
+              endLine: sym.range.end.line + 1,
+              endCharacter: sym.range.end.character,
+            },
+            selectionRange: {
+              startLine: sym.selectionRange.start.line + 1,
+              startCharacter: sym.selectionRange.start.character,
+              endLine: sym.selectionRange.end.line + 1,
+              endCharacter: sym.selectionRange.end.character,
+            },
+            children: (sym.children ?? []).map((child) => convertSymbol(child as typeof sym)),
+          };
+        }
+
+        const protoSymbols = symbols.map(convertSymbol);
+
+        callback(null, { symbols: protoSymbols });
+      } catch (error) {
+        callback({
+          code: grpc.status.INTERNAL,
+          message: `LSP error: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
     },
   };
 }

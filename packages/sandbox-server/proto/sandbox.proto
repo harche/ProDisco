@@ -34,6 +34,25 @@ service SandboxService {
 
   // ExecuteTest runs code with tests and returns structured results
   rpc ExecuteTest(ExecuteTestRequest) returns (ExecuteTestResponse);
+
+  // =========================================================================
+  // LSP Operations - Language Server Protocol for code intelligence
+  // =========================================================================
+
+  // LspWorkspaceSymbol searches for symbols by name across the workspace
+  rpc LspWorkspaceSymbol(LspWorkspaceSymbolRequest) returns (LspWorkspaceSymbolResponse);
+
+  // LspHover gets type information and documentation at a position
+  rpc LspHover(LspPositionRequest) returns (LspHoverResponse);
+
+  // LspGoToDefinition finds where a symbol is defined
+  rpc LspGoToDefinition(LspPositionRequest) returns (LspLocationsResponse);
+
+  // LspFindReferences finds all references to a symbol
+  rpc LspFindReferences(LspReferencesRequest) returns (LspLocationsResponse);
+
+  // LspDocumentSymbol lists all symbols in a document
+  rpc LspDocumentSymbol(LspDocumentRequest) returns (LspDocumentSymbolResponse);
 }
 
 message ExecuteRequest {
@@ -330,4 +349,174 @@ message ExecuteTestResponse {
 
   // Error message if test execution itself failed
   optional string error = 6;
+}
+
+// ============================================================================
+// LSP (Language Server Protocol) Messages
+// ============================================================================
+
+// LspWorkspaceSymbolRequest searches for symbols by name
+message LspWorkspaceSymbolRequest {
+  // Query string to search for (partial match supported)
+  string query = 1;
+
+  // Maximum number of results to return
+  optional int32 limit = 2;
+}
+
+// LspPositionRequest specifies a position in a document
+message LspPositionRequest {
+  // File path (absolute path to file in node_modules or scripts cache)
+  string file_path = 1;
+
+  // Line number (1-based, as shown in editors)
+  int32 line = 2;
+
+  // Character offset (0-based)
+  int32 character = 3;
+}
+
+// LspReferencesRequest extends position request with options
+message LspReferencesRequest {
+  // File path (absolute path to file)
+  string file_path = 1;
+
+  // Line number (1-based)
+  int32 line = 2;
+
+  // Character offset (0-based)
+  int32 character = 3;
+
+  // Include the declaration in results
+  bool include_declaration = 4;
+}
+
+// LspDocumentRequest specifies a document
+message LspDocumentRequest {
+  // File path (absolute path to file)
+  string file_path = 1;
+}
+
+// LspRange represents a range in a document
+message LspRange {
+  // Start line (1-based)
+  int32 start_line = 1;
+
+  // Start character (0-based)
+  int32 start_character = 2;
+
+  // End line (1-based)
+  int32 end_line = 3;
+
+  // End character (0-based)
+  int32 end_character = 4;
+}
+
+// LspLocation represents a location in a file
+message LspLocation {
+  // File URI (e.g., file:///path/to/file.ts)
+  string uri = 1;
+
+  // Range within the file
+  LspRange range = 2;
+}
+
+// LspSymbolKind represents the kind of a symbol
+enum LspSymbolKind {
+  LSP_SYMBOL_KIND_UNSPECIFIED = 0;
+  LSP_SYMBOL_KIND_FILE = 1;
+  LSP_SYMBOL_KIND_MODULE = 2;
+  LSP_SYMBOL_KIND_NAMESPACE = 3;
+  LSP_SYMBOL_KIND_PACKAGE = 4;
+  LSP_SYMBOL_KIND_CLASS = 5;
+  LSP_SYMBOL_KIND_METHOD = 6;
+  LSP_SYMBOL_KIND_PROPERTY = 7;
+  LSP_SYMBOL_KIND_FIELD = 8;
+  LSP_SYMBOL_KIND_CONSTRUCTOR = 9;
+  LSP_SYMBOL_KIND_ENUM = 10;
+  LSP_SYMBOL_KIND_INTERFACE = 11;
+  LSP_SYMBOL_KIND_FUNCTION = 12;
+  LSP_SYMBOL_KIND_VARIABLE = 13;
+  LSP_SYMBOL_KIND_CONSTANT = 14;
+  LSP_SYMBOL_KIND_STRING = 15;
+  LSP_SYMBOL_KIND_NUMBER = 16;
+  LSP_SYMBOL_KIND_BOOLEAN = 17;
+  LSP_SYMBOL_KIND_ARRAY = 18;
+  LSP_SYMBOL_KIND_OBJECT = 19;
+  LSP_SYMBOL_KIND_KEY = 20;
+  LSP_SYMBOL_KIND_NULL = 21;
+  LSP_SYMBOL_KIND_ENUM_MEMBER = 22;
+  LSP_SYMBOL_KIND_STRUCT = 23;
+  LSP_SYMBOL_KIND_EVENT = 24;
+  LSP_SYMBOL_KIND_OPERATOR = 25;
+  LSP_SYMBOL_KIND_TYPE_PARAMETER = 26;
+}
+
+// LspSymbolInfo represents a symbol found in the workspace
+message LspSymbolInfo {
+  // Symbol name
+  string name = 1;
+
+  // Kind of symbol (class, interface, function, etc.)
+  LspSymbolKind kind = 2;
+
+  // Library name extracted from path (e.g., "@kubernetes/client-node")
+  string library = 3;
+
+  // Container name (e.g., parent class or module)
+  string container_name = 4;
+
+  // Location of the symbol
+  LspLocation location = 5;
+}
+
+// LspWorkspaceSymbolResponse contains workspace symbol search results
+message LspWorkspaceSymbolResponse {
+  // Matching symbols
+  repeated LspSymbolInfo symbols = 1;
+
+  // Total number of matches (may be more than returned due to limit)
+  int32 total_matches = 2;
+}
+
+// LspHoverResponse contains hover information
+message LspHoverResponse {
+  // Markdown content (documentation, type info)
+  string contents = 1;
+
+  // Range that the hover applies to
+  optional LspRange range = 2;
+}
+
+// LspLocationsResponse contains location results
+message LspLocationsResponse {
+  // List of locations
+  repeated LspLocation locations = 1;
+}
+
+// LspDocumentSymbol represents a symbol in a document (hierarchical)
+message LspDocumentSymbol {
+  // Symbol name
+  string name = 1;
+
+  // Kind of symbol
+  LspSymbolKind kind = 2;
+
+  // More detail (e.g., signature)
+  string detail = 3;
+
+  // Range of the whole symbol including documentation
+  LspRange range = 4;
+
+  // Range of the symbol name
+  LspRange selection_range = 5;
+
+  // Children symbols (for hierarchical structure)
+  repeated LspDocumentSymbol children = 6;
+}
+
+// LspDocumentSymbolResponse contains document symbols
+message LspDocumentSymbolResponse {
+  // List of symbols in the document
+  repeated LspDocumentSymbol symbols = 1;
 }

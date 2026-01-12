@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { ToolDefinition } from '../types.js';
 import { getSandboxClient, ExecutionState } from '@prodisco/sandbox-server/client';
-import { searchToolsService } from './searchTools.js';
 import { DEFAULT_LIBRARIES_CONFIG, type LibrarySpec } from '../../config/libraries.js';
 
 // ============================================================================
@@ -29,7 +28,7 @@ const RunSandboxInputSchema = z.object({
   code: z.string().optional()
     .describe('(execute/stream/async mode) TypeScript code to execute'),
   cached: z.string().optional()
-    .describe('(execute/stream/async mode) Name of a cached script to execute (from searchTools results)'),
+    .describe('(execute/stream/async mode) Name of a cached script to execute'),
   timeout: z.number().int().positive().max(120000).default(30000).optional()
     .describe('(execute/stream/async mode) Execution timeout in milliseconds (default: 30000, max: 120000)'),
 
@@ -240,20 +239,6 @@ async function executeExecuteMode(
       timeoutMs: timeout,
     });
 
-    // Index newly cached scripts for searchability using CacheEntry metadata
-    if (result.success && result.cached) {
-      try {
-        await searchToolsService.indexCacheEntry({
-          name: result.cached.name,
-          description: result.cached.description,
-          createdAtMs: result.cached.createdAtMs,
-          contentHash: result.cached.contentHash,
-        });
-      } catch {
-        // Silently ignore indexing errors
-      }
-    }
-
     return {
       mode: 'execute',
       success: result.success,
@@ -321,20 +306,6 @@ async function executeStreamMode(
             contentHash: string;
           };
         };
-
-        // Index newly cached scripts
-        if (resultData.success && resultData.cached) {
-          try {
-            await searchToolsService.indexCacheEntry({
-              name: resultData.cached.name,
-              description: resultData.cached.description,
-              createdAtMs: resultData.cached.createdAtMs,
-              contentHash: resultData.cached.contentHash,
-            });
-          } catch {
-            // Silently ignore indexing errors
-          }
-        }
 
         finalResult = {
           mode: 'stream',
@@ -436,20 +407,6 @@ async function executeStatusMode(
       wait,
       outputOffset,
     });
-
-    // Index newly cached scripts if execution completed
-    if (status.result?.cached) {
-      try {
-        await searchToolsService.indexCacheEntry({
-          name: status.result.cached.name,
-          description: status.result.cached.description,
-          createdAtMs: status.result.cached.createdAtMs,
-          contentHash: status.result.cached.contentHash,
-        });
-      } catch {
-        // Silently ignore indexing errors
-      }
-    }
 
     return {
       mode: 'status',
@@ -629,7 +586,7 @@ export function createRunSandboxTool(runtimeConfig: RunSandboxRuntimeConfig) {
   return {
     name: 'prodisco.runSandbox',
     description:
-      '**PREREQUISITE: Call searchTools first** to discover correct API methods and parameters. ' +
+      '**PREREQUISITE: Call prodisco.lsp first** to discover correct API methods and parameters. ' +
       'Do NOT guess - search to find available APIs before writing code. ' +
       '\n\n' +
       'Execute TypeScript code in a sandboxed environment. ' +

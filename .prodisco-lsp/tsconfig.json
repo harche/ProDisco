@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "esModuleInterop": true,
+    "strict": false,
+    "skipLibCheck": false,
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "baseUrl": "..",
+    "paths": {
+      "*": [
+        "node_modules/*"
+      ]
+    }
+  },
+  "include": [
+    "./*.ts",
+    "../node_modules/@kubernetes/client-node/**/*.ts",
+    "../node_modules/@kubernetes/client-node/**/*.d.ts",
+    "../node_modules/@prodisco/**/*.ts",
+    "../node_modules/@prodisco/**/*.d.ts",
+    "/Users/harpatil/Projects/interface-mcp/prodisco/.cache/scripts/**/*.ts"
+  ],
+  "exclude": []
+}
