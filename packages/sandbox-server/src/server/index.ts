@@ -2,6 +2,7 @@
 import * as grpc from '@grpc/grpc-js';
 import { unlinkSync, existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { parse as parseYaml } from 'yaml';
 import { SandboxServiceService } from '../generated/sandbox.js';
 import { createSandboxService } from './sandbox-service.js';
 
@@ -272,12 +273,46 @@ function setupShutdown(server: grpc.Server, socketPath: string | null): void {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
+/**
+ * Load allowed modules from a config file and set SANDBOX_ALLOWED_MODULES env var.
+ * Config file format: { libraries: [{ name: string, ... }, ...] }
+ */
+function loadAllowedModulesFromConfig(configPath: string): void {
+  if (!existsSync(configPath)) {
+    return;
+  }
+
+  try {
+    const content = readFileSync(configPath, 'utf-8');
+    const config = parseYaml(content) as { libraries?: Array<{ name: string }> };
+
+    if (config.libraries && Array.isArray(config.libraries)) {
+      const moduleNames = config.libraries.map((lib) => lib.name).filter(Boolean);
+      if (moduleNames.length > 0) {
+        process.env.SANDBOX_ALLOWED_MODULES = JSON.stringify(moduleNames);
+        console.log(`Loaded allowed modules from config: ${moduleNames.join(', ')}`);
+      }
+    }
+  } catch (error) {
+    console.warn(`Failed to load config from ${configPath}:`, error);
+  }
+}
+
 // CLI entry point
 const isMainModule =
   process.argv[1] === fileURLToPath(import.meta.url) ||
   process.argv[1]?.endsWith('/sandbox-server/dist/server/index.js');
 
 if (isMainModule) {
+  // Check for --config argument or default config file path
+  const configArgIndex = process.argv.indexOf('--config');
+  const configPath = configArgIndex !== -1 && process.argv[configArgIndex + 1]
+    ? process.argv[configArgIndex + 1]
+    : '/app/.prodisco-config.yaml';
+
+  // Load allowed modules from config file if present
+  loadAllowedModulesFromConfig(configPath);
+
   const config: ServerConfig = {};
   const { address, isUnixSocket } = getBindAddress(config);
   const socketPath = isUnixSocket ? address.replace('unix://', '') : null;
