@@ -7,3 +7,6 @@ artifacts
 
 # Agent-generated cached scripts
 .cache/
+
+# Temporary config file created during Docker build
+.prodisco-config.yaml

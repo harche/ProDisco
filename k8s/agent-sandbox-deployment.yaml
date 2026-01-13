@@ -1,0 +1,268 @@
+# Deployment using kubernetes-sigs/agent-sandbox for isolated sandbox execution
+# The sandbox-server runs in an agent-sandbox Sandbox resource
+# The MCP server runs as a regular Deployment
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prodisco
+---
+# RBAC for sandbox-server
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sandbox-server
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - configmaps
+      - secrets
+      - namespaces
+      - nodes
+      - persistentvolumes
+      - persistentvolumeclaims
+      - events
+      - serviceaccounts
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - daemonsets
+      - replicasets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - pods
+      - nodes
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sandbox-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sandbox-server
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-server
+    namespace: prodisco
+  - kind: ServiceAccount
+    name: prodisco-sandbox
+    namespace: prodisco
+---
+# Sandbox resource for sandbox-server (using agent-sandbox CRD)
+apiVersion: agents.x-k8s.io/v1alpha1
+kind: Sandbox
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+  labels:
+    app: sandbox-server
+spec:
+  podTemplate:
+    metadata:
+      labels:
+        app: sandbox-server
+    spec:
+      serviceAccountName: sandbox-server
+      containers:
+        - name: sandbox
+          image: prodisco/sandbox-server:test
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 50051
+              name: grpc
+              protocol: TCP
+          env:
+            - name: SANDBOX_USE_TCP
+              value: "true"
+            - name: SANDBOX_TCP_HOST
+              value: "0.0.0.0"
+            - name: SANDBOX_TCP_PORT
+              value: "50051"
+            - name: SCRIPTS_CACHE_DIR
+              value: "/tmp/prodisco-scripts"
+            - name: SANDBOX_TRANSPORT_MODE
+              value: "insecure"
+            # In-cluster service URLs for monitoring clients
+            - name: PROMETHEUS_ENDPOINT
+              value: "http://prometheus-server.monitoring.svc.cluster.local:80"
+            - name: LOKI_ENDPOINT
+              value: "http://loki.monitoring.svc.cluster.local:3100"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "kill -0 1"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "kill -0 1"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          volumeMounts:
+            - name: scripts-cache
+              mountPath: /tmp/prodisco-scripts
+      volumes:
+        - name: scripts-cache
+          emptyDir: {}
+---
+# Service for sandbox-server (points to pods managed by the Sandbox)
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+  labels:
+    app: sandbox-server
+spec:
+  type: ClusterIP
+  ports:
+    - port: 50051
+      targetPort: 50051
+      protocol: TCP
+      name: grpc
+  selector:
+    app: sandbox-server
+---
+# RBAC for MCP server
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-server
+  namespace: prodisco
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sandbox-server  # Reuse same read-only permissions
+subjects:
+  - kind: ServiceAccount
+    name: mcp-server
+    namespace: prodisco
+---
+# MCP Server as regular Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-server
+  template:
+    metadata:
+      labels:
+        app: mcp-server
+    spec:
+      serviceAccountName: mcp-server
+      containers:
+        - name: mcp-server
+          image: prodisco/mcp-server:test
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          env:
+            - name: MCP_TRANSPORT
+              value: "http"
+            - name: MCP_HOST
+              value: "0.0.0.0"
+            - name: MCP_PORT
+              value: "3000"
+            - name: SCRIPTS_CACHE_DIR
+              value: "/tmp/prodisco-scripts"
+            # Connect to sandbox-server via TCP
+            - name: SANDBOX_USE_TCP
+              value: "true"
+            - name: SANDBOX_TCP_HOST
+              value: "sandbox-server.prodisco.svc.cluster.local"
+            - name: SANDBOX_TCP_PORT
+              value: "50051"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - name: scripts-cache
+              mountPath: /tmp/prodisco-scripts
+      volumes:
+        - name: scripts-cache
+          emptyDir: {}
+---
+# Service for MCP server
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app: mcp-server
