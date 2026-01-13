@@ -1,6 +1,6 @@
 {
   "name": "@prodisco/loki-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeScript client for Grafana Loki REST API",
   "type": "module",
   "main": "dist/index.js",
@@ -8,8 +8,7 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": "./dist/index.js"
     }
   },
   "files": [

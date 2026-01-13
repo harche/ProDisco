@@ -107,6 +107,9 @@ spec:
               value: "/tmp/prodisco-scripts"
             - name: SANDBOX_TRANSPORT_MODE
               value: "insecure"
+            # Config file path for allowed modules (read by executor)
+            - name: PRODISCO_CONFIG_PATH
+              value: "/app/.prodisco-config.yaml"
             # In-cluster service URLs for monitoring clients
             - name: PROMETHEUS_ENDPOINT
               value: "http://prometheus-server.monitoring.svc.cluster.local:80"
