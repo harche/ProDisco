@@ -11,3 +11,5 @@ libraries:
       Loki LogQL querying. LOKI_ENDPOINT env var is pre-configured in the sandbox.
       Quick start: `const client = new LokiClient({ baseUrl: process.env.LOKI_ENDPOINT });`
       Workflow: (1) create client (2) client.labels() and client.labelValues('namespace') to discover labels (3) client.queryRange('{namespace="default"}') to fetch logs.
+  - name: "simple-statistics"
+    description: "Statistical functions including mean, median, standard deviation, linear regression, and more."
