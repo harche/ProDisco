@@ -165,6 +165,10 @@ async function main() {
   const installSpecs = cfg.libraries.map((l) => l.install || l.name);
   const extraPackagesArg = installSpecs.join(' ');
 
+  // Copy config file to build context for runtime library descriptions
+  const buildContextConfigPath = path.resolve(process.cwd(), '.prodisco-config.yaml');
+  fs.copyFileSync(configPath, buildContextConfigPath);
+
   // eslint-disable-next-line no-console
   console.log(`Config: ${configPath}`);
   // eslint-disable-next-line no-console
@@ -204,6 +208,13 @@ async function main() {
     if (push) {
       run('docker', ['push', `${sandboxImage}:${tag}`]);
     }
+  }
+
+  // Clean up temporary config file from build context
+  try {
+    fs.unlinkSync(buildContextConfigPath);
+  } catch {
+    // Ignore cleanup errors
   }
 }
 

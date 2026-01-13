@@ -48,6 +48,10 @@ RUN npm ci --omit=dev --ignore-scripts
 ARG EXTRA_NPM_PACKAGES=""
 RUN if [ -n "$EXTRA_NPM_PACKAGES" ]; then npm install --omit=dev --no-audit --no-fund --ignore-scripts $EXTRA_NPM_PACKAGES; fi
 
+# Copy config file if provided (build script creates .prodisco-config.yaml in build context)
+# This file contains library descriptions for runtime
+COPY .prodisco-config.yam[l] /app/
+
 # Copy built files from builder
 COPY --from=builder /app/packages/search-libs/dist ./packages/search-libs/dist
 COPY --from=builder /app/packages/prometheus-client/dist ./packages/prometheus-client/dist
@@ -70,5 +74,5 @@ ENV MCP_TRANSPORT=http
 ENV MCP_HOST=0.0.0.0
 ENV MCP_PORT=3000
 
-# Run the MCP server
-CMD ["node", "dist/server.js"]
+# Run the MCP server (use config file if present for library descriptions)
+CMD ["sh", "-c", "if [ -f /app/.prodisco-config.yaml ]; then node dist/server.js --config /app/.prodisco-config.yaml; else node dist/server.js; fi"]
