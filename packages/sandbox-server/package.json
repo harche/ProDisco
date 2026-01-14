@@ -18,6 +18,7 @@
     "k8s"
   ],
   "scripts": {
+    "prebuild": "npm run proto:generate",
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server/index.ts",
     "start": "node dist/server/index.js",
