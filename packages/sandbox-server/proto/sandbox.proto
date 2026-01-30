@@ -46,6 +46,11 @@ message ExecuteRequest {
 
   // Execution timeout in milliseconds
   optional int32 timeout_ms = 3;
+
+  // Name for the cached script (e.g., "list-pods")
+  // The script will be saved with this name (e.g., "list-pods.ts")
+  // Required when executing new code to enable caching
+  optional string script_name = 4;
 }
 
 // CacheEntry represents a cached execution that can be re-run

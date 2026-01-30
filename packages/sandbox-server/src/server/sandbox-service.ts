@@ -95,14 +95,15 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
       }
 
       const { code, isCached, cachedName } = resolved;
+      const scriptName = request.scriptName;
 
       // Execute the code
       const result = await executor.execute(code, timeoutMs);
 
       // Cache successful new executions
       let cacheEntry = undefined;
-      if (result.success && !isCached) {
-        cacheEntry = await cacheManager.cache(code);
+      if (result.success && !isCached && scriptName) {
+        cacheEntry = await cacheManager.cache(code, scriptName);
       }
 
       callback(null, {
@@ -146,6 +147,7 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
       }
 
       const { code, isCached, cachedName } = resolved;
+      const scriptName = request.scriptName;
 
       // Create execution entry for tracking
       const execution = executionRegistry.create({
@@ -177,8 +179,8 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
 
       // Cache successful new executions
       let cacheEntry = undefined;
-      if (result.success && !isCached) {
-        cacheEntry = await cacheManager.cache(code);
+      if (result.success && !isCached && scriptName) {
+        cacheEntry = await cacheManager.cache(code, scriptName);
       }
 
       // Send final result
@@ -231,6 +233,7 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
       }
 
       const { code, isCached, cachedName } = resolved;
+      const scriptName = request.scriptName;
 
       // Create execution entry
       const execution = executionRegistry.create({
@@ -262,8 +265,8 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
         }).then(async (result) => {
           // Cache successful new executions
           let cacheEntry = undefined;
-          if (result.success && !isCached) {
-            cacheEntry = await cacheManager.cache(code);
+          if (result.success && !isCached && scriptName) {
+            cacheEntry = await cacheManager.cache(code, scriptName);
           }
 
           const finalState = resultToState(result);

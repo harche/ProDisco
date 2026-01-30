@@ -151,23 +151,33 @@ describe('Integration Tests - Client/Server Communication', () => {
   });
 
   describe('Caching', () => {
-    it('caches successful executions and returns CacheEntry', async () => {
-      const code = `console.log("cache integration test ${Date.now()}")`;
-      const result = await client.execute({ code });
+    it('caches successful executions when scriptName provided', async () => {
+      const scriptName = `cache-integration-${Date.now()}`;
+      const code = `console.log("cache integration test")`;
+      const result = await client.execute({ code, scriptName });
 
       expect(result.success).toBe(true);
       expect(result.cached).toBeDefined();
-      expect(result.cached!.name).toMatch(/^script-.*\.ts$/);
+      expect(result.cached!.name).toBe(`${scriptName}.ts`);
       expect(result.cached!.description).toBeDefined();
       expect(result.cached!.contentHash).toBeDefined();
+    });
+
+    it('does not cache when scriptName not provided', async () => {
+      const code = `console.log("no cache test ${Date.now()}")`;
+      const result = await client.execute({ code });
+
+      expect(result.success).toBe(true);
+      expect(result.cached).toBeUndefined();
     });
 
     it('can execute cached scripts', async () => {
       const uniqueValue = `unique-${Date.now()}`;
       const code = `console.log("${uniqueValue}")`;
+      const scriptName = `cached-script-${Date.now()}`;
 
       // First execution - gets cached
-      const firstResult = await client.execute({ code });
+      const firstResult = await client.execute({ code, scriptName });
       expect(firstResult.success).toBe(true);
       expect(firstResult.cached).toBeDefined();
 
@@ -191,16 +201,17 @@ describe('Integration Tests - Client/Server Communication', () => {
       expect(result.error).toContain('not found');
     });
 
-    it('deduplicates cache for identical code', async () => {
-      const code = `console.log("dedupe test ${Date.now()}")`;
+    it('deduplicates cache for same script name', async () => {
+      const scriptName = `dedupe-script-${Date.now()}`;
+      const code = `console.log("dedupe test")`;
 
-      const result1 = await client.execute({ code });
-      const result2 = await client.execute({ code });
+      const result1 = await client.execute({ code, scriptName });
+      const result2 = await client.execute({ code, scriptName });
 
       expect(result1.success).toBe(true);
       expect(result2.success).toBe(true);
       expect(result1.cached).toBeDefined();
-      // Second execution of same code should not create new cache entry
+      // Second execution with same name should not create new cache entry
       expect(result2.cached).toBeUndefined();
     });
   });

@@ -303,21 +303,31 @@ describe('TCP Transport - Script Caching', () => {
     }
   });
 
-  it('caches successful executions over TCP', async () => {
-    const code = `console.log("tcp cache test ${uniqueId()}")`;
-    const result = await client.execute({ code });
+  it('caches successful executions over TCP when scriptName provided', async () => {
+    const scriptName = `tcp-cache-${uniqueId()}`;
+    const code = `console.log("tcp cache test")`;
+    const result = await client.execute({ code, scriptName });
 
     expect(result.success).toBe(true);
     expect(result.cached).toBeDefined();
-    expect(result.cached!.name).toMatch(/^script-.*\.ts$/);
+    expect(result.cached!.name).toBe(`${scriptName}.ts`);
+  });
+
+  it('does not cache over TCP when scriptName not provided', async () => {
+    const code = `console.log("tcp no cache test ${uniqueId()}")`;
+    const result = await client.execute({ code });
+
+    expect(result.success).toBe(true);
+    expect(result.cached).toBeUndefined();
   });
 
   it('can execute cached scripts over TCP', async () => {
     const uniqueValue = `tcp-cached-${uniqueId()}`;
     const code = `console.log("${uniqueValue}")`;
+    const scriptName = `tcp-cached-script-${uniqueId()}`;
 
     // First execution - gets cached
-    const firstResult = await client.execute({ code });
+    const firstResult = await client.execute({ code, scriptName });
     expect(firstResult.success).toBe(true);
     expect(firstResult.cached).toBeDefined();
 

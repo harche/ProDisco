@@ -399,13 +399,14 @@ describe('Transport Security - TLS Mode', () => {
     expect(status.output).toContain('async TLS');
   });
 
-  it('caches scripts in TLS mode', async () => {
-    const code = `console.log("tls cache ${uniqueId()}")`;
-    const result = await client.execute({ code });
+  it('caches scripts in TLS mode when scriptName provided', async () => {
+    const scriptName = `tls-cache-${uniqueId()}`;
+    const code = `console.log("tls cache test")`;
+    const result = await client.execute({ code, scriptName });
 
     expect(result.success).toBe(true);
     expect(result.cached).toBeDefined();
-    expect(result.cached!.name).toMatch(/^script-.*\.ts$/);
+    expect(result.cached!.name).toBe(`${scriptName}.ts`);
   });
 });
 

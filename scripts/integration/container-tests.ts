@@ -119,13 +119,18 @@ async function runTests(): Promise<void> {
     }),
 
     test('Script caching works', async () => {
+      const scriptName = `cache-test-${Date.now()}`;
       const result = await client.execute({
         code: '// Cache test script\nconsole.log("cached!");',
+        scriptName,
         timeoutMs: 5000,
       });
       if (!result.success) throw new Error('Execution failed: ' + result.error);
       if (!result.cached) throw new Error('Script was not cached');
       if (!result.cached.name) throw new Error('Cached entry missing name');
+      if (result.cached.name !== `${scriptName}.ts`) {
+        throw new Error(`Expected cached name "${scriptName}.ts", got "${result.cached.name}"`);
+      }
     }),
 
     test('Error handling - syntax error', async () => {

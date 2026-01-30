@@ -64,36 +64,36 @@ export class CacheManager {
    * Cache successfully executed code.
    * Uses a hash of the code to create a unique filename, avoiding duplicates.
    * Returns a CacheEntry if a new entry was created.
+   *
+   * @param code - The code to cache
+   * @param scriptName - The name for the script (e.g., "list-pods")
    */
-  async cache(code: string): Promise<CacheEntry | undefined> {
+  async cache(code: string, scriptName: string): Promise<CacheEntry | undefined> {
     await this.mutex.acquire();
 
     try {
       this.ensureDirectory();
 
-      // Create a hash-based filename to deduplicate by content
+      // Create content hash for the cache entry
       const hash = createHash('sha256').update(code).digest('hex').slice(0, 12);
 
-      // Check if code with this hash already exists
-      const existingFiles = readdirSync(this.cacheDir);
-      const existingScript = existingFiles.find(f => f.includes(hash) && f.endsWith('.ts'));
+      // Sanitize the script name and create filename
+      const sanitizedName = this.sanitizeScriptName(scriptName);
+      const filename = `${sanitizedName}.ts`;
+      const filepath = join(this.cacheDir, filename);
 
-      if (existingScript) {
-        // Code with same content already cached
+      // Check if script with this name already exists
+      if (existsSync(filepath)) {
+        // Script with same name already cached
         return undefined;
       }
-
-      // Create new file with timestamp and hash
-      const now = new Date();
-      const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-      const filename = `script-${timestamp}-${hash}.ts`;
-      const filepath = join(this.cacheDir, filename);
 
       writeFileSync(filepath, code, 'utf-8');
 
       // Extract description from code (first comment or first meaningful line)
       const description = this.extractDescription(code);
 
+      const now = new Date();
       return {
         name: filename,
         description,
@@ -106,6 +106,20 @@ export class CacheManager {
     } finally {
       this.mutex.release();
     }
+  }
+
+  /**
+   * Sanitize a script name to be safe for filesystem use.
+   * Converts to lowercase, replaces spaces and invalid chars with hyphens.
+   */
+  private sanitizeScriptName(name: string): string {
+    return name
+      .toLowerCase()
+      .trim()
+      .replace(/\.ts$/, '') // Remove .ts extension if provided
+      .replace(/[^a-z0-9-_]/g, '-') // Replace invalid chars with hyphens
+      .replace(/-+/g, '-') // Collapse multiple hyphens
+      .replace(/^-|-$/g, ''); // Remove leading/trailing hyphens
   }
 
   /**

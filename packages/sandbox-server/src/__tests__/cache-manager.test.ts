@@ -73,10 +73,10 @@ describe('CacheManager', () => {
   describe('cache()', () => {
     it('caches code and returns CacheEntry with name', async () => {
       const code = 'console.log("test");';
-      const entry = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code, 'test-script');
 
       expect(entry).toBeDefined();
-      expect(entry!.name).toMatch(/^script-.*\.ts$/);
+      expect(entry!.name).toBe('test-script.ts');
       expect(entry!.description).toBeDefined();
       expect(entry!.createdAtMs).toBeDefined();
       expect(entry!.contentHash).toBeDefined();
@@ -84,7 +84,7 @@ describe('CacheManager', () => {
 
     it('creates file with correct content', async () => {
       const code = 'console.log("hello world");';
-      const entry = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code, 'hello-world');
 
       expect(entry).toBeDefined();
       const filePath = join(testCacheDir, entry!.name);
@@ -94,13 +94,28 @@ describe('CacheManager', () => {
       expect(content).toBe(code);
     });
 
-    it('uses hash-based filename for deduplication', async () => {
+    it('allows same code with different names', async () => {
       const code = 'console.log("unique code");';
 
-      const entry1 = await cacheManager.cache(code);
-      const entry2 = await cacheManager.cache(code);
+      const entry1 = await cacheManager.cache(code, 'script-one');
+      const entry2 = await cacheManager.cache(code, 'script-two');
 
-      // Second cache should return undefined (already cached)
+      // Same code can be saved with different names
+      expect(entry1).toBeDefined();
+      expect(entry1!.name).toBe('script-one.ts');
+      expect(entry2).toBeDefined();
+      expect(entry2!.name).toBe('script-two.ts');
+      // Both should have the same content hash
+      expect(entry1!.contentHash).toBe(entry2!.contentHash);
+    });
+
+    it('deduplicates same name with same code', async () => {
+      const code = 'console.log("unique code");';
+
+      const entry1 = await cacheManager.cache(code, 'same-script');
+      const entry2 = await cacheManager.cache(code, 'same-script');
+
+      // Second cache should return undefined (same name, same hash)
       expect(entry1).toBeDefined();
       expect(entry2).toBeUndefined();
     });
@@ -109,37 +124,35 @@ describe('CacheManager', () => {
       const code1 = 'console.log("code 1");';
       const code2 = 'console.log("code 2");';
 
-      const entry1 = await cacheManager.cache(code1);
-      const entry2 = await cacheManager.cache(code2);
+      const entry1 = await cacheManager.cache(code1, 'code-one');
+      const entry2 = await cacheManager.cache(code2, 'code-two');
 
       expect(entry1).toBeDefined();
       expect(entry2).toBeDefined();
-      expect(entry1!.name).not.toBe(entry2!.name);
+      expect(entry1!.name).toBe('code-one.ts');
+      expect(entry2!.name).toBe('code-two.ts');
     });
 
-    it('includes timestamp in filename', async () => {
-      const code = 'console.log("timestamp test");';
-      const entry = await cacheManager.cache(code);
+    it('uses provided script name as filename', async () => {
+      const code = 'console.log("name test");';
+      const entry = await cacheManager.cache(code, 'my-custom-script');
 
       expect(entry).toBeDefined();
-      // Format: script-YYYY-MM-DDTHH-MM-SS-hash.ts
-      expect(entry!.name).toMatch(/^script-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-[a-f0-9]{12}\.ts$/);
+      expect(entry!.name).toBe('my-custom-script.ts');
     });
 
-    it('includes hash in filename and contentHash field', async () => {
+    it('includes contentHash field', async () => {
       const code = 'console.log("hash test");';
-      const entry = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code, 'hash-test');
 
       expect(entry).toBeDefined();
-      // Should contain a 12-character hex hash
-      expect(entry!.name).toMatch(/-[a-f0-9]{12}\.ts$/);
       expect(entry!.contentHash).toMatch(/^[a-f0-9]{12}$/);
     });
 
     it('handles concurrent cache calls safely', async () => {
       const codes = Array.from({ length: 10 }, (_, i) => `console.log("${i}");`);
 
-      const results = await Promise.all(codes.map(code => cacheManager.cache(code)));
+      const results = await Promise.all(codes.map((code, i) => cacheManager.cache(code, `script-${i}`)));
 
       // All unique codes should be cached
       const entries = results.filter(r => r !== undefined);
@@ -159,7 +172,7 @@ describe('CacheManager', () => {
 
       // The cache method should recreate the directory and succeed
       // This test verifies the cache method doesn't throw on retries
-      const result = await manager.cache('console.log("test");');
+      const result = await manager.cache('console.log("test");', 'retry-test');
       // Since the directory gets recreated, it should actually succeed
       expect(result).toBeDefined();
 
@@ -167,6 +180,22 @@ describe('CacheManager', () => {
       if (existsSync(validDir)) {
         rmSync(validDir, { recursive: true });
       }
+    });
+
+    it('sanitizes script names with invalid characters', async () => {
+      const code = 'console.log("sanitize test");';
+      const entry = await cacheManager.cache(code, 'My Script Name!@#$');
+
+      expect(entry).toBeDefined();
+      expect(entry!.name).toBe('my-script-name.ts');
+    });
+
+    it('removes .ts extension if provided in name', async () => {
+      const code = 'console.log("extension test");';
+      const entry = await cacheManager.cache(code, 'my-script.ts');
+
+      expect(entry).toBeDefined();
+      expect(entry!.name).toBe('my-script.ts');
     });
   });
 
@@ -287,7 +316,7 @@ describe('CacheManager', () => {
 
       // Create cache operations that log their order
       const promises = Array.from({ length: 5 }, (_, i) =>
-        cacheManager.cache(`console.log("operation ${i}");`).then(() => {
+        cacheManager.cache(`console.log("operation ${i}");`, `op-${i}`).then(() => {
           operations.push(i);
         })
       );
@@ -303,7 +332,7 @@ describe('CacheManager', () => {
 
   describe('Edge Cases', () => {
     it('handles empty code', async () => {
-      const entry = await cacheManager.cache('');
+      const entry = await cacheManager.cache('', 'empty-script');
 
       expect(entry).toBeDefined();
       const filePath = join(testCacheDir, entry!.name);
@@ -313,7 +342,7 @@ describe('CacheManager', () => {
 
     it('handles code with special characters', async () => {
       const code = 'console.log("Special: $`\\n\\t{}[]");';
-      const entry = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code, 'special-chars');
 
       expect(entry).toBeDefined();
       const result = cacheManager.find(entry!.name);
@@ -322,7 +351,7 @@ describe('CacheManager', () => {
 
     it('handles code with Unicode', async () => {
       const code = 'console.log("Hello 世界 🌍");';
-      const entry = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code, 'unicode-script');
 
       expect(entry).toBeDefined();
       const result = cacheManager.find(entry!.name);
@@ -332,36 +361,36 @@ describe('CacheManager', () => {
 
     it('handles very long code', async () => {
       const code = 'console.log("a".repeat(10000));';
-      const filename = await cacheManager.cache(code);
+      const entry = await cacheManager.cache(code, 'long-code');
 
-      expect(filename).toBeDefined();
+      expect(entry).toBeDefined();
     });
 
     it('recreates cache directory if deleted between operations', async () => {
       // Cache something first
-      await cacheManager.cache('console.log("first");');
+      await cacheManager.cache('console.log("first");', 'first-script');
 
       // Delete the cache directory
       rmSync(testCacheDir, { recursive: true });
 
       // Cache again - should recreate directory
-      const filename = await cacheManager.cache('console.log("second");');
+      const entry = await cacheManager.cache('console.log("second");', 'second-script');
 
-      expect(filename).toBeDefined();
+      expect(entry).toBeDefined();
       expect(existsSync(testCacheDir)).toBe(true);
     });
   });
 
   describe('File Listing', () => {
     it('lists multiple cached scripts', async () => {
-      const codes = [
-        'console.log("first");',
-        'console.log("second");',
-        'console.log("third");',
+      const scripts = [
+        { code: 'console.log("first");', name: 'first-script' },
+        { code: 'console.log("second");', name: 'second-script' },
+        { code: 'console.log("third");', name: 'third-script' },
       ];
 
-      for (const code of codes) {
-        await cacheManager.cache(code);
+      for (const { code, name } of scripts) {
+        await cacheManager.cache(code, name);
       }
 
       const files = readdirSync(testCacheDir).filter(f => f.endsWith('.ts'));
@@ -369,7 +398,7 @@ describe('CacheManager', () => {
     });
 
     it('all cached files have .ts extension', async () => {
-      await cacheManager.cache('console.log("test");');
+      await cacheManager.cache('console.log("test");', 'extension-test');
 
       const files = readdirSync(testCacheDir);
       const tsFiles = files.filter(f => f.endsWith('.ts'));

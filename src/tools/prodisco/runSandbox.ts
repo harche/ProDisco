@@ -30,6 +30,8 @@ const RunSandboxInputSchema = z.object({
     .describe('(execute/stream/async mode) TypeScript code to execute'),
   cached: z.string().optional()
     .describe('(execute/stream/async mode) Name of a cached script to execute (from searchTools results)'),
+  scriptName: z.string().optional()
+    .describe('(execute/stream/async mode) **REQUIRED for caching**. Name for the script (e.g., "list-pods", "get-etcd-details"). Use descriptive kebab-case names. Scripts without scriptName are NOT cached.'),
   timeout: z.number().int().positive().max(120000).default(30000).optional()
     .describe('(execute/stream/async mode) Execution timeout in milliseconds (default: 30000, max: 120000)'),
 
@@ -221,7 +223,7 @@ type RunSandboxResult =
 async function executeExecuteMode(
   input: z.infer<typeof RunSandboxInputSchema>
 ): Promise<ExecuteModeResult | ErrorResult> {
-  const { code, cached, timeout = 30000 } = input;
+  const { code, cached, scriptName, timeout = 30000 } = input;
 
   if (!code && !cached) {
     return {
@@ -237,6 +239,7 @@ async function executeExecuteMode(
     const result = await client.execute({
       code,
       cached,
+      scriptName,
       timeoutMs: timeout,
     });
 
@@ -279,7 +282,7 @@ async function executeExecuteMode(
 async function executeStreamMode(
   input: z.infer<typeof RunSandboxInputSchema>
 ): Promise<StreamModeResult | ErrorResult> {
-  const { code, cached, timeout = 30000 } = input;
+  const { code, cached, scriptName, timeout = 30000 } = input;
 
   if (!code && !cached) {
     return {
@@ -300,6 +303,7 @@ async function executeStreamMode(
     for await (const chunk of client.executeStream({
       code,
       cached,
+      scriptName,
       timeoutMs: timeout,
     })) {
       executionId = chunk.executionId;
@@ -379,7 +383,7 @@ async function executeStreamMode(
 async function executeAsyncMode(
   input: z.infer<typeof RunSandboxInputSchema>
 ): Promise<AsyncModeResult | ErrorResult> {
-  const { code, cached, timeout = 30000 } = input;
+  const { code, cached, scriptName, timeout = 30000 } = input;
 
   if (!code && !cached) {
     return {
@@ -395,6 +399,7 @@ async function executeAsyncMode(
     const result = await client.executeAsync({
       code,
       cached,
+      scriptName,
       timeoutMs: timeout,
     });
 
@@ -634,14 +639,18 @@ export function createRunSandboxTool(runtimeConfig: RunSandboxRuntimeConfig) {
       '\n\n' +
       'Execute TypeScript code in a sandboxed environment. ' +
       '\n\n' +
+      '**IMPORTANT**: When executing new code, ALWAYS provide a `scriptName` to cache the script for future reuse. ' +
+      'Use descriptive kebab-case names (e.g., "list-pods", "get-etcd-details", "check-node-resources"). ' +
+      'Scripts are only cached when scriptName is provided.' +
+      '\n\n' +
       '**BEST PRACTICE**: When writing complex logic, data transformations, or code you are uncertain about, ' +
       'use `mode: "test"` first to validate your implementation with unit tests before running in production. ' +
       'This helps catch bugs early and ensures correctness. ' +
       '\n\n' +
       'MODES: ' +
-      '• execute (default): Blocking execution, waits for completion. Params: code OR cached (required), timeout. ' +
-      '• stream: Real-time output streaming. Params: code OR cached (required), timeout. ' +
-      '• async: Start execution and return immediately with execution ID. Params: code OR cached (required), timeout. ' +
+      '• execute (default): Blocking execution, waits for completion. Params: code OR cached (required), scriptName (required for caching), timeout. ' +
+      '• stream: Real-time output streaming. Params: code OR cached (required), scriptName (required for caching), timeout. ' +
+      '• async: Start execution and return immediately with execution ID. Params: code OR cached (required), scriptName (required for caching), timeout. ' +
       '• status: Get status of async execution. Params: executionId (required), wait (optional). ' +
       '• cancel: Cancel a running execution. Params: executionId (required). ' +
       '• list: List active/recent executions. Params: states (optional), limit (optional). ' +

@@ -63,6 +63,8 @@ export interface ExecuteOptions {
   code?: string;
   cached?: string;
   timeoutMs?: number;
+  /** Name for the cached script (e.g., "list-pods"). Required for caching new scripts. */
+  scriptName?: string;
 }
 
 export interface ExecuteResult {
@@ -302,6 +304,7 @@ export class SandboxClient {
   async execute(options: ExecuteOptions): Promise<ExecuteResult> {
     const request: ExecuteRequest = {
       timeoutMs: options.timeoutMs,
+      scriptName: options.scriptName,
       source: undefined,
     };
 
@@ -479,6 +482,7 @@ export class SandboxClient {
   async *executeStream(options: ExecuteOptions): AsyncGenerator<StreamChunk, void, unknown> {
     const request: ExecuteRequest = {
       timeoutMs: options.timeoutMs,
+      scriptName: options.scriptName,
       source: undefined,
     };
 
@@ -574,6 +578,7 @@ export class SandboxClient {
   ): AsyncGenerator<StreamChunk, void, unknown> {
     const request: ExecuteRequest = {
       timeoutMs: options.timeoutMs,
+      scriptName: options.scriptName,
       source: undefined,
     };
 
@@ -719,6 +724,7 @@ export class SandboxClient {
   async executeAsync(options: ExecuteOptions): Promise<{ executionId: string; state: ExecutionState }> {
     const request: ExecuteRequest = {
       timeoutMs: options.timeoutMs,
+      scriptName: options.scriptName,
       source: undefined,
     };
 
