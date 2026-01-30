@@ -16,6 +16,7 @@ const runSandbox = runSandboxTool.execute.bind(runSandboxTool) as (input: {
   mode?: 'execute' | 'stream' | 'async' | 'status' | 'cancel' | 'list' | 'test';
   code?: string;
   cached?: string;
+  scriptName?: string;
   timeout?: number;
   executionId?: string;
   wait?: boolean;
@@ -407,96 +408,113 @@ describe('prodisco.runSandbox', () => {
   });
 
   describe('Script Caching', () => {
-    it('caches successfully executed scripts', async () => {
+    it('caches successfully executed scripts when scriptName provided', async () => {
       const uniqueId = Date.now();
+      const scriptName = `cache-test-${uniqueId}`;
       const result = await runSandbox({
         code: `
           // Test script ${uniqueId} for caching verification
           console.log("cached script test ${uniqueId}");
         `,
+        scriptName,
       });
 
       expect(result.success).toBe(true);
+      expect(result.cached).toBeDefined();
+      expect(result.cached!.name).toBe(`${scriptName}.ts`);
 
       // Wait for caching to complete
       await new Promise(resolve => setTimeout(resolve, 200));
 
-      // Check that a script was cached
+      // Check that the script was cached with the correct name
       const files = readdirSync(SCRIPTS_CACHE_DIR);
-      const _cachedScript = files.find(f => f.includes(uniqueId.toString().slice(-8)));
-
-      // May or may not find by ID, but cache should have scripts
-      expect(files.length).toBeGreaterThan(0);
+      expect(files.some(f => f === `${scriptName}.ts`)).toBe(true);
     }, 30000); // Allow 30s for sandbox initialization
+
+    it('does not cache when scriptName not provided', async () => {
+      const uniqueMarker = `NO_CACHE_${Date.now()}`;
+      const result = await runSandbox({
+        code: `
+          // Script without scriptName ${uniqueMarker}
+          console.log("should not cache");
+        `,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.cached).toBeUndefined();
+    });
 
     it('does not cache failed scripts', async () => {
       const uniqueMarker = `FAIL_${Date.now()}`;
+      const scriptName = `fail-test-${Date.now()}`;
 
       const result = await runSandbox({
         code: `
           // Script that fails ${uniqueMarker}
           throw new Error("intentional failure");
         `,
+        scriptName,
       });
 
       expect(result.success).toBe(false);
+      expect(result.cached).toBeUndefined();
 
       // Wait a moment for any potential caching to complete
       await new Promise(resolve => setTimeout(resolve, 200));
 
       // Check that no script with our unique marker was cached
-      // (avoid counting all files which can be flaky due to other tests)
       const files = readdirSync(SCRIPTS_CACHE_DIR, { withFileTypes: true })
         .filter(f => f.isFile())
         .map(f => f.name);
-      const failedScriptCached = files.some(f => {
-        const content = readFileSync(join(SCRIPTS_CACHE_DIR, f), 'utf-8');
-        return content.includes(uniqueMarker);
-      });
+      const failedScriptCached = files.some(f => f === `${scriptName}.ts`);
       expect(failedScriptCached).toBe(false);
     });
 
-    it('deduplicates scripts with identical content', async () => {
-      // Use unique code to avoid collisions with other tests or runs
+    it('deduplicates scripts with same name', async () => {
+      // Use unique script name
       const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      const uniqueMarker = `DEDUP_TEST_${uniqueId}`;
+      const scriptName = `dedup-test-${uniqueId}`;
       const code = `
-        // Deduplication test script ${uniqueMarker}
-        console.log("same content ${uniqueMarker}");
+        // Deduplication test script
+        console.log("same content test");
       `;
 
-      // Execute same code twice
-      await runSandbox({ code });
+      // Execute same code with same name twice
+      const result1 = await runSandbox({ code, scriptName });
+      expect(result1.success).toBe(true);
+      expect(result1.cached).toBeDefined();
+
+      // Wait for caching to complete
       await new Promise((resolve) => setTimeout(resolve, 200));
 
-      await runSandbox({ code });
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      // Verify file was created
+      const fileExistsAfterFirst = existsSync(join(SCRIPTS_CACHE_DIR, `${scriptName}.ts`));
+      expect(fileExistsAfterFirst).toBe(true);
 
-      // Count files containing our unique marker - should be exactly 1
-      const filesWithMarker = readdirSync(SCRIPTS_CACHE_DIR)
-        .filter((f) => f.endsWith('.ts'))
-        .filter((f) => {
-          const content = readFileSync(join(SCRIPTS_CACHE_DIR, f), 'utf-8');
-          return content.includes(uniqueMarker);
-        });
+      // Second execution with same name should not re-cache
+      const result2 = await runSandbox({ code, scriptName });
+      expect(result2.success).toBe(true);
+      // The second execution's cached field may or may not be undefined depending on timing
+      // The key behavior is that only one file exists
 
-      expect(filesWithMarker.length).toBe(1);
+      // Verify only one file exists with this name
+      const files = readdirSync(SCRIPTS_CACHE_DIR)
+        .filter((f) => f === `${scriptName}.ts`);
+      expect(files.length).toBe(1);
     });
 
     it('caches scripts without header comment', async () => {
-      const uniqueContent = `console.log("header test ${Date.now()}");`;
+      const uniqueId = Date.now();
+      const scriptName = `header-test-${uniqueId}`;
+      const uniqueContent = `console.log("header test ${uniqueId}");`;
 
-      await runSandbox({ code: uniqueContent });
+      await runSandbox({ code: uniqueContent, scriptName });
       await new Promise(resolve => setTimeout(resolve, 200));
 
-      // Find the most recently created script (filter to script- prefix to exclude test scripts)
-      const files = readdirSync(SCRIPTS_CACHE_DIR)
-        .filter(f => f.endsWith('.ts') && f.startsWith('script-'))
-        .sort()
-        .reverse();
-
-      if (files.length > 0) {
-        const content = readFileSync(join(SCRIPTS_CACHE_DIR, files[0]), 'utf-8');
+      // Verify the script was cached with its exact content (no header added)
+      const cachedFile = join(SCRIPTS_CACHE_DIR, `${scriptName}.ts`);
+      if (existsSync(cachedFile)) {
+        const content = readFileSync(cachedFile, 'utf-8');
         expect(content).not.toContain('// Executed via sandbox');
         expect(content).toBe(uniqueContent);
       }

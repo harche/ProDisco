@@ -102,6 +102,7 @@ describe('SandboxService', () => {
       const request: ExecuteRequest = {
         source: { $case: 'code', code: 'console.log("hello")' },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -120,6 +121,7 @@ describe('SandboxService', () => {
       const request: ExecuteRequest = {
         source: { $case: 'code', code: 'console.log("test")' },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -138,6 +140,7 @@ describe('SandboxService', () => {
       const request: ExecuteRequest = {
         source: { $case: 'code', code: 'throw new Error("test error")' },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -158,6 +161,7 @@ describe('SandboxService', () => {
           code: 'await new Promise(r => setTimeout(r, 5000)); console.log("done");'
         },
         timeoutMs: 100,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -175,6 +179,7 @@ describe('SandboxService', () => {
       const request: ExecuteRequest = {
         source: { $case: 'code', code: 'console.log("quick")' },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -187,12 +192,13 @@ describe('SandboxService', () => {
   });
 
   describe('execute - Caching', () => {
-    it('caches successful executions', async () => {
+    it('caches successful executions when scriptName provided', async () => {
       const service = createSandboxService({ cacheDir: testCacheDir });
 
       const request: ExecuteRequest = {
         source: { $case: 'code', code: 'console.log("cache me")' },
         timeoutMs: undefined,
+        scriptName: 'cache-test-script',
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -202,7 +208,25 @@ describe('SandboxService', () => {
 
       expect(response.success).toBe(true);
       expect(response.cached).toBeDefined();
-      expect(response.cached!.name).toMatch(/^script-.*\.ts$/);
+      expect(response.cached!.name).toBe('cache-test-script.ts');
+    });
+
+    it('does not cache when scriptName not provided', async () => {
+      const service = createSandboxService({ cacheDir: testCacheDir });
+
+      const request: ExecuteRequest = {
+        source: { $case: 'code', code: 'console.log("no cache")' },
+        timeoutMs: undefined,
+        scriptName: undefined,
+      };
+
+      const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
+        service.execute,
+        request
+      );
+
+      expect(response.success).toBe(true);
+      expect(response.cached).toBeUndefined();
     });
 
     it('does not cache failed executions', async () => {
@@ -211,6 +235,7 @@ describe('SandboxService', () => {
       const request: ExecuteRequest = {
         source: { $case: 'code', code: 'throw new Error("fail")' },
         timeoutMs: undefined,
+        scriptName: 'fail-script',
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -222,14 +247,14 @@ describe('SandboxService', () => {
       expect(response.cached).toBeUndefined();
     });
 
-    it('does not duplicate cache for same code', async () => {
+    it('does not duplicate cache for same script name', async () => {
       const service = createSandboxService({ cacheDir: testCacheDir });
-      // Use unique code to avoid collisions with other tests
-      const uniqueCode = `console.log("dedupe test ${Date.now()}-${Math.random().toString(36).slice(2)}")`;
+      const scriptName = `dedupe-script-${Date.now()}`;
 
       const request: ExecuteRequest = {
-        source: { $case: 'code', code: uniqueCode },
+        source: { $case: 'code', code: 'console.log("dedupe test")' },
         timeoutMs: undefined,
+        scriptName,
       };
 
       const response1 = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -245,7 +270,7 @@ describe('SandboxService', () => {
       expect(response1.success).toBe(true);
       expect(response2.success).toBe(true);
       expect(response1.cached).toBeDefined();
-      // Second execution of same code should not create new cache
+      // Second execution with same name should not create new cache
       expect(response2.cached).toBeUndefined();
     });
   });
@@ -254,10 +279,11 @@ describe('SandboxService', () => {
     it('executes cached script by name', async () => {
       const service = createSandboxService({ cacheDir: testCacheDir });
 
-      // First, cache some code
+      // First, cache some code with a script name
       const cacheRequest: ExecuteRequest = {
         source: { $case: 'code', code: 'console.log("cached script output")' },
         timeoutMs: undefined,
+        scriptName: 'my-cached-script',
       };
 
       const cacheResponse = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -266,11 +292,13 @@ describe('SandboxService', () => {
       );
 
       expect(cacheResponse.cached).toBeDefined();
+      expect(cacheResponse.cached!.name).toBe('my-cached-script.ts');
 
       // Now execute the cached script
       const executeRequest: ExecuteRequest = {
         source: { $case: 'cached', cached: cacheResponse.cached!.name },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -290,6 +318,7 @@ describe('SandboxService', () => {
       const request: ExecuteRequest = {
         source: { $case: 'cached', cached: 'non-existent-script' },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -306,10 +335,11 @@ describe('SandboxService', () => {
     it('finds cached script by partial name', async () => {
       const service = createSandboxService({ cacheDir: testCacheDir });
 
-      // First, cache some code
+      // First, cache some code with a script name
       const cacheRequest: ExecuteRequest = {
         source: { $case: 'code', code: 'console.log("partial match test")' },
         timeoutMs: undefined,
+        scriptName: 'partial-match-script',
       };
 
       const cacheResponse = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -318,16 +348,13 @@ describe('SandboxService', () => {
       );
 
       expect(cacheResponse.cached).toBeDefined();
+      expect(cacheResponse.cached!.name).toBe('partial-match-script.ts');
 
-      // Extract the hash from the filename
-      const match = cacheResponse.cached!.name.match(/-([a-f0-9]{12})\.ts$/);
-      expect(match).not.toBeNull();
-      const hash = match![1];
-
-      // Execute using just the hash
+      // Execute using just partial name
       const executeRequest: ExecuteRequest = {
-        source: { $case: 'cached', cached: hash },
+        source: { $case: 'cached', cached: 'partial-match' },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -347,6 +374,7 @@ describe('SandboxService', () => {
       const request: ExecuteRequest = {
         source: undefined,
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -375,6 +403,7 @@ describe('SandboxService', () => {
           `
         },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -402,6 +431,7 @@ describe('SandboxService', () => {
           `
         },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -424,6 +454,7 @@ describe('SandboxService', () => {
           code: 'console.log(typeof k8s, typeof kc);'
         },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -452,6 +483,7 @@ describe('SandboxService', () => {
           `
         },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -473,6 +505,7 @@ describe('SandboxService', () => {
       const request: ExecuteRequest = {
         source: { $case: 'code', code: '' },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -490,6 +523,7 @@ describe('SandboxService', () => {
       const request: ExecuteRequest = {
         source: { $case: 'code', code: '// just a comment' },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
@@ -507,6 +541,7 @@ describe('SandboxService', () => {
       const request: ExecuteRequest = {
         source: { $case: 'code', code: 'console.log("Hello 世界 🌍")' },
         timeoutMs: undefined,
+        scriptName: undefined,
       };
 
       const response = await promisifyHandler<ExecuteRequest, ExecuteResponse>(
