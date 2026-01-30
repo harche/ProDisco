@@ -89,9 +89,7 @@ export class CacheManager {
       const filename = `script-${timestamp}-${hash}.ts`;
       const filepath = join(this.cacheDir, filename);
 
-      // Add a header comment with execution timestamp
-      const header = `// Executed via sandbox at ${now.toISOString()}\n`;
-      writeFileSync(filepath, header + code, 'utf-8');
+      writeFileSync(filepath, code, 'utf-8');
 
       // Extract description from code (first comment or first meaningful line)
       const description = this.extractDescription(code);
@@ -167,16 +165,9 @@ export class CacheManager {
 
   /**
    * Read and return the code from a cached file.
-   * Strips the auto-generated header comment if present.
    */
   private readCode(filePath: string): string {
-    const content = readFileSync(filePath, 'utf-8');
-    // Strip the auto-generated header comment (first line if it starts with "// Executed via")
-    const lines = content.split('\n');
-    if (lines[0]?.startsWith('// Executed via')) {
-      return lines.slice(1).join('\n').trim();
-    }
-    return content;
+    return readFileSync(filePath, 'utf-8');
   }
 
   /**

@@ -29,8 +29,7 @@ const runSandbox = runSandboxTool.execute.bind(runSandboxTool) as (input: {
 // Test cached script for Cached Script Execution tests
 const testCachedScriptName = 'test-cached-script-for-runsandbox.ts';
 const testCachedScriptPath = join(SCRIPTS_CACHE_DIR, testCachedScriptName);
-const testCachedScriptContent = `// Executed via sandbox at 2025-01-01T00:00:00.000Z
-// Test cached script
+const testCachedScriptContent = `// Test cached script
 console.log("executed from cache");
 console.log("cached script working");
 `;
@@ -484,21 +483,22 @@ describe('prodisco.runSandbox', () => {
       expect(filesWithMarker.length).toBe(1);
     });
 
-    it('adds header comment to cached scripts', async () => {
+    it('caches scripts without header comment', async () => {
       const uniqueContent = `console.log("header test ${Date.now()}");`;
 
       await runSandbox({ code: uniqueContent });
       await new Promise(resolve => setTimeout(resolve, 200));
 
-      // Find the most recently created script
+      // Find the most recently created script (filter to script- prefix to exclude test scripts)
       const files = readdirSync(SCRIPTS_CACHE_DIR)
-        .filter(f => f.endsWith('.ts'))
+        .filter(f => f.endsWith('.ts') && f.startsWith('script-'))
         .sort()
         .reverse();
 
       if (files.length > 0) {
         const content = readFileSync(join(SCRIPTS_CACHE_DIR, files[0]), 'utf-8');
-        expect(content).toContain('// Executed via sandbox');
+        expect(content).not.toContain('// Executed via sandbox');
+        expect(content).toBe(uniqueContent);
       }
     });
   });
@@ -543,13 +543,13 @@ describe('prodisco.runSandbox', () => {
       expect(result.error).toContain('not found');
     });
 
-    it('strips header comment when executing cached script', async () => {
+    it('executes cached script without header comment in output', async () => {
       const result = await runSandbox({
         cached: testCachedScriptName,
       });
 
       expect(result.success).toBe(true);
-      // Should not have header comment in output (it's stripped before execution)
+      // Cached scripts should not have header comments
       expect(result.output).not.toContain('// Executed via sandbox');
     });
 
