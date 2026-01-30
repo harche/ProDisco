@@ -91,8 +91,7 @@ describe('CacheManager', () => {
       expect(existsSync(filePath)).toBe(true);
 
       const content = readFileSync(filePath, 'utf-8');
-      expect(content).toContain('// Executed via sandbox at');
-      expect(content).toContain(code);
+      expect(content).toBe(code);
     });
 
     it('uses hash-based filename for deduplication', async () => {
@@ -253,24 +252,12 @@ describe('CacheManager', () => {
       expect(result!.code).toContain('console.log("pods")');
     });
 
-    it('strips header comment from code', () => {
-      // Add a script with the standard header
-      const headerContent = '// Executed via sandbox at 2024-01-01T00:00:00.000Z\nconsole.log("test");';
-      writeFileSync(join(testCacheDir, 'with-header.ts'), headerContent);
-
-      const result = cacheManager.find('with-header');
-
-      expect(result).not.toBeNull();
-      expect(result!.code).toBe('console.log("test");');
-      expect(result!.code).not.toContain('// Executed via');
-    });
-
-    it('preserves code without header', () => {
+    it('returns code as-is from cached file', () => {
       const result = cacheManager.find('list-pods');
 
       expect(result).not.toBeNull();
-      // The list-pods script has a different comment format, so it should be preserved
       expect(result!.code).toContain('// List all pods');
+      expect(result!.code).toContain('console.log("pods")');
     });
 
     it('prefers exact match over partial match', () => {
@@ -321,8 +308,7 @@ describe('CacheManager', () => {
       expect(entry).toBeDefined();
       const filePath = join(testCacheDir, entry!.name);
       const content = readFileSync(filePath, 'utf-8');
-      // Should have just the header
-      expect(content).toContain('// Executed via sandbox at');
+      expect(content).toBe('');
     });
 
     it('handles code with special characters', async () => {
