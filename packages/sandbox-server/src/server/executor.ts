@@ -5,11 +5,30 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
+// Output limits to prevent memory exhaustion
+const MAX_OUTPUT_LINES = 5000;
+const MAX_OUTPUT_CHARS = 500000; // 500KB
+
+/**
+ * Tracks output size and truncation state during execution.
+ */
+interface OutputTracker {
+  lines: string[];
+  charCount: number;
+  truncated: boolean;
+  truncatedAt?: { lines: number; chars: number };
+}
+
 export interface ExecutionResult {
   success: boolean;
   output: string;
   error?: string;
   executionTimeMs: number;
+  // Output metadata
+  outputLineCount: number;
+  outputCharCount: number;
+  truncated: boolean;
+  truncatedAt?: { lines: number; chars: number };
 }
 
 export interface StreamingExecutionResult extends ExecutionResult {
@@ -498,29 +517,47 @@ export class Executor {
     }
   }
 
-  private buildSandbox(outputLines: string[], onOutput?: OutputCallback): Record<string, unknown> {
+  private buildSandbox(tracker: OutputTracker, onOutput?: OutputCallback): Record<string, unknown> {
     const makeLine = (args: unknown[]) => args.map(String).join(' ');
+
+    const addLine = (line: string, isError: boolean) => {
+      // Check if already truncated
+      if (tracker.truncated) {
+        return;
+      }
+
+      // Check limits before adding
+      if (tracker.lines.length >= MAX_OUTPUT_LINES || tracker.charCount + line.length > MAX_OUTPUT_CHARS) {
+        tracker.truncated = true;
+        tracker.truncatedAt = {
+          lines: tracker.lines.length,
+          chars: tracker.charCount,
+        };
+        return;
+      }
+
+      // Add the line
+      tracker.lines.push(line);
+      tracker.charCount += line.length;
+      onOutput?.(line + '\n', isError);
+    };
 
     const consoleObj = {
       log: (...args: unknown[]) => {
         const line = makeLine(args);
-        outputLines.push(line);
-        onOutput?.(line + '\n', false);
+        addLine(line, false);
       },
       error: (...args: unknown[]) => {
         const line = '[ERROR] ' + makeLine(args);
-        outputLines.push(line);
-        onOutput?.(line + '\n', true);
+        addLine(line, true);
       },
       warn: (...args: unknown[]) => {
         const line = '[WARN] ' + makeLine(args);
-        outputLines.push(line);
-        onOutput?.(line + '\n', false);
+        addLine(line, false);
       },
       info: (...args: unknown[]) => {
         const line = '[INFO] ' + makeLine(args);
-        outputLines.push(line);
-        onOutput?.(line + '\n', false);
+        addLine(line, false);
       },
     };
 
@@ -555,7 +592,11 @@ export class Executor {
    */
   async execute(code: string, timeoutMs: number = 30000): Promise<ExecutionResult> {
     const startTime = Date.now();
-    const outputLines: string[] = [];
+    const tracker: OutputTracker = {
+      lines: [],
+      charCount: 0,
+      truncated: false,
+    };
 
     // Clamp timeout
     const timeout = Math.min(Math.max(timeoutMs, 1000), 120000);
@@ -574,7 +615,7 @@ export class Executor {
       });
 
       // 3. Create sandbox context with restricted require() and optional Kubernetes globals
-      const sandbox: Record<string, unknown> = this.buildSandbox(outputLines);
+      const sandbox: Record<string, unknown> = this.buildSandbox(tracker);
 
       // 4. Create a promise that will be resolved when the async code completes
       let resolveResult: (value: unknown) => void;
@@ -616,16 +657,24 @@ export class Executor {
 
       return {
         success: true,
-        output: outputLines.join('\n'),
+        output: tracker.lines.join('\n'),
         executionTimeMs: Date.now() - startTime,
+        outputLineCount: tracker.lines.length,
+        outputCharCount: tracker.charCount,
+        truncated: tracker.truncated,
+        truncatedAt: tracker.truncatedAt,
       };
 
     } catch (error) {
       return {
         success: false,
-        output: outputLines.join('\n'),
+        output: tracker.lines.join('\n'),
         error: error instanceof Error ? error.message : String(error),
         executionTimeMs: Date.now() - startTime,
+        outputLineCount: tracker.lines.length,
+        outputCharCount: tracker.charCount,
+        truncated: tracker.truncated,
+        truncatedAt: tracker.truncatedAt,
       };
     }
   }
@@ -637,7 +686,11 @@ export class Executor {
   async executeStreaming(options: StreamingExecuteOptions): Promise<StreamingExecutionResult> {
     const { code, timeoutMs = 30000, onOutput, signal } = options;
     const startTime = Date.now();
-    const outputLines: string[] = [];
+    const tracker: OutputTracker = {
+      lines: [],
+      charCount: 0,
+      truncated: false,
+    };
 
     // Check if already aborted
     if (signal?.aborted) {
@@ -648,6 +701,9 @@ export class Executor {
         executionTimeMs: 0,
         cancelled: true,
         timedOut: false,
+        outputLineCount: 0,
+        outputCharCount: 0,
+        truncated: false,
       };
     }
 
@@ -668,7 +724,7 @@ export class Executor {
       });
 
       // 3. Create sandbox context with restricted require() and optional Kubernetes globals
-      const sandbox: Record<string, unknown> = this.buildSandbox(outputLines, onOutput);
+      const sandbox: Record<string, unknown> = this.buildSandbox(tracker, onOutput);
 
       // 4. Create completion promise
       let resolveResult: (value: unknown) => void;
@@ -718,22 +774,30 @@ export class Executor {
       if (result === 'abort') {
         return {
           success: false,
-          output: outputLines.join('\n'),
+          output: tracker.lines.join('\n'),
           error: 'Execution was cancelled',
           executionTimeMs: Date.now() - startTime,
           cancelled: true,
           timedOut: false,
+          outputLineCount: tracker.lines.length,
+          outputCharCount: tracker.charCount,
+          truncated: tracker.truncated,
+          truncatedAt: tracker.truncatedAt,
         };
       }
 
       if (result === 'timeout') {
         return {
           success: false,
-          output: outputLines.join('\n'),
+          output: tracker.lines.join('\n'),
           error: 'Script execution timed out',
           executionTimeMs: Date.now() - startTime,
           cancelled: false,
           timedOut: true,
+          outputLineCount: tracker.lines.length,
+          outputCharCount: tracker.charCount,
+          truncated: tracker.truncated,
+          truncatedAt: tracker.truncatedAt,
         };
       }
 
@@ -741,30 +805,42 @@ export class Executor {
         const error = (result as { error: unknown }).error;
         return {
           success: false,
-          output: outputLines.join('\n'),
+          output: tracker.lines.join('\n'),
           error: error instanceof Error ? error.message : String(error),
           executionTimeMs: Date.now() - startTime,
           cancelled: false,
           timedOut: false,
+          outputLineCount: tracker.lines.length,
+          outputCharCount: tracker.charCount,
+          truncated: tracker.truncated,
+          truncatedAt: tracker.truncatedAt,
         };
       }
 
       return {
         success: true,
-        output: outputLines.join('\n'),
+        output: tracker.lines.join('\n'),
         executionTimeMs: Date.now() - startTime,
         cancelled: false,
         timedOut: false,
+        outputLineCount: tracker.lines.length,
+        outputCharCount: tracker.charCount,
+        truncated: tracker.truncated,
+        truncatedAt: tracker.truncatedAt,
       };
 
     } catch (error) {
       return {
         success: false,
-        output: outputLines.join('\n'),
+        output: tracker.lines.join('\n'),
         error: error instanceof Error ? error.message : String(error),
         executionTimeMs: Date.now() - startTime,
         cancelled: false,
         timedOut: false,
+        outputLineCount: tracker.lines.length,
+        outputCharCount: tracker.charCount,
+        truncated: tracker.truncated,
+        truncatedAt: tracker.truncatedAt,
       };
     }
   }

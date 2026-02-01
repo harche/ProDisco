@@ -34,6 +34,11 @@ export interface ExecutionResult {
   executionTimeMs: number;
   state: ExecutionState;
   cached?: CacheEntry;
+  // Output metadata
+  outputLineCount?: number;
+  outputCharCount?: number;
+  truncated?: boolean;
+  truncatedAt?: { lines: number; chars: number };
 }
 
 export type OutputListener = (chunk: OutputChunk) => void;

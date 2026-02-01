@@ -68,6 +68,15 @@ message CacheEntry {
   string content_hash = 4;
 }
 
+// TruncationInfo contains details about where output was truncated
+message TruncationInfo {
+  // Number of lines when truncation occurred
+  int32 lines = 1;
+
+  // Number of characters when truncation occurred
+  int32 chars = 2;
+}
+
 message ExecuteResponse {
   // Whether execution completed successfully
   bool success = 1;
@@ -84,6 +93,19 @@ message ExecuteResponse {
   // Full cache entry if this execution was newly cached
   // Not set if execution failed or if the code was already cached (duplicate)
   optional CacheEntry cached = 5;
+
+  // Output metadata for handling large outputs
+  // Number of output lines
+  int32 output_line_count = 6;
+
+  // Total output character count
+  int32 output_char_count = 7;
+
+  // Whether output was truncated due to limits
+  bool truncated = 8;
+
+  // Truncation details if output was truncated
+  optional TruncationInfo truncated_at = 9;
 }
 
 message HealthCheckRequest {}
@@ -163,6 +185,19 @@ message ExecuteResult {
 
   // Cache entry if newly cached
   optional CacheEntry cached = 5;
+
+  // Output metadata for handling large outputs
+  // Number of output lines
+  int32 output_line_count = 6;
+
+  // Total output character count
+  int32 output_char_count = 7;
+
+  // Whether output was truncated due to limits
+  bool truncated = 8;
+
+  // Truncation details if output was truncated
+  optional TruncationInfo truncated_at = 9;
 }
 
 // ExecuteAsyncResponse is returned immediately when starting async execution

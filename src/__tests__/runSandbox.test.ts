@@ -2148,3 +2148,158 @@ describe('runSandbox - Test Mode', () => {
       });
     });
 });
+
+// ============================================================================
+// Output Metadata Tests
+// ============================================================================
+
+describe('runSandbox - Output Metadata', () => {
+  describe('Execute Mode', () => {
+    it('returns output metadata for simple output', async () => {
+      const result = await runSandbox({
+        mode: 'execute',
+        code: 'console.log("hello");',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result).toHaveProperty('outputLineCount');
+      expect(result).toHaveProperty('outputCharCount');
+      expect(result).toHaveProperty('truncated');
+      expect(result.outputLineCount).toBe(1);
+      expect(result.outputCharCount).toBe(5); // "hello"
+      expect(result.truncated).toBe(false);
+    });
+
+    it('returns correct line count for multiple lines', async () => {
+      const result = await runSandbox({
+        mode: 'execute',
+        code: `
+          console.log("line 1");
+          console.log("line 2");
+          console.log("line 3");
+        `,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.outputLineCount).toBe(3);
+      expect(result.truncated).toBe(false);
+    });
+
+    it('returns zero counts for empty output', async () => {
+      const result = await runSandbox({
+        mode: 'execute',
+        code: 'const x = 1;',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.outputLineCount).toBe(0);
+      expect(result.outputCharCount).toBe(0);
+      expect(result.truncated).toBe(false);
+    });
+
+    it('returns metadata even on execution failure', async () => {
+      const result = await runSandbox({
+        mode: 'execute',
+        code: `
+          console.log("before error");
+          throw new Error("test error");
+        `,
+      });
+
+      expect(result.success).toBe(false);
+      expect(result).toHaveProperty('outputLineCount');
+      expect(result.outputLineCount).toBe(1);
+      expect(result.truncated).toBe(false);
+    });
+  });
+
+  describe('Stream Mode', () => {
+    it('returns output metadata in stream mode', async () => {
+      const result = await runSandbox({
+        mode: 'stream',
+        code: `
+          console.log("stream line 1");
+          console.log("stream line 2");
+        `,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result).toHaveProperty('outputLineCount');
+      expect(result).toHaveProperty('outputCharCount');
+      expect(result).toHaveProperty('truncated');
+      expect(result.outputLineCount).toBe(2);
+      expect(result.truncated).toBe(false);
+    });
+  });
+
+  describe('Status Mode', () => {
+    it('includes output metadata in status result', async () => {
+      // Start async execution
+      const asyncResult = await runSandbox({
+        mode: 'async',
+        code: `
+          console.log("status metadata test");
+        `,
+      });
+
+      // Wait and get status
+      const statusResult = await runSandbox({
+        mode: 'status',
+        executionId: asyncResult.executionId,
+        wait: true,
+      });
+
+      expect(statusResult.state).toBe('completed');
+      expect(statusResult).toHaveProperty('result');
+      expect(statusResult.result).toHaveProperty('outputLineCount');
+      expect(statusResult.result).toHaveProperty('outputCharCount');
+      expect(statusResult.result).toHaveProperty('truncated');
+      expect(statusResult.result!.truncated).toBe(false);
+    });
+  });
+
+  describe('Output Truncation', () => {
+    it('truncates output at 5000 lines limit', async () => {
+      const result = await runSandbox({
+        mode: 'execute',
+        code: `
+          for (let i = 0; i < 6000; i++) {
+            console.log("line " + i);
+          }
+        `,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.truncated).toBe(true);
+      expect(result.outputLineCount).toBe(5000);
+      expect(result.truncatedMessage).toBeDefined();
+      expect(result.truncatedMessage).toContain('truncated');
+      expect(result.truncatedMessage).toContain('5000 lines');
+    }, 30000);
+
+    it('includes truncation message with actionable guidance', async () => {
+      const result = await runSandbox({
+        mode: 'execute',
+        code: `
+          for (let i = 0; i < 6000; i++) {
+            console.log("line " + i);
+          }
+        `,
+      });
+
+      expect(result.truncated).toBe(true);
+      expect(result.truncatedMessage).toContain('streaming mode');
+      expect(result.truncatedMessage).toContain('outputOffset');
+    }, 30000);
+
+    it('does not include truncatedMessage when not truncated', async () => {
+      const result = await runSandbox({
+        mode: 'execute',
+        code: 'console.log("short");',
+      });
+
+      expect(result.truncated).toBe(false);
+      expect(result.truncatedMessage).toBeUndefined();
+    });
+  });
+});

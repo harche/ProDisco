@@ -79,6 +79,11 @@ export interface ExecuteResult {
     createdAtMs: number;
     contentHash: string;
   };
+  // Output metadata
+  outputLineCount: number;
+  outputCharCount: number;
+  truncated: boolean;
+  truncatedAt?: { lines: number; chars: number };
 }
 
 export interface StreamingExecuteResult extends ExecuteResult {
@@ -329,6 +334,13 @@ export class SandboxClient {
               description: response.cached.description,
               createdAtMs: Number(response.cached.createdAtMs),
               contentHash: response.cached.contentHash,
+            } : undefined,
+            outputLineCount: response.outputLineCount ?? 0,
+            outputCharCount: response.outputCharCount ?? 0,
+            truncated: response.truncated ?? false,
+            truncatedAt: response.truncatedAt ? {
+              lines: response.truncatedAt.lines,
+              chars: response.truncatedAt.chars,
             } : undefined,
           });
         } else {
@@ -700,6 +712,13 @@ export class SandboxClient {
             createdAtMs: Number(result.cached.createdAtMs),
             contentHash: result.cached.contentHash,
           } : undefined,
+          outputLineCount: result.outputLineCount ?? 0,
+          outputCharCount: result.outputCharCount ?? 0,
+          truncated: result.truncated ?? false,
+          truncatedAt: result.truncatedAt ? {
+            lines: result.truncatedAt.lines,
+            chars: result.truncatedAt.chars,
+          } : undefined,
         },
         timestampMs,
       };
@@ -788,6 +807,13 @@ export class SandboxClient {
                 description: response.result.cached.description,
                 createdAtMs: Number(response.result.cached.createdAtMs),
                 contentHash: response.result.cached.contentHash,
+              } : undefined,
+              outputLineCount: response.result.outputLineCount ?? 0,
+              outputCharCount: response.result.outputCharCount ?? 0,
+              truncated: response.result.truncated ?? false,
+              truncatedAt: response.result.truncatedAt ? {
+                lines: response.result.truncatedAt.lines,
+                chars: response.result.truncatedAt.chars,
               } : undefined,
             } : undefined,
           });
