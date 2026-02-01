@@ -20,7 +20,6 @@ import { getSandboxClient, closeSandboxClient } from '@prodisco/sandbox-server/c
 import {
   DEFAULT_LIBRARIES_CONFIG,
   loadLibrariesConfigFile,
-  resolveNodeModulesBasePath,
   type LibrarySpec,
 } from './config/libraries.js';
 import type { AnyToolDefinition } from './tools/types.js';
@@ -334,14 +333,13 @@ function stopSandboxServer(): void {
  * Parse command line arguments for transport configuration.
  */
 function parseArgs(args: string[]): {
-  clearCache: boolean;
+  keepCache: boolean;
   transport: 'stdio' | 'http';
   host: string;
   port: number;
   configPath?: string;
-  installMissing: boolean;
 } {
-  const clearCache = args.includes('--clear-cache');
+  const keepCache = args.includes('--keep-cache');
 
   // --config <path> (optional)
   const configIdx = args.indexOf('--config');
@@ -358,13 +356,6 @@ function parseArgs(args: string[]): {
   if (!configPath && process.env.PRODISCO_CONFIG_PATH) {
     configPath = process.env.PRODISCO_CONFIG_PATH;
   }
-
-  // --install-missing (optional, can also be set via env)
-  const envInstall = process.env.PRODISCO_INSTALL_MISSING;
-  const installMissing =
-    args.includes('--install-missing') ||
-    envInstall === '1' ||
-    envInstall === 'true';
 
   // Check for --transport flag
   const transportIdx = args.indexOf('--transport');
@@ -417,7 +408,7 @@ function parseArgs(args: string[]): {
     host = process.env.MCP_HOST;
   }
 
-  return { clearCache, transport, host, port, configPath, installMissing };
+  return { keepCache, transport, host, port, configPath };
 }
 
 /**
@@ -581,13 +572,11 @@ Transport Options:
 
 Other Options:
   --config <path>      Path to YAML/JSON config listing libraries to index/allow
-  --install-missing    Auto-install missing libraries into .cache/deps (opt-in)
-  --clear-cache        Clear the scripts cache on startup
+  --keep-cache         Keep the scripts cache on startup (cache is cleared by default)
   --help, -h           Show this help message
 
 Environment Variables:
   PRODISCO_CONFIG_PATH         Path to YAML/JSON config listing libraries to index/allow
-  PRODISCO_INSTALL_MISSING     If set to 1/true, auto-install missing libraries into .cache/deps
   MCP_TRANSPORT        Transport mode (stdio or http)
   MCP_HOST             HTTP host to bind to
   MCP_PORT             HTTP port to listen on
@@ -611,7 +600,7 @@ Examples:
     process.exit(0);
   }
 
-  const { clearCache, transport, host, port, configPath, installMissing } = parseArgs(args);
+  const { keepCache, transport, host, port, configPath } = parseArgs(args);
 
   // Load libraries config (defaults to built-in list for backward compatibility)
   const librariesConfig = configPath
@@ -621,38 +610,21 @@ Examples:
   const libraryNames = librariesConfig.libraries.map((l) => l.name);
   logger.info(`Configured libraries: ${libraryNames.join(', ')}`);
 
-  // Resolve base path for node_modules
-  let modulesBasePath: string;
+  // Auto-install missing packages into .cache/deps
+  const modulesBasePath = path.join(PACKAGE_ROOT, '.cache', 'deps');
+  await ensureDepsCacheDir(modulesBasePath);
 
-  if (installMissing) {
-    modulesBasePath = path.join(PACKAGE_ROOT, '.cache', 'deps');
-    await ensureDepsCacheDir(modulesBasePath);
+  const missing = libraryNames.filter((name) => !isPackageInstalled(modulesBasePath, name));
+  if (missing.length > 0) {
+    logger.info(`Installing ${missing.length} missing package(s) into ${modulesBasePath}...`);
+    await npmInstallPackages(modulesBasePath, missing);
+  }
 
-    const missing = libraryNames.filter((name) => !isPackageInstalled(modulesBasePath, name));
-    if (missing.length > 0) {
-      logger.info(`Installing ${missing.length} missing package(s) into ${modulesBasePath}...`);
-      await npmInstallPackages(modulesBasePath, missing);
-    }
-
-    const stillMissing = libraryNames.filter((name) => !isPackageInstalled(modulesBasePath, name));
-    if (stillMissing.length > 0) {
-      throw new Error(
-        `Missing packages even after install: ${stillMissing.join(', ')}`
-      );
-    }
-  } else {
-    modulesBasePath = resolveNodeModulesBasePath({
-      startDir: PACKAGE_ROOT,
-      fallbackDir: process.cwd(),
-    });
-
-    const missing = libraryNames.filter((name) => !isPackageInstalled(modulesBasePath, name));
-    if (missing.length > 0) {
-      throw new Error(
-        `Missing packages: ${missing.join(', ')}. ` +
-        'Install them into your environment or start with --install-missing.'
-      );
-    }
+  const stillMissing = libraryNames.filter((name) => !isPackageInstalled(modulesBasePath, name));
+  if (stillMissing.length > 0) {
+    throw new Error(
+      `Missing packages even after install: ${stillMissing.join(', ')}`
+    );
   }
 
   logger.info(`Node modules base path: ${modulesBasePath}`);
@@ -681,8 +653,8 @@ Examples:
   registerGeneratedResources(mcpServer);
   registerTools(mcpServer, { searchTools, runSandbox });
 
-  // Handle --clear-cache flag
-  if (clearCache) {
+  // Clear cache by default unless --keep-cache is specified
+  if (!keepCache) {
     logger.info('Clearing scripts cache...');
     try {
       await fs.promises.rm(SCRIPTS_CACHE_DIR, { recursive: true, force: true });

@@ -22,10 +22,10 @@ Use: `examples/prodisco.postgres.yaml` (this repo ships it).
 
 ### 2) Install / build
 
-Run ProDisco with runtime install:
+Run ProDisco (missing packages are auto-installed):
 
 ```bash
-node dist/server.js --config examples/prodisco.postgres.yaml --install-missing
+node dist/server.js --config examples/prodisco.postgres.yaml
 ```
 
 Or build images with the library baked in:
@@ -74,10 +74,10 @@ Use: `examples/prodisco.kubernetes.yaml` (this repo ships it).
 
 ### 2) Install / build
 
-Run ProDisco with runtime install:
+Run ProDisco (missing packages are auto-installed):
 
 ```bash
-node dist/server.js --config examples/prodisco.kubernetes.yaml --install-missing
+node dist/server.js --config examples/prodisco.kubernetes.yaml
 ```
 
 Or build images with the library baked in:
@@ -138,7 +138,7 @@ Use: `examples/prodisco.javascript.yaml` (this repo ships it).
 
 ### 3) Run ProDisco
 
-Run without `--install-missing` (this example library is local, not published to npm):
+Run ProDisco (this example library is local, so auto-install will skip it):
 
 ```bash
 node dist/server.js --config examples/prodisco.javascript.yaml

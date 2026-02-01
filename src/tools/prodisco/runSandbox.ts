@@ -632,7 +632,7 @@ export function createRunSandboxTool(runtimeConfig: RunSandboxRuntimeConfig) {
   const allowedImports = formatAllowedImportsForDescription(runtimeConfig.libraries);
 
   return {
-    name: 'prodisco.runSandbox',
+    name: 'prodisco_runSandbox',
     description:
       '**PREREQUISITE: Call searchTools first** to discover correct API methods and parameters. ' +
       'Do NOT guess - search to find available APIs before writing code. ' +

@@ -868,7 +868,7 @@ describe('prodisco.runSandbox', () => {
 
   describe('Tool Definition', () => {
     it('has correct name', () => {
-      expect(runSandboxTool.name).toBe('prodisco.runSandbox');
+      expect(runSandboxTool.name).toBe('prodisco_runSandbox');
     });
 
     it('has description', () => {

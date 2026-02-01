@@ -556,7 +556,7 @@ export function createSearchToolsTool(runtimeConfig: SearchToolsRuntimeConfig) {
   const indexed = formatLibrariesForDisplay(runtimeConfig.libraries);
 
   return {
-    name: 'prodisco.searchTools',
+    name: 'prodisco_searchTools',
     description:
       '**BROWSE API DOCUMENTATION.** Find methods/types/functions by name from indexed TypeScript libraries. ' +
       'Use methodName to search (this searches indexed TypeScript typings only; it does NOT execute code or call external services). ' +
