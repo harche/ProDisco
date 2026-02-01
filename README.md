@@ -60,7 +60,7 @@ npm run build
 
 # Example configs live in ./examples (see examples/README.md)
 # Then add the MCP server
-claude mcp add --transport stdio prodisco -- node dist/server.js --config examples/prodisco.postgres.yaml --install-missing
+claude mcp add --transport stdio prodisco -- node dist/server.js --config examples/prodisco.postgres.yaml
 ```
 
 **Remove if needed:**
@@ -105,7 +105,6 @@ claude mcp remove prodisco # remove when you're done
 |------|-------------|
 | `--clear-cache` | Clear the scripts cache before starting |
 | `--config <path>` | Path to YAML/JSON config listing libraries to index/allow |
-| `--install-missing` | Auto-install missing libraries into `.cache/deps` (opt-in) |
 | `--transport <mode>` | Transport mode: `stdio` (default) or `http` |
 | `--host <host>` | HTTP host to bind to (default: `127.0.0.1`) |
 | `--port <port>` | HTTP port (default: `3000`, implies `--transport http`) |
@@ -141,18 +140,13 @@ Start with a config file:
 node dist/server.js --config prodisco.config.yaml
 ```
 
-**Optional:** auto-install missing packages into `.cache/deps`:
-
-```bash
-node dist/server.js --config prodisco.config.yaml --install-missing
-```
+Missing packages are automatically installed into `.cache/deps` on startup.
 
 Environment variables:
 
 | Variable | Description |
 |----------|-------------|
 | `PRODISCO_CONFIG_PATH` | Path to YAML/JSON config listing libraries |
-| `PRODISCO_INSTALL_MISSING` | If set to `1`/`true`, auto-install missing libraries into `.cache/deps` |
 
 ### Build Docker Images From Config
 

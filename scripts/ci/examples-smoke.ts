@@ -207,7 +207,6 @@ type ServerHandle = {
 
 async function startServerWithConfig(options: {
   configPath: string;
-  installMissing?: boolean;
   startupTimeoutMs: number;
 }): Promise<ServerHandle> {
   const root = repoRoot();
@@ -225,9 +224,6 @@ async function startServerWithConfig(options: {
     '--port', String(port),
     '--config', options.configPath,
   ];
-  if (options.installMissing) {
-    args.push('--install-missing');
-  }
 
   const proc = spawn('node', args, {
     cwd: root,
@@ -343,15 +339,13 @@ async function runScenario(label: string, configRelPath: string, options: {
 }
 
 async function main(): Promise<void> {
-  // Kubernetes config should work without install-missing (dependency is already in the repo).
+  // Kubernetes config - dependency is already in the repo.
   await runScenario('kubernetes', 'examples/prodisco.kubernetes.yaml', {
-    installMissing: false,
     startupTimeoutMs: 120_000,
   });
 
-  // pg-mem is not a repo dependency; exercise the startup-time auto-install path.
+  // pg-mem is not a repo dependency; auto-install will fetch it.
   await runScenario('pg-mem', 'examples/prodisco.postgres.yaml', {
-    installMissing: true,
     startupTimeoutMs: 300_000,
   });
 }

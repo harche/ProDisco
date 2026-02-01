@@ -100,6 +100,11 @@ type ExecuteModeResult = {
     createdAtMs: number;
     contentHash: string;
   };
+  // Output metadata
+  outputLineCount: number;
+  outputCharCount: number;
+  truncated: boolean;
+  truncatedMessage?: string;
 };
 
 // Result type for stream mode (streaming execution)
@@ -118,6 +123,11 @@ type StreamModeResult = {
     createdAtMs: number;
     contentHash: string;
   };
+  // Output metadata
+  outputLineCount: number;
+  outputCharCount: number;
+  truncated: boolean;
+  truncatedMessage?: string;
 };
 
 // Result type for async mode (start async execution)
@@ -147,6 +157,11 @@ type StatusModeResult = {
       createdAtMs: number;
       contentHash: string;
     };
+    // Output metadata
+    outputLineCount: number;
+    outputCharCount: number;
+    truncated: boolean;
+    truncatedMessage?: string;
   };
 };
 
@@ -218,6 +233,19 @@ type RunSandboxResult =
 // ============================================================================
 
 /**
+ * Format a truncation message for user feedback.
+ */
+function formatTruncationMessage(truncatedAt?: { lines: number; chars: number }): string {
+  if (truncatedAt) {
+    const lines = truncatedAt.lines;
+    const chars = truncatedAt.chars;
+    const kbSize = Math.round(chars / 1024);
+    return `Output truncated at ${lines} lines / ${kbSize}KB. Use streaming mode with outputOffset for incremental reads.`;
+  }
+  return 'Output truncated. Use streaming mode with outputOffset for incremental reads.';
+}
+
+/**
  * Execute mode - blocking execution, waits for completion
  */
 async function executeExecuteMode(
@@ -265,6 +293,10 @@ async function executeExecuteMode(
       executionTimeMs: result.executionTimeMs,
       cachedScript: result.cached?.name ?? (cached ? cached : undefined),
       cached: result.cached,
+      outputLineCount: result.outputLineCount,
+      outputCharCount: result.outputCharCount,
+      truncated: result.truncated,
+      truncatedMessage: result.truncated ? formatTruncationMessage(result.truncatedAt) : undefined,
     };
   } catch (error) {
     return {
@@ -324,6 +356,10 @@ async function executeStreamMode(
             createdAtMs: number;
             contentHash: string;
           };
+          outputLineCount: number;
+          outputCharCount: number;
+          truncated: boolean;
+          truncatedAt?: { lines: number; chars: number };
         };
 
         // Index newly cached scripts
@@ -350,6 +386,10 @@ async function executeStreamMode(
           executionId,
           state: stateToString(resultData.state),
           cached: resultData.cached,
+          outputLineCount: resultData.outputLineCount,
+          outputCharCount: resultData.outputCharCount,
+          truncated: resultData.truncated,
+          truncatedMessage: resultData.truncated ? formatTruncationMessage(resultData.truncatedAt) : undefined,
         };
       }
     }
@@ -367,6 +407,9 @@ async function executeStreamMode(
       executionTimeMs: 0,
       executionId,
       state: 'unknown',
+      outputLineCount: 0,
+      outputCharCount: 0,
+      truncated: false,
     };
   } catch (error) {
     return {
@@ -469,6 +512,10 @@ async function executeStatusMode(
         error: status.result.error,
         executionTimeMs: status.result.executionTimeMs,
         cached: status.result.cached,
+        outputLineCount: status.result.outputLineCount,
+        outputCharCount: status.result.outputCharCount,
+        truncated: status.result.truncated,
+        truncatedMessage: status.result.truncated ? formatTruncationMessage(status.result.truncatedAt) : undefined,
       } : undefined,
     };
   } catch (error) {
@@ -632,7 +679,7 @@ export function createRunSandboxTool(runtimeConfig: RunSandboxRuntimeConfig) {
   const allowedImports = formatAllowedImportsForDescription(runtimeConfig.libraries);
 
   return {
-    name: 'prodisco.runSandbox',
+    name: 'prodisco_runSandbox',
     description:
       '**PREREQUISITE: Call searchTools first** to discover correct API methods and parameters. ' +
       'Do NOT guess - search to find available APIs before writing code. ' +

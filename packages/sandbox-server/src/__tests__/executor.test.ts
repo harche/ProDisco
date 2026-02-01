@@ -569,6 +569,101 @@ describe('Executor', () => {
   });
 
   // ============================================================================
+  // Output Metadata Tests
+  // ============================================================================
+
+  describe('Output Metadata', () => {
+    it('returns output metadata for simple output', async () => {
+      const result = await executor.execute('console.log("hello")');
+
+      expect(result.success).toBe(true);
+      expect(result.outputLineCount).toBe(1);
+      expect(result.outputCharCount).toBe(5); // "hello"
+      expect(result.truncated).toBe(false);
+      expect(result.truncatedAt).toBeUndefined();
+    });
+
+    it('returns correct line count for multiple lines', async () => {
+      const result = await executor.execute(`
+        console.log("line 1");
+        console.log("line 2");
+        console.log("line 3");
+      `);
+
+      expect(result.success).toBe(true);
+      expect(result.outputLineCount).toBe(3);
+      expect(result.truncated).toBe(false);
+    });
+
+    it('returns zero counts for empty output', async () => {
+      const result = await executor.execute('const x = 1;');
+
+      expect(result.success).toBe(true);
+      expect(result.outputLineCount).toBe(0);
+      expect(result.outputCharCount).toBe(0);
+      expect(result.truncated).toBe(false);
+    });
+
+    it('returns metadata even on execution failure', async () => {
+      const result = await executor.execute(`
+        console.log("before error");
+        throw new Error("test error");
+      `);
+
+      expect(result.success).toBe(false);
+      expect(result.outputLineCount).toBe(1);
+      expect(result.outputCharCount).toBeGreaterThan(0);
+      expect(result.truncated).toBe(false);
+    });
+  });
+
+  describe('Output Truncation', () => {
+    it('truncates output at 5000 lines', async () => {
+      // Generate more than 5000 lines
+      const result = await executor.execute(`
+        for (let i = 0; i < 6000; i++) {
+          console.log("line " + i);
+        }
+      `);
+
+      expect(result.success).toBe(true);
+      expect(result.truncated).toBe(true);
+      expect(result.outputLineCount).toBe(5000);
+      expect(result.truncatedAt).toBeDefined();
+      expect(result.truncatedAt?.lines).toBe(5000);
+    });
+
+    it('truncates output at 500KB character limit', async () => {
+      // Generate output that exceeds 500KB (500000 chars)
+      // Each line will be about 110 chars, need about 4600 lines to hit 500KB
+      const result = await executor.execute(`
+        const longLine = 'x'.repeat(100);
+        for (let i = 0; i < 6000; i++) {
+          console.log(longLine + i);
+        }
+      `);
+
+      expect(result.success).toBe(true);
+      expect(result.truncated).toBe(true);
+      expect(result.outputCharCount).toBeLessThanOrEqual(500000);
+      expect(result.truncatedAt).toBeDefined();
+    });
+
+    it('does not truncate output under limits', async () => {
+      const result = await executor.execute(`
+        for (let i = 0; i < 100; i++) {
+          console.log("line " + i);
+        }
+      `);
+
+      expect(result.success).toBe(true);
+      expect(result.truncated).toBe(false);
+      expect(result.outputLineCount).toBe(100);
+      expect(result.truncatedAt).toBeUndefined();
+    });
+  });
+
+  // ============================================================================
   // Analytics Libraries Tests
   // ============================================================================
 

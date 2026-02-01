@@ -90,6 +90,10 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
           error: resolved.error,
           executionTimeMs: '0',
           cached: undefined,
+          outputLineCount: 0,
+          outputCharCount: 0,
+          truncated: false,
+          truncatedAt: undefined,
         });
         return;
       }
@@ -112,6 +116,10 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
         error: result.error,
         executionTimeMs: String(result.executionTimeMs),
         cached: cacheEntry,
+        outputLineCount: result.outputLineCount,
+        outputCharCount: result.outputCharCount,
+        truncated: result.truncated,
+        truncatedAt: result.truncatedAt,
       });
     },
 
@@ -137,6 +145,10 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
               executionTimeMs: '0',
               state: 4, // FAILED
               cached: undefined,
+              outputLineCount: 0,
+              outputCharCount: 0,
+              truncated: false,
+              truncatedAt: undefined,
             },
           },
           timestampMs: String(Date.now()),
@@ -195,6 +207,10 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
             executionTimeMs: String(result.executionTimeMs),
             state: finalState,
             cached: cacheEntry,
+            outputLineCount: result.outputLineCount,
+            outputCharCount: result.outputCharCount,
+            truncated: result.truncated,
+            truncatedAt: result.truncatedAt,
           },
         },
         timestampMs: String(Date.now()),
@@ -276,6 +292,10 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
             executionTimeMs: result.executionTimeMs,
             state: finalState,
             cached: cacheEntry,
+            outputLineCount: result.outputLineCount,
+            outputCharCount: result.outputCharCount,
+            truncated: result.truncated,
+            truncatedAt: result.truncatedAt,
           });
         });
       }, 0);
@@ -329,6 +349,10 @@ export function createSandboxService(config: SandboxServiceConfig = {}): Sandbox
           executionTimeMs: String(execution.result.executionTimeMs),
           state: execution.result.state,
           cached: execution.result.cached,
+          outputLineCount: execution.result.outputLineCount ?? 0,
+          outputCharCount: execution.result.outputCharCount ?? 0,
+          truncated: execution.result.truncated ?? false,
+          truncatedAt: execution.result.truncatedAt,
         } : undefined,
       });
     },
