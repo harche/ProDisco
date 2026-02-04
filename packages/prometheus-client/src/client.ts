@@ -5,6 +5,8 @@
  * use MetricSearchEngine.search() first.
  */
 
+import * as fs from 'fs';
+import * as https from 'https';
 import type {
   PrometheusClientOptions,
   TimeRange,
@@ -18,6 +20,8 @@ import type {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyPrometheusDriver = any;
 
+const SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token';
+
 /**
  * Typed client for executing PromQL queries against Prometheus.
  *
@@ -29,9 +33,18 @@ export class PrometheusClient {
   private options: PrometheusClientOptions;
   private driver: AnyPrometheusDriver = null;
 
-  constructor(options: PrometheusClientOptions) {
+  constructor(options?: Partial<PrometheusClientOptions>) {
+    // Auto-detect endpoint from environment if not provided
+    const endpoint = options?.endpoint || process.env.PROMETHEUS_ENDPOINT || 'http://localhost:9090';
+
+    // Auto-detect Kubernetes environment and enable SA token auth
+    const inKubernetes = fs.existsSync(SA_TOKEN_PATH);
+    const useServiceAccountToken = options?.useServiceAccountToken ?? inKubernetes;
+
     this.options = {
       timeout: 30000,
+      endpoint,
+      useServiceAccountToken,
       ...options,
     };
   }
@@ -51,11 +64,49 @@ export class PrometheusClient {
       return this.driver;
     }
 
+    // Build headers, optionally adding SA token
+    const headers: Record<string, string> = { ...this.options.headers };
+
+    if (this.options.useServiceAccountToken) {
+      try {
+        const token = fs.readFileSync(SA_TOKEN_PATH, 'utf8').trim();
+        headers['Authorization'] = `Bearer ${token}`;
+      } catch {
+        // Token not available - running outside Kubernetes
+      }
+    }
+
+    // Configure HTTPS agent for TLS options
+    let httpsAgent: https.Agent | undefined;
+    if (this.options.tlsSkipVerify) {
+      httpsAgent = new https.Agent({ rejectUnauthorized: false });
+    }
+
     const { PrometheusDriver } = await import('prometheus-query');
-    this.driver = new PrometheusDriver({
+
+    // Build driver options
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const driverOptions: any = {
       endpoint: this.options.endpoint,
       timeout: this.options.timeout,
-    });
+    };
+
+    if (Object.keys(headers).length > 0) {
+      driverOptions.headers = headers;
+    }
+
+    // Use request interceptor to apply custom HTTPS agent
+    if (httpsAgent) {
+      driverOptions.requestInterceptor = {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        onFulfilled: (config: any) => {
+          config.httpsAgent = httpsAgent;
+          return config;
+        },
+      };
+    }
+
+    this.driver = new PrometheusDriver(driverOptions);
 
     return this.driver;
   }

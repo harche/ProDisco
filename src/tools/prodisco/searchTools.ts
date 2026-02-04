@@ -69,9 +69,20 @@ function isSameRuntimeConfig(a: SearchToolsRuntimeConfig, b: SearchToolsRuntimeC
 // ============================================================================
 
 function formatLibraryDescribe(libraries: LibrarySpec[]): string {
-  return libraries
-    .map((l) => `"${l.name}"${l.description ? ` (${l.description})` : ''}`)
-    .join(', ');
+  const lines: string[] = [];
+  for (const lib of libraries) {
+    if (!lib.description) {
+      lines.push(`- "${lib.name}"`);
+    } else {
+      lines.push(`- "${lib.name}":`);
+      // Indent each line of the description
+      const descLines = lib.description.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      for (const descLine of descLines) {
+        lines.push(`    ${descLine}`);
+      }
+    }
+  }
+  return lines.join('\n');
 }
 
 function createSearchToolsInputSchema(libraries: LibrarySpec[]) {
@@ -466,8 +477,15 @@ async function executeSearchMode(runtimeConfig: SearchToolsRuntimeConfig, input:
 
   const importLines: string[] = [];
   for (const lib of runtimeConfig.libraries) {
-    const comment = lib.description ? ` // ${lib.description}` : '';
-    importLines.push(`- ${lib.name}: require("${lib.name}")${comment}`);
+    if (!lib.description) {
+      importLines.push(`- ${lib.name}: require("${lib.name}")`);
+    } else {
+      importLines.push(`- ${lib.name}: require("${lib.name}")`);
+      const descLines = lib.description.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      for (const descLine of descLines) {
+        importLines.push(`    ${descLine}`);
+      }
+    }
   }
 
   const usageLines: string[] = [];
@@ -543,9 +561,19 @@ export async function shutdownSearchIndex(): Promise<void> {
 // ============================================================================
 
 function formatLibrariesForDisplay(libraries: LibrarySpec[]): string {
-  return libraries
-    .map((l) => (l.description ? `${l.name} (${l.description})` : l.name))
-    .join(', ');
+  const lines: string[] = [];
+  for (const lib of libraries) {
+    if (!lib.description) {
+      lines.push(`- ${lib.name}`);
+    } else {
+      lines.push(`- ${lib.name}:`);
+      const descLines = lib.description.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      for (const descLine of descLines) {
+        lines.push(`    ${descLine}`);
+      }
+    }
+  }
+  return lines.join('\n');
 }
 
 export function createSearchToolsTool(runtimeConfig: SearchToolsRuntimeConfig) {

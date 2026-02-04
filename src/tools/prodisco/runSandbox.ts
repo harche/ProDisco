@@ -657,19 +657,23 @@ export type RunSandboxRuntimeConfig = {
 function formatAllowedImportsForDescription(libraries: LibrarySpec[]): string {
   const lines: string[] = [];
   for (const lib of libraries) {
-    if (lib.name === '@kubernetes/client-node') {
-      lines.push(`- require("@kubernetes/client-node")${lib.description ? ` // ${lib.description}` : ''}`);
-      continue;
+    // Format: library name on first line, description indented below if multi-line
+    const requireLine = `- require("${lib.name}")`;
+    if (lib.description) {
+      const descriptionLines = lib.description.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      if (descriptionLines.length === 1) {
+        // Single line description - put inline
+        lines.push(`${requireLine} - ${descriptionLines[0]}`);
+      } else {
+        // Multi-line description - put below with indentation
+        lines.push(requireLine);
+        for (const descLine of descriptionLines) {
+          lines.push(`  ${descLine}`);
+        }
+      }
+    } else {
+      lines.push(requireLine);
     }
-    if (lib.name === '@prodisco/prometheus-client') {
-      lines.push(`- require("@prodisco/prometheus-client")${lib.description ? ` // ${lib.description}` : ''}`);
-      continue;
-    }
-    if (lib.name === '@prodisco/loki-client') {
-      lines.push(`- require("@prodisco/loki-client")${lib.description ? ` // ${lib.description}` : ''}`);
-      continue;
-    }
-    lines.push(`- require("${lib.name}")${lib.description ? ` // ${lib.description}` : ''}`);
   }
 
   return lines.join('\n');
