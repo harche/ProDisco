@@ -188,12 +188,13 @@ async function runTests(): Promise<void> {
         stderr += data.toString();
       });
 
-      // Wait for the initial log messages (give it 5 seconds to start)
+      // Wait for the initial log messages (give it 30 seconds to start)
+      // The server may need to install npm packages before connecting to sandbox
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(() => {
           serverProcess.kill('SIGTERM');
           resolve();
-        }, 5000);
+        }, 30000);
 
         // Resolve early if we see the connection message
         const checkOutput = () => {

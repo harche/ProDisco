@@ -1,6 +1,6 @@
 {
   "name": "@prodisco/sandbox-server",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "gRPC sandbox server for code execution with Kubernetes context",
   "type": "module",
   "main": "dist/client/index.js",
