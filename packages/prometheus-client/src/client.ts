@@ -33,9 +33,18 @@ export class PrometheusClient {
   private options: PrometheusClientOptions;
   private driver: AnyPrometheusDriver = null;
 
-  constructor(options: PrometheusClientOptions) {
+  constructor(options?: Partial<PrometheusClientOptions>) {
+    // Auto-detect endpoint from environment if not provided
+    const endpoint = options?.endpoint || process.env.PROMETHEUS_ENDPOINT || 'http://localhost:9090';
+
+    // Auto-detect Kubernetes environment and enable SA token auth
+    const inKubernetes = fs.existsSync(SA_TOKEN_PATH);
+    const useServiceAccountToken = options?.useServiceAccountToken ?? inKubernetes;
+
     this.options = {
       timeout: 30000,
+      endpoint,
+      useServiceAccountToken,
       ...options,
     };
   }
