@@ -1,0 +1,345 @@
+# OpenShift deployment for ProDisco MCP
+# Uses agent-sandbox CRD for isolated sandbox execution
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prodisco
+---
+# ConfigMap with ProDisco configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prodisco-config
+  namespace: prodisco
+data:
+  .prodisco-config.yaml: |
+    libraries:
+      - name: "@kubernetes/client-node"
+        description: "Kubernetes API client"
+      - name: "@prodisco/prometheus-client"
+        description: |
+          Prometheus queries & metric discovery. PROMETHEUS_ENDPOINT env var is pre-configured in the sandbox.
+      - name: "@prodisco/loki-client"
+        description: |
+          Loki LogQL querying. LOKI_ENDPOINT env var is pre-configured in the sandbox.
+      - name: "simple-statistics"
+        description: "Statistical functions including mean, median, standard deviation, linear regression, and more."
+---
+# ServiceAccount for sandbox-server
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+---
+# ServiceAccount for mcp-server
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-server
+  namespace: prodisco
+---
+# ClusterRole with read-only access to cluster resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prodisco-reader
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - configmaps
+      - secrets
+      - namespaces
+      - nodes
+      - persistentvolumes
+      - persistentvolumeclaims
+      - events
+      - serviceaccounts
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - daemonsets
+      - replicasets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources:
+      - storageclasses
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - pods
+      - nodes
+    verbs: ["get", "list"]
+---
+# ClusterRoleBinding for sandbox-server
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prodisco-sandbox-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prodisco-reader
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-server
+    namespace: prodisco
+---
+# ClusterRoleBinding for mcp-server
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prodisco-mcp-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prodisco-reader
+subjects:
+  - kind: ServiceAccount
+    name: mcp-server
+    namespace: prodisco
+---
+# Sandbox Server using agent-sandbox CRD for isolation
+apiVersion: agents.x-k8s.io/v1alpha1
+kind: Sandbox
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+  labels:
+    app: sandbox-server
+spec:
+  podTemplate:
+    metadata:
+      labels:
+        app: sandbox-server
+    spec:
+      serviceAccountName: sandbox-server
+      containers:
+        - name: sandbox
+          image: quay.io/harpatil/prodisco-sandbox-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 50051
+              name: grpc
+              protocol: TCP
+          env:
+            - name: SANDBOX_USE_TCP
+              value: "true"
+            - name: SANDBOX_TCP_HOST
+              value: "0.0.0.0"
+            - name: SANDBOX_TCP_PORT
+              value: "50051"
+            - name: SCRIPTS_CACHE_DIR
+              value: "/tmp/prodisco-scripts"
+            - name: SANDBOX_TRANSPORT_MODE
+              value: "insecure"
+            - name: PRODISCO_CONFIG_PATH
+              value: "/config/.prodisco-config.yaml"
+            # OpenShift monitoring Prometheus endpoint
+            - name: PROMETHEUS_ENDPOINT
+              value: "https://prometheus-k8s.openshift-monitoring.svc.cluster.local:9091"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "kill -0 1"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "kill -0 1"
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          volumeMounts:
+            - name: scripts-cache
+              mountPath: /tmp/prodisco-scripts
+            - name: prodisco-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: scripts-cache
+          emptyDir: {}
+        - name: prodisco-config
+          configMap:
+            name: prodisco-config
+---
+# Sandbox Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+  labels:
+    app: sandbox-server
+spec:
+  type: ClusterIP
+  ports:
+    - port: 50051
+      targetPort: 50051
+      protocol: TCP
+      name: grpc
+  selector:
+    app: sandbox-server
+---
+# MCP Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-server
+  template:
+    metadata:
+      labels:
+        app: mcp-server
+    spec:
+      serviceAccountName: mcp-server
+      containers:
+        - name: mcp-server
+          image: quay.io/harpatil/prodisco-mcp-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          env:
+            - name: MCP_TRANSPORT
+              value: "http"
+            - name: MCP_HOST
+              value: "0.0.0.0"
+            - name: MCP_PORT
+              value: "3000"
+            - name: SCRIPTS_CACHE_DIR
+              value: "/tmp/prodisco-scripts"
+            # Use writable cache directory for OpenShift
+            - name: XDG_CACHE_HOME
+              value: "/tmp/cache"
+            - name: HOME
+              value: "/tmp"
+            # Connect to sandbox-server via TCP
+            - name: SANDBOX_USE_TCP
+              value: "true"
+            - name: SANDBOX_TCP_HOST
+              value: "sandbox-server.prodisco.svc.cluster.local"
+            - name: SANDBOX_TCP_PORT
+              value: "50051"
+            - name: PRODISCO_CONFIG_PATH
+              value: "/config/.prodisco-config.yaml"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - name: scripts-cache
+              mountPath: /tmp/prodisco-scripts
+            - name: cache-dir
+              mountPath: /tmp/cache
+            - name: app-cache
+              mountPath: /app/.cache
+            - name: prodisco-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: scripts-cache
+          emptyDir: {}
+        - name: cache-dir
+          emptyDir: {}
+        - name: app-cache
+          emptyDir: {}
+        - name: prodisco-config
+          configMap:
+            name: prodisco-config
+---
+# MCP Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app: mcp-server
+---
+# Route to expose MCP server externally (OpenShift-specific)
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+spec:
+  to:
+    kind: Service
+    name: mcp-server
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Allow
