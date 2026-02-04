@@ -21,6 +21,7 @@ Demo use-cases (optional):
 
 - [Why Progressive Disclosure?](#why-progressive-disclosure)
 - [Quick Start](#quick-start)
+  - [Install via npx (Recommended)](#install-via-npx-recommended)
   - [Add to Claude Code](#add-to-claude-code)
   - [Environment Variables](#environment-variables)
   - [Development Setup](#development-setup)
@@ -52,22 +53,38 @@ ProDisco goes a step further: instead of exposing custom TypeScript modules, it 
 
 ## Quick Start
 
+### Install via npx (Recommended)
+
+No local build required. Download a config for your use case and run:
+
+**Kubernetes + Observability:**
+
+```bash
+curl -O https://raw.githubusercontent.com/harche/ProDisco/main/examples/prodisco.kubernetes.yaml
+npx @prodisco/k8s-mcp --config prodisco.kubernetes.yaml
+```
+
+**PostgreSQL (in-memory testing):**
+
+```bash
+curl -O https://raw.githubusercontent.com/harche/ProDisco/main/examples/prodisco.postgres.yaml
+npx @prodisco/k8s-mcp --config prodisco.postgres.yaml
+```
+
 ### Add to Claude Code
 
 ```bash
-npm install
-npm run build --workspaces
-npm run build
+# Download config first
+curl -O https://raw.githubusercontent.com/harche/ProDisco/main/examples/prodisco.kubernetes.yaml
 
-# Example configs live in ./examples (see examples/README.md)
-# Then add the MCP server
-claude mcp add --transport stdio prodisco -- node dist/server.js --config examples/prodisco.postgres.yaml
+# Add to Claude Code
+claude mcp add ProDisco --env KUBECONFIG="${HOME}/.kube/config" -- npx -y @prodisco/k8s-mcp --config prodisco.kubernetes.yaml
 ```
 
 **Remove if needed:**
 
 ```bash
-claude mcp remove prodisco
+claude mcp remove ProDisco
 ```
 
 ### Environment Variables
@@ -120,6 +137,8 @@ ProDisco can be started with a config file that determines which npm packages ar
 
 - **Indexed** by `prodisco.searchTools`
 - **Allowed** in the sandbox via `require()` (kept in lockstep with indexing)
+
+See [`examples/`](examples/) for ready-to-use configs (Kubernetes, PostgreSQL, etc.).
 
 Example `prodisco.config.yaml`:
 
