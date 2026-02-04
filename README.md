@@ -56,6 +56,7 @@ ProDisco goes a step further: instead of exposing custom TypeScript modules, it 
 
 ```bash
 npm install
+npm run build --workspaces
 npm run build
 
 # Example configs live in ./examples (see examples/README.md)

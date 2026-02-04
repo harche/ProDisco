@@ -5,7 +5,10 @@
   "type": "module",
   "main": "dist/server.js",
   "workspaces": [
-    "packages/*"
+    "packages/search-libs",
+    "packages/loki-client",
+    "packages/prometheus-client",
+    "packages/sandbox-server"
   ],
   "bin": {
     "prodisco-k8s": "dist/server.js"
