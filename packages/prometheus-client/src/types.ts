@@ -42,6 +42,20 @@ export interface PrometheusClientOptions {
 
   /** Custom headers for requests */
   headers?: Record<string, string>;
+
+  /**
+   * Use Kubernetes service account token for authentication.
+   * When true, reads token from /var/run/secrets/kubernetes.io/serviceaccount/token
+   * and adds it as Bearer token in Authorization header.
+   * Useful for OpenShift and other Kubernetes environments with authenticated Prometheus.
+   */
+  useServiceAccountToken?: boolean;
+
+  /**
+   * Skip TLS certificate verification.
+   * Use with caution - only for development or internal services with self-signed certs.
+   */
+  tlsSkipVerify?: boolean;
 }
 
 /**

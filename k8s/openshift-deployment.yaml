@@ -163,6 +163,9 @@ spec:
             # OpenShift monitoring Prometheus endpoint
             - name: PROMETHEUS_ENDPOINT
               value: "https://prometheus-k8s.openshift-monitoring.svc.cluster.local:9091"
+            # Skip TLS verification for OpenShift internal services (uses self-signed certs)
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
           resources:
             requests:
               memory: "128Mi"
