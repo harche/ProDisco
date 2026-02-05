@@ -8,8 +8,25 @@ libraries:
       Workflow: (1) create client with endpoint (2) search.search('memory') to discover metrics (3) client.executeRange() with discovered metric names.
   - name: "@prodisco/loki-client"
     description: |
-      Loki LogQL querying. LOKI_ENDPOINT env var is pre-configured in the sandbox.
+      Loki LogQL querying. LOKI_ENDPOINT env var is pre-configured. Auto-authenticates in Kubernetes using service account token.
       Quick start: `const client = new LokiClient({ baseUrl: process.env.LOKI_ENDPOINT });`
       Workflow: (1) create client (2) client.labels() and client.labelValues('namespace') to discover labels (3) client.queryRange('{namespace="default"}') to fetch logs.
   - name: "simple-statistics"
     description: "Statistical functions including mean, median, standard deviation, linear regression, and more."
+  - name: "ml-regression"
+    description: |
+      Regression analysis: SLR (simple linear) and PolynomialRegression.
+      Usage: `const { SLR, PolynomialRegression } = require('ml-regression'); const reg = new SLR(xArray, yArray);`
+      Methods: reg.predict(x), reg.coefficients, reg.score(x, y) returns {r, r2, chi2, rmsd}.
+  - name: "mathjs"
+    description: |
+      Comprehensive math library for matrices, expressions, and calculations.
+      Usage: `const math = require('mathjs');`
+      Matrices: math.matrix([[1,2],[3,4]]), math.multiply(A, B), math.inv(M), math.transpose(M), math.det(M).
+      Expressions: math.evaluate('2 * x + 3', {x: 4}).
+  - name: "fft.js"
+    description: |
+      Fast Fourier Transform for frequency/spectral analysis. Size must be power of 2.
+      Usage: `const FFT = require('fft.js'); const f = new FFT(size);`
+      Methods: f.realTransform(out, input), f.completeSpectrum(out), f.inverseTransform(out, input).
+      Helpers: f.createComplexArray(), f.toComplexArray(realInput), f.fromComplexArray(complexOutput).

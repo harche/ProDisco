@@ -168,8 +168,8 @@ export interface LibraryIndexerOptions {
   /** List of packages to index */
   packages: PackageConfig[];
 
-  /** Base path for node_modules (default: process.cwd()) */
-  basePath?: string;
+  /** Base path(s) for node_modules (default: process.cwd()). Can be an array to search multiple locations. */
+  basePath?: string | string[];
 }
 
 /**

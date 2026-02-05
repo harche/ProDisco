@@ -9,62 +9,71 @@ import type { PackageInfo } from './types.js';
 
 /**
  * Resolve a package and find all its .d.ts files
+ * @param packageName - Name of the package to resolve
+ * @param basePath - Base path(s) to search for node_modules. Can be a single path or array of paths.
  */
 export function resolvePackage(
   packageName: string,
-  basePath: string = process.cwd()
+  basePath: string | string[] = process.cwd()
 ): PackageInfo | null {
-  const nodeModulesPath = join(basePath, 'node_modules');
+  const basePaths = Array.isArray(basePath) ? basePath : [basePath];
 
-  // Handle scoped packages (e.g., @kubernetes/client-node)
-  const packagePath = packageName.startsWith('@')
-    ? join(nodeModulesPath, ...packageName.split('/'))
-    : join(nodeModulesPath, packageName);
+  // Try each base path until we find the package
+  for (const base of basePaths) {
+    const nodeModulesPath = join(base, 'node_modules');
 
-  if (!existsSync(packagePath)) {
-    return null;
+    // Handle scoped packages (e.g., @kubernetes/client-node)
+    const packagePath = packageName.startsWith('@')
+      ? join(nodeModulesPath, ...packageName.split('/'))
+      : join(nodeModulesPath, packageName);
+
+    if (!existsSync(packagePath)) {
+      continue;
+    }
+
+    const packageJsonPath = join(packagePath, 'package.json');
+    const packageJson = getPackageJson(packageJsonPath);
+
+    if (!packageJson) {
+      continue;
+    }
+
+    // Find main .d.ts file
+    const mainDts = findMainDts(packagePath, packageJson);
+
+    // Find types directory
+    const typesDir = findTypesDir(packagePath, packageJson);
+
+    // Find all .d.ts files
+    let allDtsFiles = findDtsFiles(packagePath, typesDir);
+
+    // Ensure mainDts is included in allDtsFiles if it exists
+    if (mainDts && !allDtsFiles.includes(mainDts)) {
+      allDtsFiles = [mainDts, ...allDtsFiles];
+    }
+
+    // Build export info from main .d.ts (alias map + public exports)
+    let exportAliases: Map<string, string> | undefined;
+    let publicExports: Set<string> | undefined;
+
+    if (mainDts) {
+      const exportInfo = buildExportInfo(mainDts);
+      exportAliases = exportInfo.aliasMap;
+      publicExports = exportInfo.publicExports;
+    }
+
+    return {
+      packageName,
+      packagePath,
+      mainDts,
+      typesDir,
+      allDtsFiles,
+      exportAliases,
+      publicExports,
+    };
   }
 
-  const packageJsonPath = join(packagePath, 'package.json');
-  const packageJson = getPackageJson(packageJsonPath);
-
-  if (!packageJson) {
-    return null;
-  }
-
-  // Find main .d.ts file
-  const mainDts = findMainDts(packagePath, packageJson);
-
-  // Find types directory
-  const typesDir = findTypesDir(packagePath, packageJson);
-
-  // Find all .d.ts files
-  let allDtsFiles = findDtsFiles(packagePath, typesDir);
-
-  // Ensure mainDts is included in allDtsFiles if it exists
-  if (mainDts && !allDtsFiles.includes(mainDts)) {
-    allDtsFiles = [mainDts, ...allDtsFiles];
-  }
-
-  // Build export info from main .d.ts (alias map + public exports)
-  let exportAliases: Map<string, string> | undefined;
-  let publicExports: Set<string> | undefined;
-
-  if (mainDts) {
-    const exportInfo = buildExportInfo(mainDts);
-    exportAliases = exportInfo.aliasMap;
-    publicExports = exportInfo.publicExports;
-  }
-
-  return {
-    packageName,
-    packagePath,
-    mainDts,
-    typesDir,
-    allDtsFiles,
-    exportAliases,
-    publicExports,
-  };
+  return null;
 }
 
 /**

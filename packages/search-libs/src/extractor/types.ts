@@ -87,8 +87,8 @@ export interface ExtractionOptions {
   /** Filter for class names (only extract methods from matching classes) */
   classFilter?: RegExp | ((name: string) => boolean);
 
-  /** Base path for node_modules (defaults to process.cwd()) */
-  basePath?: string;
+  /** Base path(s) for node_modules (defaults to process.cwd()). Can be an array to search multiple locations. */
+  basePath?: string | string[];
 
   /** Whether to extract nested type references */
   extractNestedTypes?: boolean;

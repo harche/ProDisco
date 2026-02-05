@@ -32,8 +32,8 @@ const MAX_RELEVANT_SCRIPTS = 5;
 
 export type SearchToolsRuntimeConfig = {
   libraries: LibrarySpec[];
-  /** Base directory that contains `node_modules/` for resolving packages */
-  basePath: string;
+  /** Base directory or directories that contain `node_modules/` for resolving packages */
+  basePath: string | string[];
 };
 
 function getDefaultRuntimeConfig(): SearchToolsRuntimeConfig {

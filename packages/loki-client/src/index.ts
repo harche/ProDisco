@@ -16,6 +16,18 @@ export interface LokiClientOptions {
   tenantId?: string;
   /** Request timeout in milliseconds (default: 30000) */
   timeout?: number;
+  /** Custom headers for requests */
+  headers?: Record<string, string>;
+  /**
+   * Use Kubernetes service account token for authentication.
+   * - 'auto' (default): Auto-detect - use token if running in Kubernetes
+   * - true: Always use token (fail if not available)
+   * - false: Never use token
+   *
+   * When enabled, reads token from /var/run/secrets/kubernetes.io/serviceaccount/token
+   * and adds it as Bearer token in Authorization header.
+   */
+  useServiceAccountToken?: boolean | 'auto';
 }
 
 export interface QueryRangeOptions {
@@ -102,12 +114,69 @@ export class LokiClient {
   private baseUrl: string;
   private tenantId?: string;
   private timeout: number;
+  private customHeaders: Record<string, string>;
+  private useServiceAccountToken: boolean | 'auto';
+  private cachedToken?: string;
+  private tokenChecked = false;
 
   constructor(options: LokiClientOptions) {
     // Remove trailing slash from baseUrl
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
     this.tenantId = options.tenantId;
     this.timeout = options.timeout ?? 30000;
+    this.customHeaders = options.headers ?? {};
+    // Default to 'auto' - automatically use token if running in Kubernetes
+    this.useServiceAccountToken = options.useServiceAccountToken ?? 'auto';
+  }
+
+  /**
+   * Read Kubernetes service account token.
+   * Checks in order:
+   * 1. K8S_SERVICE_ACCOUNT_TOKEN environment variable (for sandboxed environments)
+   * 2. Token file at /var/run/secrets/kubernetes.io/serviceaccount/token
+   */
+  private getServiceAccountToken(): string | undefined {
+    if (this.cachedToken) {
+      return this.cachedToken;
+    }
+    if (this.tokenChecked) {
+      return undefined;
+    }
+    this.tokenChecked = true;
+
+    // First, check environment variable (useful in sandboxed environments where fs is unavailable)
+    const envToken = process.env.K8S_SERVICE_ACCOUNT_TOKEN;
+    if (envToken) {
+      this.cachedToken = envToken.trim();
+      return this.cachedToken;
+    }
+
+    // Second, try reading from file system
+    try {
+      // Node.js environment - use fs
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fs = require('fs');
+      const tokenPath = '/var/run/secrets/kubernetes.io/serviceaccount/token';
+      this.cachedToken = fs.readFileSync(tokenPath, 'utf8').trim();
+      return this.cachedToken;
+    } catch {
+      // Token file not available (not running in K8s or fs not available in sandbox)
+      return undefined;
+    }
+  }
+
+  /**
+   * Check if we should use service account token
+   */
+  private shouldUseToken(): boolean {
+    if (this.useServiceAccountToken === false) {
+      return false;
+    }
+    if (this.useServiceAccountToken === true) {
+      return true;
+    }
+    // 'auto' mode - use token if available
+    return this.getServiceAccountToken() !== undefined;
   }
 
   /**
@@ -116,9 +185,17 @@ export class LokiClient {
   private getHeaders(): Record<string, string> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...this.customHeaders,
     };
     if (this.tenantId) {
       headers['X-Scope-OrgID'] = this.tenantId;
+    }
+    // Add bearer token if using service account authentication
+    if (this.shouldUseToken()) {
+      const token = this.getServiceAccountToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
     }
     return headers;
   }
@@ -127,7 +204,14 @@ export class LokiClient {
    * Make HTTP request to Loki
    */
   private async request<T>(path: string, params?: Record<string, string>): Promise<T> {
-    const url = new URL(path, this.baseUrl);
+    // Properly append path to baseUrl (handles cases where baseUrl already has a path)
+    let fullUrl = this.baseUrl;
+    if (!fullUrl.endsWith('/')) {
+      fullUrl += '/';
+    }
+    // Remove leading slash from path to avoid replacing the base path
+    const cleanPath = path.startsWith('/') ? path.slice(1) : path;
+    const url = new URL(cleanPath, fullUrl);
     if (params) {
       Object.entries(params).forEach(([key, value]) => {
         if (value !== undefined && value !== '') {
