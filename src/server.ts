@@ -503,6 +503,20 @@ function isPackageInstalled(basePath: string, packageName: string): boolean {
   return fs.existsSync(packageInstallPath(basePath, packageName));
 }
 
+/**
+ * Check if a package is installed in either the cache deps directory or the main node_modules.
+ * This handles workspace packages like @prodisco/loki-client which are installed in the main
+ * node_modules but not in the cache deps directory.
+ */
+function isPackageAvailable(depsBasePath: string, packageName: string): boolean {
+  // Check the deps cache directory first
+  if (isPackageInstalled(depsBasePath, packageName)) {
+    return true;
+  }
+  // Also check the main node_modules (for workspace packages)
+  return isPackageInstalled(PACKAGE_ROOT, packageName);
+}
+
 async function ensureDepsCacheDir(basePath: string): Promise<void> {
   await fs.promises.mkdir(basePath, { recursive: true });
   const pkgJsonPath = path.join(basePath, 'package.json');
@@ -614,13 +628,13 @@ Examples:
   const modulesBasePath = path.join(PACKAGE_ROOT, '.cache', 'deps');
   await ensureDepsCacheDir(modulesBasePath);
 
-  const missing = libraryNames.filter((name) => !isPackageInstalled(modulesBasePath, name));
+  const missing = libraryNames.filter((name) => !isPackageAvailable(modulesBasePath, name));
   if (missing.length > 0) {
     logger.info(`Installing ${missing.length} missing package(s) into ${modulesBasePath}...`);
     await npmInstallPackages(modulesBasePath, missing);
   }
 
-  const stillMissing = libraryNames.filter((name) => !isPackageInstalled(modulesBasePath, name));
+  const stillMissing = libraryNames.filter((name) => !isPackageAvailable(modulesBasePath, name));
   if (stillMissing.length > 0) {
     throw new Error(
       `Missing packages even after install: ${stillMissing.join(', ')}`
@@ -635,7 +649,8 @@ Examples:
 
   const searchToolsRuntimeConfig: SearchToolsRuntimeConfig = {
     libraries: librariesConfig.libraries,
-    basePath: modulesBasePath,
+    // Search both cache deps directory (external packages) and main package root (workspace packages)
+    basePath: [modulesBasePath, PACKAGE_ROOT],
   };
   const searchTools = createSearchToolsTool(searchToolsRuntimeConfig);
   const runSandbox = createRunSandboxTool({ libraries: librariesConfig.libraries });

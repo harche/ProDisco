@@ -68,11 +68,18 @@ export class PrometheusClient {
     const headers: Record<string, string> = { ...this.options.headers };
 
     if (this.options.useServiceAccountToken) {
-      try {
-        const token = fs.readFileSync(SA_TOKEN_PATH, 'utf8').trim();
-        headers['Authorization'] = `Bearer ${token}`;
-      } catch {
-        // Token not available - running outside Kubernetes
+      // First, check environment variable (useful in sandboxed environments where fs is unavailable)
+      const envToken = process.env.K8S_SERVICE_ACCOUNT_TOKEN;
+      if (envToken) {
+        headers['Authorization'] = `Bearer ${envToken.trim()}`;
+      } else {
+        // Second, try reading from file system
+        try {
+          const token = fs.readFileSync(SA_TOKEN_PATH, 'utf8').trim();
+          headers['Authorization'] = `Bearer ${token}`;
+        } catch {
+          // Token not available - running outside Kubernetes or fs not available in sandbox
+        }
       }
     }
 

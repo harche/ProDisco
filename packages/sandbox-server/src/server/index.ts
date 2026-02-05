@@ -298,6 +298,27 @@ function loadAllowedModulesFromConfig(configPath: string): void {
   }
 }
 
+/**
+ * Read the Kubernetes service account token and set it as an environment variable.
+ * This allows sandboxed scripts (which can't access the filesystem) to use the token.
+ */
+function loadServiceAccountToken(): void {
+  const tokenPath = '/var/run/secrets/kubernetes.io/serviceaccount/token';
+  if (process.env.K8S_SERVICE_ACCOUNT_TOKEN) {
+    // Already set, don't override
+    return;
+  }
+  if (existsSync(tokenPath)) {
+    try {
+      const token = readFileSync(tokenPath, 'utf-8').trim();
+      process.env.K8S_SERVICE_ACCOUNT_TOKEN = token;
+      console.log('Loaded Kubernetes service account token');
+    } catch (error) {
+      console.warn('Failed to read service account token:', error);
+    }
+  }
+}
+
 // CLI entry point
 const isMainModule =
   process.argv[1] === fileURLToPath(import.meta.url) ||
@@ -312,6 +333,9 @@ if (isMainModule) {
 
   // Load allowed modules from config file if present
   loadAllowedModulesFromConfig(configPath);
+
+  // Load Kubernetes service account token for sandboxed scripts
+  loadServiceAccountToken();
 
   const config: ServerConfig = {};
   const { address, isUnixSocket } = getBindAddress(config);
