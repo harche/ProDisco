@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import * as grpc from '@grpc/grpc-js';
 import { unlinkSync, existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import { SandboxServiceService } from '../generated/sandbox.js';
@@ -273,28 +275,103 @@ function setupShutdown(server: grpc.Server, socketPath: string | null): void {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
+interface LibraryEntry {
+  name: string;
+  install?: string;
+}
+
+/**
+ * Parse library entries from a config file.
+ * Returns an array of { name, install? } objects.
+ */
+function parseLibrariesFromConfig(configPath: string): LibraryEntry[] {
+  if (!existsSync(configPath)) {
+    return [];
+  }
+
+  try {
+    const content = readFileSync(configPath, 'utf-8');
+    const config = parseYaml(content) as {
+      libraries?: Array<{ name: string; install?: string }>;
+    };
+
+    if (config.libraries && Array.isArray(config.libraries)) {
+      return config.libraries
+        .filter(
+          (lib): lib is { name: string; install?: string } =>
+            lib != null &&
+            typeof lib === 'object' &&
+            typeof lib.name === 'string' &&
+            lib.name.trim().length > 0,
+        )
+        .map((lib) => ({
+          name: lib.name.trim(),
+          install: typeof lib.install === 'string' ? lib.install.trim() : undefined,
+        }));
+    }
+  } catch (error) {
+    console.warn(`Failed to parse config from ${configPath}:`, error);
+  }
+
+  return [];
+}
+
 /**
  * Load allowed modules from a config file and set SANDBOX_ALLOWED_MODULES env var.
  * Config file format: { libraries: [{ name: string, ... }, ...] }
  */
 function loadAllowedModulesFromConfig(configPath: string): void {
-  if (!existsSync(configPath)) {
+  const libraries = parseLibrariesFromConfig(configPath);
+  if (libraries.length > 0) {
+    const moduleNames = libraries.map((lib) => lib.name);
+    process.env.SANDBOX_ALLOWED_MODULES = JSON.stringify(moduleNames);
+    console.log(`Loaded allowed modules from config: ${moduleNames.join(', ')}`);
+  }
+}
+
+/**
+ * Ensure all libraries declared in the config are installed in node_modules.
+ *
+ * This acts as a safety net: if the Docker image was built with EXTRA_NPM_PACKAGES
+ * (via build-images.ts), all libraries are already present and this is a no-op.
+ * If any are missing (e.g. image built without the build arg), they get installed
+ * on first startup so the config YAML is the single source of truth.
+ */
+function ensureLibrariesInstalled(configPath: string): void {
+  const libraries = parseLibrariesFromConfig(configPath);
+  if (libraries.length === 0) {
     return;
   }
 
-  try {
-    const content = readFileSync(configPath, 'utf-8');
-    const config = parseYaml(content) as { libraries?: Array<{ name: string }> };
+  const localRequire = createRequire(import.meta.url);
+  const missing: LibraryEntry[] = [];
 
-    if (config.libraries && Array.isArray(config.libraries)) {
-      const moduleNames = config.libraries.map((lib) => lib.name).filter(Boolean);
-      if (moduleNames.length > 0) {
-        process.env.SANDBOX_ALLOWED_MODULES = JSON.stringify(moduleNames);
-        console.log(`Loaded allowed modules from config: ${moduleNames.join(', ')}`);
-      }
+  for (const lib of libraries) {
+    try {
+      localRequire.resolve(lib.name);
+    } catch {
+      missing.push(lib);
     }
-  } catch (error) {
-    console.warn(`Failed to load config from ${configPath}:`, error);
+  }
+
+  if (missing.length === 0) {
+    console.log('All configured libraries are already installed');
+    return;
+  }
+
+  const installSpecs = missing.map((lib) => lib.install || lib.name);
+  console.log(`Installing missing libraries: ${installSpecs.join(', ')}`);
+
+  const result = spawnSync(
+    'npm',
+    ['install', '--no-save', '--omit=dev', '--no-audit', '--no-fund', '--ignore-scripts', ...installSpecs],
+    { stdio: 'inherit', cwd: process.cwd() },
+  );
+
+  if (result.status !== 0) {
+    console.error(`Failed to install libraries (exit code ${result.status}). Some sandbox libraries may be unavailable.`);
+  } else {
+    console.log('Successfully installed missing libraries');
   }
 }
 
@@ -333,6 +410,10 @@ if (isMainModule) {
 
   // Load allowed modules from config file if present
   loadAllowedModulesFromConfig(configPath);
+
+  // Install any missing libraries declared in config (safety net for images
+  // built without EXTRA_NPM_PACKAGES). No-op when everything is already present.
+  ensureLibrariesInstalled(configPath);
 
   // Load Kubernetes service account token for sandboxed scripts
   loadServiceAccountToken();
