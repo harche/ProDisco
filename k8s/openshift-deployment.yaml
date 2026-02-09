@@ -24,8 +24,10 @@ data:
       - name: "@prodisco/prometheus-client"
         description: |
           Prometheus queries & metric discovery. PROMETHEUS_ENDPOINT env var is pre-configured in the sandbox.
-          Quick start: `const client = new PrometheusClient({ endpoint: process.env.PROMETHEUS_ENDPOINT }); const search = new MetricSearchEngine(client);`
-          Workflow: (1) create client with endpoint (2) search.search('memory') to discover metrics (3) client.executeRange() with discovered metric names.
+          Quick start: `const client = new PrometheusClient({ endpoint: process.env.PROMETHEUS_ENDPOINT });`
+          Range query: `client.executeRange('node_cpu_seconds_total', { start: new Date(Date.now() - 3600000), end: new Date(), step: '1m' })`
+          IMPORTANT: TimeRange.start/end must be Date objects or Unix timestamps in SECONDS (not milliseconds). Use `new Date()` or `Math.floor(Date.now()/1000)`.
+          Workflow: (1) create client with endpoint (2) client.execute('metric_name') for instant, client.executeRange() for time series.
       - name: "@prodisco/loki-client"
         description: |
           Loki LogQL querying. LOKI_ENDPOINT env var is pre-configured. Auto-authenticates in Kubernetes using service account token.
