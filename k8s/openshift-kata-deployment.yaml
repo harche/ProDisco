@@ -1,0 +1,441 @@
+# OpenShift deployment for ProDisco MCP with Kata Containers
+# Uses agent-sandbox CRD + Kata runtime for hardware-virtualized sandbox isolation
+# Requires: Kata Containers operator installed and RuntimeClass "kata" available
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prodisco
+---
+# ConfigMap with ProDisco configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prodisco-config
+  namespace: prodisco
+data:
+  # Endpoint configuration (edit these for your cluster)
+  PROMETHEUS_ENDPOINT: "https://thanos-querier.openshift-monitoring.svc.cluster.local:9091"
+  LOKI_ENDPOINT: "https://logging-loki-gateway-http.openshift-logging.svc.cluster.local:8080/api/logs/v1/application"
+
+  .prodisco-config.yaml: |
+    libraries:
+      - name: "@kubernetes/client-node"
+        description: "Kubernetes API client"
+      - name: "@prodisco/prometheus-client"
+        description: |
+          Prometheus queries & metric discovery. PROMETHEUS_ENDPOINT env var is pre-configured in the sandbox.
+          Quick start: `const client = new PrometheusClient({ endpoint: process.env.PROMETHEUS_ENDPOINT });`
+          Range query: `client.executeRange('node_cpu_seconds_total', { start: new Date(Date.now() - 3600000), end: new Date(), step: '1m' })`
+          IMPORTANT: TimeRange.start/end must be Date objects or Unix timestamps in SECONDS (not milliseconds). Use `new Date()` or `Math.floor(Date.now()/1000)`.
+          Workflow: (1) create client with endpoint (2) client.execute('metric_name') for instant, client.executeRange() for time series.
+      - name: "@prodisco/loki-client"
+        description: |
+          Loki LogQL querying. LOKI_ENDPOINT env var is pre-configured. Auto-authenticates in Kubernetes using service account token.
+          Quick start: `const client = new LokiClient({ baseUrl: process.env.LOKI_ENDPOINT });`
+          Workflow: (1) create client (2) client.labels() and client.labelValues('namespace') to discover labels (3) client.queryRange('{namespace="default"}') to fetch logs.
+      - name: "simple-statistics"
+        description: "Statistical functions including mean, median, standard deviation, linear regression, and more."
+      - name: "ml-regression"
+        description: |
+          Regression analysis: SLR (simple linear) and PolynomialRegression.
+          Usage: `const { SLR, PolynomialRegression } = require('ml-regression'); const reg = new SLR(xArray, yArray);`
+          Methods: reg.predict(x), reg.coefficients, reg.score(x, y) returns {r, r2, chi2, rmsd}.
+      - name: "mathjs"
+        description: |
+          Comprehensive math library for matrices, expressions, and calculations.
+          Usage: `const math = require('mathjs');`
+          Matrices: math.matrix([[1,2],[3,4]]), math.multiply(A, B), math.inv(M), math.transpose(M), math.det(M).
+          Expressions: math.evaluate('2 * x + 3', {x: 4}).
+      - name: "fft.js"
+        description: |
+          Fast Fourier Transform for frequency/spectral analysis. Size must be power of 2.
+          Usage: `const FFT = require('fft.js'); const f = new FFT(size);`
+          Methods: f.realTransform(out, input), f.completeSpectrum(out), f.inverseTransform(out, input).
+          Helpers: f.createComplexArray(), f.toComplexArray(realInput), f.fromComplexArray(complexOutput).
+---
+# ServiceAccount for sandbox-server
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+---
+# ServiceAccount for mcp-server
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-server
+  namespace: prodisco
+---
+# ClusterRole with read-only access to cluster resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prodisco-reader
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - configmaps
+      - secrets
+      - namespaces
+      - nodes
+      - persistentvolumes
+      - persistentvolumeclaims
+      - events
+      - serviceaccounts
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - daemonsets
+      - replicasets
+      - statefulsets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources:
+      - storageclasses
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling"]
+    resources:
+      - horizontalpodautoscalers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["policy"]
+    resources:
+      - poddisruptionbudgets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources:
+      - pods
+      - nodes
+    verbs: ["get", "list"]
+---
+# ClusterRoleBinding for sandbox-server
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prodisco-sandbox-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prodisco-reader
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-server
+    namespace: prodisco
+---
+# ClusterRoleBinding for mcp-server
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prodisco-mcp-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prodisco-reader
+subjects:
+  - kind: ServiceAccount
+    name: mcp-server
+    namespace: prodisco
+---
+# ClusterRoleBinding for Prometheus/Thanos Querier access (sandbox-server)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prodisco-sandbox-monitoring-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-server
+    namespace: prodisco
+---
+# ClusterRoleBinding for Loki logs access (sandbox-server)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prodisco-sandbox-logs-view
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: loki-logs-reader
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-server
+    namespace: prodisco
+---
+# Fix for agent-sandbox-controller on OpenShift
+# The controller needs sandboxes/finalizers permission to set blockOwnerDeletion on pods
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-sandbox-controller-openshift-fix
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources: ["sandboxes/finalizers"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-sandbox-controller-openshift-fix
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: agent-sandbox-controller-openshift-fix
+subjects:
+  - kind: ServiceAccount
+    name: agent-sandbox-controller
+    namespace: agent-sandbox-system
+---
+# Sandbox Server using agent-sandbox CRD + Kata Containers for VM-level isolation
+apiVersion: agents.x-k8s.io/v1alpha1
+kind: Sandbox
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+  labels:
+    app: sandbox-server
+spec:
+  podTemplate:
+    metadata:
+      labels:
+        app: sandbox-server
+    spec:
+      runtimeClassName: kata
+      serviceAccountName: sandbox-server
+      containers:
+        - name: sandbox
+          image: quay.io/harpatil/prodisco-sandbox-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 50051
+              name: grpc
+              protocol: TCP
+          env:
+            - name: SANDBOX_USE_TCP
+              value: "true"
+            - name: SANDBOX_TCP_HOST
+              value: "0.0.0.0"
+            - name: SANDBOX_TCP_PORT
+              value: "50051"
+            - name: SCRIPTS_CACHE_DIR
+              value: "/tmp/prodisco-scripts"
+            - name: SANDBOX_TRANSPORT_MODE
+              value: "insecure"
+            - name: PRODISCO_CONFIG_PATH
+              value: "/config/.prodisco-config.yaml"
+            # OpenShift monitoring Thanos Querier endpoint (from ConfigMap)
+            - name: PROMETHEUS_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: prodisco-config
+                  key: PROMETHEUS_ENDPOINT
+            # OpenShift logging Loki endpoint (from ConfigMap)
+            - name: LOKI_ENDPOINT
+              valueFrom:
+                configMapKeyRef:
+                  name: prodisco-config
+                  key: LOKI_ENDPOINT
+            # Skip TLS verification for OpenShift internal services (uses self-signed certs)
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "kill -0 1"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "kill -0 1"
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - name: scripts-cache
+              mountPath: /tmp/prodisco-scripts
+            - name: prodisco-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: scripts-cache
+          emptyDir: {}
+        - name: prodisco-config
+          configMap:
+            name: prodisco-config
+---
+# Sandbox Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+  labels:
+    app: sandbox-server
+spec:
+  type: ClusterIP
+  ports:
+    - port: 50051
+      targetPort: 50051
+      protocol: TCP
+      name: grpc
+  selector:
+    app: sandbox-server
+---
+# MCP Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-server
+  template:
+    metadata:
+      labels:
+        app: mcp-server
+    spec:
+      serviceAccountName: mcp-server
+      containers:
+        - name: mcp-server
+          image: quay.io/harpatil/prodisco-mcp-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          env:
+            - name: MCP_TRANSPORT
+              value: "http"
+            - name: MCP_HOST
+              value: "0.0.0.0"
+            - name: MCP_PORT
+              value: "3000"
+            - name: SCRIPTS_CACHE_DIR
+              value: "/tmp/prodisco-scripts"
+            # Use writable cache directory for OpenShift
+            - name: XDG_CACHE_HOME
+              value: "/tmp/cache"
+            - name: HOME
+              value: "/tmp"
+            # Connect to sandbox-server via TCP
+            - name: SANDBOX_USE_TCP
+              value: "true"
+            - name: SANDBOX_TCP_HOST
+              value: "sandbox-server.prodisco.svc.cluster.local"
+            - name: SANDBOX_TCP_PORT
+              value: "50051"
+            - name: PRODISCO_CONFIG_PATH
+              value: "/config/.prodisco-config.yaml"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - name: scripts-cache
+              mountPath: /tmp/prodisco-scripts
+            - name: cache-dir
+              mountPath: /tmp/cache
+            - name: app-cache
+              mountPath: /app/.cache
+            - name: prodisco-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: scripts-cache
+          emptyDir: {}
+        - name: cache-dir
+          emptyDir: {}
+        - name: app-cache
+          emptyDir: {}
+        - name: prodisco-config
+          configMap:
+            name: prodisco-config
+---
+# MCP Server Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app: mcp-server
+---
+# Route to expose MCP server externally (OpenShift-specific)
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+  annotations:
+    # Extended timeout for SSE (Server-Sent Events) connections used by MCP
+    haproxy.router.openshift.io/timeout: 300s
+spec:
+  to:
+    kind: Service
+    name: mcp-server
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Allow
