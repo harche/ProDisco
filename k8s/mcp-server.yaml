@@ -76,6 +76,8 @@ spec:
               value: "3000"
             - name: SCRIPTS_CACHE_DIR
               value: "/tmp/prodisco-scripts"
+            - name: PRODISCO_ENABLE_APPS
+              value: "true"
           resources:
             requests:
               memory: "256Mi"

@@ -28,6 +28,7 @@ RUN npm run build -w @prodisco/loki-client
 RUN npm run proto:generate -w @prodisco/sandbox-server
 RUN npm run build -w @prodisco/sandbox-server
 RUN npm run build
+RUN npm run build:app
 
 # Production stage
 FROM node:22-alpine
