@@ -1,4 +1,4 @@
-export type OutputFormat = 'json-table' | 'time-series' | 'plain-text' | 'interactive-table' | 'interactive-actions';
+export type OutputFormat = 'json-table' | 'time-series' | 'plain-text' | 'json-object' | 'interactive-table' | 'interactive-actions';
 
 export interface InteractiveTableMeta {
   type: 'table';
@@ -51,6 +51,11 @@ export function detectFormat(output: string): { format: OutputFormat; parsed?: u
       if (meta?.type === 'actions' && Array.isArray(obj.actions)) {
         return { format: 'interactive-actions', parsed };
       }
+    }
+
+    // Non-array objects without _interactive → json-object
+    if (!Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null) {
+      return { format: 'json-object', parsed };
     }
 
     if (!Array.isArray(parsed) || parsed.length === 0) {
