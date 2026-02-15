@@ -1,4 +1,23 @@
-export type OutputFormat = 'json-table' | 'time-series' | 'plain-text';
+export type OutputFormat = 'json-table' | 'time-series' | 'plain-text' | 'interactive-table' | 'interactive-actions';
+
+export interface InteractiveTableMeta {
+  type: 'table';
+  kind: string;
+  identifiers: string[];
+}
+
+export interface InteractiveAction {
+  id: string;
+  label: string;
+  description?: string;
+  destructive?: boolean;
+}
+
+export interface InteractiveActionsMeta {
+  type: 'actions';
+  kind: string;
+  resource: Record<string, unknown>;
+}
 
 const TIMESTAMP_KEYS = new Set([
   'timestamp', 'time', 'date', '@timestamp', 'ts', 'datetime',
@@ -21,6 +40,18 @@ export function detectFormat(output: string): { format: OutputFormat; parsed?: u
 
   try {
     const parsed = JSON.parse(trimmed);
+
+    // Interactive formats: object with _interactive property
+    if (!Array.isArray(parsed) && typeof parsed === 'object' && parsed !== null && '_interactive' in parsed) {
+      const obj = parsed as Record<string, unknown>;
+      const meta = obj._interactive as Record<string, unknown> | undefined;
+      if (meta?.type === 'table' && Array.isArray(obj.rows)) {
+        return { format: 'interactive-table', parsed };
+      }
+      if (meta?.type === 'actions' && Array.isArray(obj.actions)) {
+        return { format: 'interactive-actions', parsed };
+      }
+    }
 
     if (!Array.isArray(parsed) || parsed.length === 0) {
       return { format: 'plain-text', parsed };
