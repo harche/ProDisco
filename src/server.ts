@@ -118,14 +118,32 @@ function registerGeneratedResources(mcpServer: McpServer): void {
   logger.info(`Exposed ${GENERATED_DIR} as MCP resources`);
 }
 
+import { buildRunSandboxText } from './util/format-sandbox-result.js';
+
+/** Cached app HTML content (loaded once on first read). */
+let cachedAppHtml: string | null = null;
+
+/**
+ * Load the bundled runSandbox app HTML from dist/apps/, caching in memory.
+ */
+function loadAppHtml(): string {
+  if (cachedAppHtml !== null) return cachedAppHtml;
+  const appPath = path.join(__dirname, 'apps', 'runSandbox', 'index.html');
+  cachedAppHtml = fs.readFileSync(appPath, 'utf-8');
+  return cachedAppHtml;
+}
+
+const RUN_SANDBOX_APP_URI = 'ui://prodisco/runSandbox.html';
+
 function registerTools(
   mcpServer: McpServer,
   tools: { searchTools: AnyToolDefinition; runSandbox: AnyToolDefinition },
+  options: { enableApps: boolean } = { enableApps: false },
 ): void {
   const searchTools = tools.searchTools;
   const runSandbox = tools.runSandbox;
 
-  // Register prodisco.searchTools helper as an exposed tool.
+  // Register prodisco.searchTools helper as an exposed tool (no app UI for this one).
   mcpServer.registerTool(
     searchTools.name,
     {
@@ -148,83 +166,117 @@ function registerTools(
             text: JSON.stringify(result.results, null, 2),
           },
         ],
-        structuredContent: result,
       };
     },
   );
 
-  // Register prodisco.runSandbox tool for executing scripts in a sandboxed environment
-  mcpServer.registerTool(
-    runSandbox.name,
-    {
-      title: 'ProDisco Run Sandbox',
-      description: runSandbox.description,
-      inputSchema: runSandbox.schema,
-    },
-    async (args: Record<string, unknown>) => {
-      const parsedArgs = await runSandbox.schema.parseAsync(args);
-      const result = await runSandbox.execute(parsedArgs);
+  // RunSandbox text-only handler for non-app clients
+  const runSandboxHandler = async (args: Record<string, unknown>) => {
+    const parsedArgs = await runSandbox.schema.parseAsync(args);
+    const result = await runSandbox.execute(parsedArgs);
+    const text = buildRunSandboxText(result as Record<string, unknown>);
 
-      // Build the output message based on mode
-      let text: string;
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text,
+        },
+      ],
+    };
+  };
 
-      if ('error' in result && result.error && !('output' in result)) {
-        // Error result without output
-        text = `Error: ${result.error}`;
-      } else if (result.mode === 'execute' || result.mode === 'stream') {
-        // Execution results with output
-        const execResult = result as { success: boolean; output: string; error?: string; executionTimeMs: number; cachedScript?: string };
-        const cachedInfo = execResult.cachedScript ? ` [cached: ${execResult.cachedScript}]` : '';
-        if (execResult.success) {
-          text = `Execution successful${cachedInfo} (${execResult.executionTimeMs}ms)\n\nOutput:\n${execResult.output}`;
-        } else {
-          text = `Execution failed${cachedInfo} (${execResult.executionTimeMs}ms)\n\nError: ${execResult.error}\n\nOutput:\n${execResult.output}`;
-        }
-      } else if (result.mode === 'async') {
-        // Async mode - return execution ID
-        const asyncResult = result as { executionId: string; state: string; message: string };
-        text = `${asyncResult.message}\n\nExecution ID: ${asyncResult.executionId}\nState: ${asyncResult.state}`;
-      } else if (result.mode === 'status') {
-        // Status mode - return status and output
-        const statusResult = result as { executionId: string; state: string; output: string; errorOutput: string; result?: { success: boolean } };
-        const isComplete = statusResult.result !== undefined;
-        text = `Execution ${statusResult.executionId}\nState: ${statusResult.state}${isComplete ? ' (completed)' : ''}\n\nOutput:\n${statusResult.output}`;
-        if (statusResult.errorOutput) {
-          text += `\n\nErrors:\n${statusResult.errorOutput}`;
-        }
-      } else if (result.mode === 'cancel') {
-        // Cancel mode
-        const cancelResult = result as { success: boolean; executionId: string; state: string; message?: string };
-        text = cancelResult.success
-          ? `Execution ${cancelResult.executionId} cancelled. State: ${cancelResult.state}`
-          : `Failed to cancel execution ${cancelResult.executionId}: ${cancelResult.message || 'Unknown error'}`;
-      } else if (result.mode === 'list') {
-        // List mode
-        const listResult = result as { executions: Array<{ executionId: string; state: string; codePreview: string }>; totalCount: number };
-        if (listResult.executions.length === 0) {
-          text = 'No executions found.';
-        } else {
-          text = `Found ${listResult.totalCount} execution(s):\n\n`;
-          for (const exec of listResult.executions) {
-            text += `• ${exec.executionId} [${exec.state}]: ${exec.codePreview}\n`;
-          }
-        }
-      } else {
-        // Fallback
-        text = JSON.stringify(result, null, 2);
-      }
+  // RunSandbox app handler — passes structured result via _meta for the app UI
+  // and annotates text content as assistant-only to avoid duplicate display
+  const runSandboxAppHandler = async (args: Record<string, unknown>) => {
+    const parsedArgs = await runSandbox.schema.parseAsync(args);
+    const result = await runSandbox.execute(parsedArgs);
+    const text = buildRunSandboxText(result as Record<string, unknown>);
 
-      return {
-        content: [
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text,
+          annotations: { audience: ['assistant' as const] },
+        },
+      ],
+      _meta: { structuredResult: result },
+    };
+  };
+
+  if (options.enableApps) {
+    // Dynamic import at module level isn't needed — we conditionally require the exports
+    // Use registerAppTool + registerAppResource from @modelcontextprotocol/ext-apps/server
+    let registerAppTool: typeof import('@modelcontextprotocol/ext-apps/server').registerAppTool;
+    let registerAppResource: typeof import('@modelcontextprotocol/ext-apps/server').registerAppResource;
+    let RESOURCE_MIME_TYPE: typeof import('@modelcontextprotocol/ext-apps/server').RESOURCE_MIME_TYPE;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const extApps = require('@modelcontextprotocol/ext-apps/server');
+      registerAppTool = extApps.registerAppTool;
+      registerAppResource = extApps.registerAppResource;
+      RESOURCE_MIME_TYPE = extApps.RESOURCE_MIME_TYPE;
+    } catch (err) {
+      logger.warn(`Failed to load @modelcontextprotocol/ext-apps/server, falling back to standard registration: ${err}`);
+      // Fall back to standard registration
+      mcpServer.registerTool(
+        runSandbox.name,
+        {
+          title: 'ProDisco Run Sandbox',
+          description: runSandbox.description,
+          inputSchema: runSandbox.schema,
+        },
+        runSandboxHandler,
+      );
+      return;
+    }
+
+    const resourceUri = RUN_SANDBOX_APP_URI;
+
+    // Register the app resource that serves the bundled HTML
+    registerAppResource(
+      mcpServer,
+      resourceUri,
+      resourceUri,
+      { mimeType: RESOURCE_MIME_TYPE },
+      async () => ({
+        contents: [
           {
-            type: 'text' as const,
-            text,
+            uri: resourceUri,
+            mimeType: RESOURCE_MIME_TYPE as string,
+            text: loadAppHtml(),
           },
         ],
-        structuredContent: result,
-      };
-    },
-  );
+      }),
+    );
+
+    // Register runSandbox as an app-enabled tool
+    registerAppTool(
+      mcpServer,
+      runSandbox.name,
+      {
+        title: 'ProDisco Run Sandbox',
+        description: runSandbox.description,
+        inputSchema: runSandbox.schema,
+        _meta: { ui: { resourceUri } },
+      },
+      runSandboxAppHandler,
+    );
+
+    logger.info('MCP Apps enabled for runSandbox tool');
+  } else {
+    // Standard registration without app UI
+    mcpServer.registerTool(
+      runSandbox.name,
+      {
+        title: 'ProDisco Run Sandbox',
+        description: runSandbox.description,
+        inputSchema: runSandbox.schema,
+      },
+      runSandboxHandler,
+    );
+  }
 }
 
 /**
@@ -338,6 +390,7 @@ function parseArgs(args: string[]): {
   host: string;
   port: number;
   configPath?: string;
+  enableApps: boolean;
 } {
   const keepCache = args.includes('--keep-cache');
 
@@ -408,7 +461,16 @@ function parseArgs(args: string[]): {
     host = process.env.MCP_HOST;
   }
 
-  return { keepCache, transport, host, port, configPath };
+  // --enable-apps flag or PRODISCO_ENABLE_APPS env var
+  let enableApps = args.includes('--enable-apps');
+  if (!enableApps) {
+    const envApps = process.env.PRODISCO_ENABLE_APPS;
+    if (envApps === 'true' || envApps === '1') {
+      enableApps = true;
+    }
+  }
+
+  return { keepCache, transport, host, port, configPath, enableApps };
 }
 
 /**
@@ -587,10 +649,12 @@ Transport Options:
 Other Options:
   --config <path>      Path to YAML/JSON config listing libraries to index/allow
   --keep-cache         Keep the scripts cache on startup (cache is cleared by default)
+  --enable-apps        Enable MCP Apps UI for runSandbox tool (interactive HTML rendering)
   --help, -h           Show this help message
 
 Environment Variables:
   PRODISCO_CONFIG_PATH         Path to YAML/JSON config listing libraries to index/allow
+  PRODISCO_ENABLE_APPS         Enable MCP Apps UI (true/1)
   MCP_TRANSPORT        Transport mode (stdio or http)
   MCP_HOST             HTTP host to bind to
   MCP_PORT             HTTP port to listen on
@@ -614,7 +678,7 @@ Examples:
     process.exit(0);
   }
 
-  const { keepCache, transport, host, port, configPath } = parseArgs(args);
+  const { keepCache, transport, host, port, configPath, enableApps } = parseArgs(args);
 
   // Load libraries config (defaults to built-in list for backward compatibility)
   const librariesConfig = configPath
@@ -653,7 +717,7 @@ Examples:
     basePath: [modulesBasePath, PACKAGE_ROOT],
   };
   const searchTools = createSearchToolsTool(searchToolsRuntimeConfig);
-  const runSandbox = createRunSandboxTool({ libraries: librariesConfig.libraries });
+  const runSandbox = createRunSandboxTool({ libraries: librariesConfig.libraries, enableApps });
 
   // Create MCP server with dynamic instructions, then register resources/tools
   const mcpServer = new McpServer(
@@ -666,7 +730,7 @@ Examples:
     },
   );
   registerGeneratedResources(mcpServer);
-  registerTools(mcpServer, { searchTools, runSandbox });
+  registerTools(mcpServer, { searchTools, runSandbox }, { enableApps });
 
   // Clear cache by default unless --keep-cache is specified
   if (!keepCache) {
