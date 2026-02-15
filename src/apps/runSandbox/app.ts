@@ -3,7 +3,7 @@ import { detectFormat } from './utils/detect-format';
 import type { InteractiveTableMeta, InteractiveActionsMeta, InteractiveAction } from './utils/detect-format';
 import { copyToClipboard } from './utils/copy';
 import { renderTable } from './renderers/table';
-import { renderChart } from './renderers/chart';
+import { renderChart, type ChartInteractivity } from './renderers/chart';
 import { renderTerminal } from './renderers/terminal';
 import { renderTestResults } from './renderers/test-results';
 import { renderStatus } from './renderers/status';
@@ -183,6 +183,15 @@ function handleActionClick(actionId: string, kind: string, resource: Record<stri
   sendInteractiveMessage(message);
 }
 
+function handleChartQuery(query: string): void {
+  const message =
+    `[Interactive UI] User requested a new chart query: ${query}\n` +
+    `Please execute this query and return time-series data for charting.`;
+  sendInteractiveMessage(message);
+}
+
+const chartInteractivity: ChartInteractivity = { onQuerySubmit: handleChartQuery };
+
 function renderResult(result: ToolResult): void {
   contentEl.innerHTML = '';
   renderMetadata(result);
@@ -206,7 +215,7 @@ function renderResult(result: ToolResult): void {
           break;
         }
         case 'time-series':
-          renderChart(contentEl, parsed as Record<string, unknown>[]);
+          renderChart(contentEl, parsed as Record<string, unknown>[], chartInteractivity);
           break;
         case 'interactive-table': {
           const obj = parsed as { _interactive: InteractiveTableMeta; rows: Record<string, unknown>[] };

@@ -1,3 +1,4 @@
+import 'hammerjs';
 import {
   Chart,
   LineController,
@@ -10,6 +11,7 @@ import {
   Legend,
   Filler,
 } from 'chart.js';
+import zoomPlugin from 'chartjs-plugin-zoom';
 import { renderTable } from './table';
 
 Chart.register(
@@ -22,7 +24,12 @@ Chart.register(
   Tooltip,
   Legend,
   Filler,
+  zoomPlugin,
 );
+
+export interface ChartInteractivity {
+  onQuerySubmit: (query: string) => void;
+}
 
 const TIMESTAMP_KEYS = new Set([
   'timestamp', 'time', 'date', '@timestamp', 'ts', 'datetime',
@@ -34,7 +41,7 @@ const COLORS = [
   '#06b6d4', '#ec4899', '#14b8a6', '#f97316', '#6366f1',
 ];
 
-export function renderChart(container: HTMLElement, data: Record<string, unknown>[]): void {
+export function renderChart(container: HTMLElement, data: Record<string, unknown>[], interactivity: ChartInteractivity): void {
   if (data.length === 0) {
     container.textContent = 'No data to chart.';
     return;
@@ -71,7 +78,7 @@ export function renderChart(container: HTMLElement, data: Record<string, unknown
   const gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
   const textColor = isDark ? '#a3a3a3' : '#666666';
 
-  new Chart(canvas, {
+  const chartInstance = new Chart(canvas, {
     type: 'line',
     data: {
       labels,
@@ -105,13 +112,33 @@ export function renderChart(container: HTMLElement, data: Record<string, unknown
         legend: {
           labels: { color: textColor },
         },
+        zoom: {
+          zoom: {
+            wheel: { enabled: true },
+            pinch: { enabled: true },
+            mode: 'x',
+          },
+          pan: {
+            enabled: true,
+            mode: 'x',
+          },
+        },
       },
     },
   });
 
-  // Toggle to show raw data
-  const toggleDiv = document.createElement('div');
-  toggleDiv.className = 'chart-toggle';
+  // Controls row: Reset zoom + Show raw data
+  const controlsDiv = document.createElement('div');
+  controlsDiv.className = 'chart-controls';
+
+  const resetZoomBtn = document.createElement('button');
+  resetZoomBtn.className = 'btn';
+  resetZoomBtn.textContent = 'Reset zoom';
+  resetZoomBtn.addEventListener('click', () => {
+    chartInstance.resetZoom();
+  });
+  controlsDiv.appendChild(resetZoomBtn);
+
   const toggleBtn = document.createElement('button');
   toggleBtn.className = 'btn';
   toggleBtn.textContent = 'Show raw data';
@@ -128,7 +155,38 @@ export function renderChart(container: HTMLElement, data: Record<string, unknown
     }
   });
 
-  toggleDiv.appendChild(toggleBtn);
-  container.appendChild(toggleDiv);
+  controlsDiv.appendChild(toggleBtn);
+  container.appendChild(controlsDiv);
+
+  // Query input section
+  const queryDiv = document.createElement('div');
+  queryDiv.className = 'chart-query';
+
+  const queryInput = document.createElement('input');
+  queryInput.type = 'text';
+  queryInput.className = 'chart-query__input';
+  queryInput.placeholder = 'Enter a query for new chart data\u2026';
+
+  const queryBtn = document.createElement('button');
+  queryBtn.className = 'btn btn--primary';
+  queryBtn.textContent = 'Query';
+
+  const submitQuery = () => {
+    const query = queryInput.value.trim();
+    if (query) {
+      interactivity.onQuerySubmit(query);
+      queryInput.value = '';
+    }
+  };
+
+  queryBtn.addEventListener('click', submitQuery);
+  queryInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitQuery();
+  });
+
+  queryDiv.appendChild(queryInput);
+  queryDiv.appendChild(queryBtn);
+  container.appendChild(queryDiv);
+
   container.appendChild(tableContainer);
 }
