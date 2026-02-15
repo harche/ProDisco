@@ -1,6 +1,12 @@
 type SortState = { column: string; ascending: boolean } | null;
 
-export function renderTable(container: HTMLElement, data: Record<string, unknown>[]): void {
+export interface TableInteractivity {
+  identifiers: string[];
+  kind: string;
+  onCellClick: (column: string, value: unknown, row: Record<string, unknown>) => void;
+}
+
+export function renderTable(container: HTMLElement, data: Record<string, unknown>[], interactivity?: TableInteractivity): void {
   if (data.length === 0) {
     container.textContent = 'Empty result set.';
     return;
@@ -31,7 +37,11 @@ export function renderTable(container: HTMLElement, data: Record<string, unknown
 
     const info = document.createElement('div');
     info.className = 'table-info';
-    info.textContent = `${data.length} row${data.length !== 1 ? 's' : ''} \u00d7 ${columns.length} column${columns.length !== 1 ? 's' : ''}`;
+    let infoText = `${data.length} row${data.length !== 1 ? 's' : ''} \u00d7 ${columns.length} column${columns.length !== 1 ? 's' : ''}`;
+    if (interactivity) {
+      infoText += ' \u00b7 Click a highlighted cell to see actions';
+    }
+    info.textContent = infoText;
     wrapper.appendChild(info);
 
     const table = document.createElement('table');
@@ -76,6 +86,12 @@ export function renderTable(container: HTMLElement, data: Record<string, unknown
         const value = row[col];
         td.textContent = value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
         td.title = td.textContent;
+        if (interactivity && interactivity.identifiers.includes(col)) {
+          td.classList.add('cell-interactive');
+          td.addEventListener('click', () => {
+            interactivity.onCellClick(col, value, row);
+          });
+        }
         tr.appendChild(td);
       }
       tbody.appendChild(tr);

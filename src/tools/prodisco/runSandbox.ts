@@ -690,7 +690,13 @@ export function createRunSandboxTool(runtimeConfig: RunSandboxRuntimeConfig) {
       '• **Chart**: Output a JSON array (3+ items) where objects have a timestamp key (`timestamp`, `time`, `date`, `ts`, `datetime`, `created_at`, `updated_at`) and numeric value fields → rendered as a line chart. Example: `console.log(JSON.stringify([{ timestamp: 1700000000, cpu: 45.2, memory: 72.1 }, ...]))`\n' +
       '• **Terminal**: Any non-JSON output renders as plain text in a terminal.\n' +
       'To get table/chart rendering, the ENTIRE stdout must be a single valid JSON array — do not mix `console.log` text with JSON. ' +
-      'Prefer structured JSON output over verbose formatted text whenever the data is tabular or time-series.'
+      'Prefer structured JSON output over verbose formatted text whenever the data is tabular or time-series.\n' +
+      '• **Interactive Table**: Output a JSON object with `_interactive` metadata and `rows` array → rendered as a clickable table. ' +
+      'Clicking an identifier cell sends a message to the agent to show available actions. ' +
+      'Example: `console.log(JSON.stringify({ _interactive: { type: "table", kind: "Pod", identifiers: ["name"] }, rows: [{ name: "api-xyz", namespace: "default", status: "Running" }] }))`\n' +
+      '• **Interactive Actions**: Output a JSON object with `_interactive` metadata and `actions` array → rendered as an action button panel. ' +
+      'Clicking a button sends a message to the agent to execute the action. ' +
+      'Example: `console.log(JSON.stringify({ _interactive: { type: "actions", kind: "Pod", resource: { name: "api-xyz", namespace: "default" } }, actions: [{ id: "describe", label: "Describe", description: "Show full spec" }, { id: "delete", label: "Delete", destructive: true }] }))`'
     : '';
 
   return {

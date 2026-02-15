@@ -1,11 +1,13 @@
 import { App } from '@modelcontextprotocol/ext-apps';
 import { detectFormat } from './utils/detect-format';
+import type { InteractiveTableMeta, InteractiveActionsMeta, InteractiveAction } from './utils/detect-format';
 import { copyToClipboard } from './utils/copy';
 import { renderTable } from './renderers/table';
 import { renderChart } from './renderers/chart';
 import { renderTerminal } from './renderers/terminal';
 import { renderTestResults } from './renderers/test-results';
 import { renderStatus } from './renderers/status';
+import { renderActions } from './renderers/actions';
 
 const metadataBar = document.getElementById('metadata-bar')!;
 const contentEl = document.getElementById('content')!;
@@ -134,6 +136,53 @@ function renderMetadata(result: ToolResult): void {
   metadataBar.appendChild(actions);
 }
 
+async function sendInteractiveMessage(text: string): Promise<void> {
+  const feedbackEl = document.createElement('div');
+  feedbackEl.className = 'interactive-feedback interactive-feedback--sending';
+  feedbackEl.textContent = 'Sending\u2026';
+  contentEl.appendChild(feedbackEl);
+
+  try {
+    await app.sendMessage({
+      role: 'user',
+      content: [{ type: 'text', text }],
+    });
+    feedbackEl.className = 'interactive-feedback interactive-feedback--success';
+    feedbackEl.textContent = 'Sent';
+  } catch (err) {
+    feedbackEl.className = 'interactive-feedback interactive-feedback--error';
+    feedbackEl.textContent = `Error: ${err}`;
+  }
+}
+
+function findIdentifierColumns(data: Record<string, unknown>[]): string[] {
+  if (data.length === 0) return [];
+  const columns = Object.keys(data[0]);
+  const nameCol = columns.find((c) => c.toLowerCase() === 'name');
+  return nameCol ? [nameCol] : [];
+}
+
+function handleCellClick(column: string, value: unknown, row: Record<string, unknown>): void {
+  const message =
+    `[Interactive UI] User clicked "${value}" in column "${column}".\n` +
+    `Row data: ${JSON.stringify(row)}\n\n` +
+    `Please determine and display the available actions for this resource.`;
+  sendInteractiveMessage(message);
+}
+
+function handleActionClick(actionId: string, kind: string, resource: Record<string, unknown>): void {
+  const name = resource.name ?? resource.Name ?? '';
+  const ns = resource.namespace ?? resource.Namespace ?? '';
+  const message =
+    `[Interactive UI] User selected an action from the actions panel.\n` +
+    `Action: ${actionId}\n` +
+    `Resource kind: ${kind}\n` +
+    `Resource name: ${name}\n` +
+    (ns ? `Namespace: ${ns}\n` : '') +
+    `\nPlease execute this action using searchTools and runSandbox.`;
+  sendInteractiveMessage(message);
+}
+
 function renderResult(result: ToolResult): void {
   contentEl.innerHTML = '';
   renderMetadata(result);
@@ -147,12 +196,38 @@ function renderResult(result: ToolResult): void {
       const { format, parsed } = detectFormat(output);
 
       switch (format) {
-        case 'json-table':
-          renderTable(contentEl, parsed as Record<string, unknown>[]);
+        case 'json-table': {
+          const rows = parsed as Record<string, unknown>[];
+          const identifiers = findIdentifierColumns(rows);
+          const interactivity = identifiers.length > 0
+            ? { identifiers, kind: '', onCellClick: (col: string, val: unknown, row: Record<string, unknown>) => handleCellClick(col, val, row) }
+            : undefined;
+          renderTable(contentEl, rows, interactivity);
           break;
+        }
         case 'time-series':
           renderChart(contentEl, parsed as Record<string, unknown>[]);
           break;
+        case 'interactive-table': {
+          const obj = parsed as { _interactive: InteractiveTableMeta; rows: Record<string, unknown>[] };
+          const identifiers = obj._interactive.identifiers;
+          renderTable(contentEl, obj.rows, {
+            identifiers,
+            kind: obj._interactive.kind,
+            onCellClick: (col, val, row) => handleCellClick(col, val, row),
+          });
+          break;
+        }
+        case 'interactive-actions': {
+          const obj = parsed as { _interactive: InteractiveActionsMeta; actions: InteractiveAction[] };
+          renderActions(contentEl, {
+            kind: obj._interactive.kind,
+            resource: obj._interactive.resource,
+            actions: obj.actions,
+            onActionClick: handleActionClick,
+          });
+          break;
+        }
         case 'plain-text':
           renderTerminal(contentEl, output);
           break;
