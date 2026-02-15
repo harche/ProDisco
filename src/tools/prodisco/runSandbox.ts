@@ -687,7 +687,7 @@ export function createRunSandboxTool(runtimeConfig: RunSandboxRuntimeConfig) {
     ? '\n\n' +
       '**OUTPUT FORMAT (UI rendering)**: Results are rendered in a rich UI. The format is auto-detected from stdout:\n' +
       '• **Table**: Output a JSON array of flat objects → rendered as a sortable, interactive table. Example: `console.log(JSON.stringify([{ name: "pod-a", status: "Running", restarts: 0 }, ...]))`\n' +
-      '• **Chart**: Output a JSON array (3+ items) where objects have a timestamp key (`timestamp`, `time`, `date`, `ts`, `datetime`, `created_at`, `updated_at`) and numeric value fields → rendered as a line chart. Example: `console.log(JSON.stringify([{ timestamp: 1700000000, cpu: 45.2, memory: 72.1 }, ...]))`\n' +
+      '• **Chart**: Output a JSON array (3+ items) where objects have a timestamp key (`timestamp`, `time`, `date`, `ts`, `datetime`, `created_at`, `updated_at`) and numeric value fields → rendered as an interactive line chart with zoom (mouse wheel/pinch), pan (click-drag), and a query input for requesting new metrics. Example: `console.log(JSON.stringify([{ timestamp: 1700000000, cpu: 45.2, memory: 72.1 }, ...]))`\n' +
       '• **Terminal**: Any non-JSON output renders as plain text in a terminal.\n' +
       'To get table/chart rendering, the ENTIRE stdout must be a single valid JSON array — do not mix `console.log` text with JSON. ' +
       'Prefer structured JSON output over verbose formatted text whenever the data is tabular or time-series.\n' +

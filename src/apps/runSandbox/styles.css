@@ -220,8 +220,36 @@ tr:hover td {
   width: 100% !important;
 }
 
-.chart-toggle {
+.chart-controls {
+  display: flex;
+  gap: 8px;
   margin-top: 8px;
+}
+
+.chart-query {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.chart-query__input {
+  flex: 1;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+.chart-query__input::placeholder {
+  color: var(--text-secondary);
+}
+
+.chart-query__input:focus {
+  border-color: var(--accent);
 }
 
 /* Test results */
