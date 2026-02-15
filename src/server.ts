@@ -118,49 +118,7 @@ function registerGeneratedResources(mcpServer: McpServer): void {
   logger.info(`Exposed ${GENERATED_DIR} as MCP resources`);
 }
 
-/**
- * Build a text representation of a runSandbox result for non-apps clients.
- */
-function buildRunSandboxText(result: Record<string, unknown>): string {
-  if ('error' in result && result.error && !('output' in result)) {
-    return `Error: ${result.error}`;
-  } else if (result.mode === 'execute' || result.mode === 'stream') {
-    const execResult = result as { success: boolean; output: string; error?: string; executionTimeMs: number; cachedScript?: string };
-    const cachedInfo = execResult.cachedScript ? ` [cached: ${execResult.cachedScript}]` : '';
-    if (execResult.success) {
-      return `Execution successful${cachedInfo} (${execResult.executionTimeMs}ms)\n\nOutput:\n${execResult.output}`;
-    } else {
-      return `Execution failed${cachedInfo} (${execResult.executionTimeMs}ms)\n\nError: ${execResult.error}\n\nOutput:\n${execResult.output}`;
-    }
-  } else if (result.mode === 'async') {
-    const asyncResult = result as { executionId: string; state: string; message: string };
-    return `${asyncResult.message}\n\nExecution ID: ${asyncResult.executionId}\nState: ${asyncResult.state}`;
-  } else if (result.mode === 'status') {
-    const statusResult = result as { executionId: string; state: string; output: string; errorOutput: string; result?: { success: boolean } };
-    const isComplete = statusResult.result !== undefined;
-    let text = `Execution ${statusResult.executionId}\nState: ${statusResult.state}${isComplete ? ' (completed)' : ''}\n\nOutput:\n${statusResult.output}`;
-    if (statusResult.errorOutput) {
-      text += `\n\nErrors:\n${statusResult.errorOutput}`;
-    }
-    return text;
-  } else if (result.mode === 'cancel') {
-    const cancelResult = result as { success: boolean; executionId: string; state: string; message?: string };
-    return cancelResult.success
-      ? `Execution ${cancelResult.executionId} cancelled. State: ${cancelResult.state}`
-      : `Failed to cancel execution ${cancelResult.executionId}: ${cancelResult.message || 'Unknown error'}`;
-  } else if (result.mode === 'list') {
-    const listResult = result as { executions: Array<{ executionId: string; state: string; codePreview: string }>; totalCount: number };
-    if (listResult.executions.length === 0) {
-      return 'No executions found.';
-    }
-    let text = `Found ${listResult.totalCount} execution(s):\n\n`;
-    for (const exec of listResult.executions) {
-      text += `• ${exec.executionId} [${exec.state}]: ${exec.codePreview}\n`;
-    }
-    return text;
-  }
-  return JSON.stringify(result, null, 2);
-}
+import { buildRunSandboxText } from './util/format-sandbox-result.js';
 
 /** Cached app HTML content (loaded once on first read). */
 let cachedAppHtml: string | null = null;
@@ -208,12 +166,11 @@ function registerTools(
             text: JSON.stringify(result.results, null, 2),
           },
         ],
-        structuredContent: result,
       };
     },
   );
 
-  // RunSandbox tool handler (shared between app and non-app paths)
+  // RunSandbox text-only handler for non-app clients
   const runSandboxHandler = async (args: Record<string, unknown>) => {
     const parsedArgs = await runSandbox.schema.parseAsync(args);
     const result = await runSandbox.execute(parsedArgs);
@@ -226,7 +183,25 @@ function registerTools(
           text,
         },
       ],
-      structuredContent: result,
+    };
+  };
+
+  // RunSandbox app handler — passes structured result via _meta for the app UI
+  // and annotates text content as assistant-only to avoid duplicate display
+  const runSandboxAppHandler = async (args: Record<string, unknown>) => {
+    const parsedArgs = await runSandbox.schema.parseAsync(args);
+    const result = await runSandbox.execute(parsedArgs);
+    const text = buildRunSandboxText(result as Record<string, unknown>);
+
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text,
+          annotations: { audience: ['assistant' as const] },
+        },
+      ],
+      _meta: { structuredResult: result },
     };
   };
 
@@ -286,7 +261,7 @@ function registerTools(
         inputSchema: runSandbox.schema,
         _meta: { ui: { resourceUri } },
       },
-      runSandboxHandler,
+      runSandboxAppHandler,
     );
 
     logger.info('MCP Apps enabled for runSandbox tool');

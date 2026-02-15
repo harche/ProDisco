@@ -120,9 +120,7 @@ function renderMetadata(result: ToolResult): void {
           name: 'prodisco_runSandbox',
           arguments: rerunArgs,
         });
-        const newResult = (callResult as unknown as { structuredContent?: ToolResult }).structuredContent
-          ?? callResult as unknown as ToolResult;
-        renderResult(newResult);
+        renderResult(extractResult(callResult));
       } catch (err) {
         contentEl.innerHTML = '';
         renderTerminal(contentEl, `Re-run failed: ${err}`);
@@ -188,10 +186,24 @@ app.ontoolinput = (toolInput: { name: string; arguments?: Record<string, unknown
   lastToolInput = toolInput.arguments ?? null;
 };
 
+/** Extract structured result from tool result, checking _meta and legacy structuredContent. */
+export function extractResult(toolResult: unknown): ToolResult {
+  const raw = toolResult as Record<string, unknown>;
+  // Prefer _meta.structuredResult (standard MCP field)
+  const meta = raw._meta as Record<string, unknown> | undefined;
+  if (meta?.structuredResult) {
+    return meta.structuredResult as ToolResult;
+  }
+  // Legacy fallback: structuredContent
+  if (raw.structuredContent) {
+    return raw.structuredContent as ToolResult;
+  }
+  return raw as ToolResult;
+}
+
 // Listen for tool results from the host
 app.ontoolresult = (toolResult) => {
-  const result = (toolResult as { structuredContent?: ToolResult }).structuredContent ?? toolResult as unknown as ToolResult;
-  renderResult(result);
+  renderResult(extractResult(toolResult));
 };
 
 app.connect().catch((err) => {
