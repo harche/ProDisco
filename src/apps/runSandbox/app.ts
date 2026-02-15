@@ -8,6 +8,7 @@ import { renderTerminal } from './renderers/terminal';
 import { renderTestResults } from './renderers/test-results';
 import { renderStatus } from './renderers/status';
 import { renderActions } from './renderers/actions';
+import { renderJsonTree } from './renderers/json-tree';
 
 const metadataBar = document.getElementById('metadata-bar')!;
 const contentEl = document.getElementById('content')!;
@@ -237,6 +238,9 @@ function renderResult(result: ToolResult): void {
           });
           break;
         }
+        case 'json-object':
+          renderJsonTree(contentEl, parsed);
+          break;
         case 'plain-text':
           renderTerminal(contentEl, output);
           break;
