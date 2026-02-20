@@ -5,6 +5,7 @@
   "type": "module",
   "main": "dist/server.js",
   "workspaces": [
+    ".",
     "packages/search-libs",
     "packages/loki-client",
     "packages/prometheus-client",
