@@ -109,15 +109,17 @@ describe('SandboxManager - Multi Mode Session Tracking', () => {
     await manager.shutdown();
   });
 
-  it('rejects getClient for unknown session', async () => {
-    const manager = new SandboxManager({ mode: 'multi' });
+  it('rejects getClient for unknown session (re-creation fails without K8s)', async () => {
+    const manager = new SandboxManager({
+      mode: 'multi',
+      readyTimeoutMs: 1000,
+    });
 
-    await expect(manager.getClient('nonexistent')).rejects.toThrow(
-      'no sandbox for session nonexistent',
-    );
+    // Without a real sandbox pod, re-creation attempt will fail
+    await expect(manager.getClient('nonexistent')).rejects.toThrow();
 
     await manager.shutdown();
-  });
+  }, 10000);
 
   it('onSessionClosed is idempotent', async () => {
     const manager = new SandboxManager({ mode: 'multi' });

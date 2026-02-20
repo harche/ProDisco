@@ -122,9 +122,15 @@ export class SandboxManager {
       await pending;
     }
 
-    const session = this.sessions.get(sessionId);
+    let session = this.sessions.get(sessionId);
     if (!session) {
-      throw new Error(`SandboxManager: no sandbox for session ${sessionId}`);
+      // Sandbox was reaped due to idle timeout — re-create it transparently
+      logger.info(`Re-creating sandbox for session ${sessionId} (previously reaped)`);
+      await this.onSessionInitialized(sessionId);
+      session = this.sessions.get(sessionId);
+      if (!session) {
+        throw new Error(`SandboxManager: failed to re-create sandbox for session ${sessionId}`);
+      }
     }
 
     session.lastActivityMs = Date.now();
