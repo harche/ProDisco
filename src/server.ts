@@ -22,7 +22,8 @@ import {
   loadLibrariesConfigFile,
   type LibrarySpec,
 } from './config/libraries.js';
-import type { AnyToolDefinition } from './tools/types.js';
+import type { AnyToolDefinition, ToolExecutionContext } from './tools/types.js';
+import { SandboxManager, type SandboxMode } from './sandbox-manager.js';
 
 // Track the sandbox server subprocess
 let sandboxProcess: ChildProcess | null = null;
@@ -34,6 +35,9 @@ let sandboxRestartWindowTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Track the HTTP server (when using HTTP transport)
 let httpServer: Server | null = null;
+
+// Track the sandbox manager (single or multi mode)
+let sandboxManager: SandboxManager | null = null;
 import {
   PUBLIC_GENERATED_ROOT_PATH_WITH_SLASH,
   listGeneratedFiles,
@@ -176,9 +180,10 @@ function registerTools(
   );
 
   // RunSandbox text-only handler for non-app clients
-  const runSandboxHandler = async (args: Record<string, unknown>) => {
+  const runSandboxHandler = async (args: Record<string, unknown>, extra: { sessionId?: string }) => {
     const parsedArgs = await runSandbox.schema.parseAsync(args);
-    const result = await runSandbox.execute(parsedArgs);
+    const context: ToolExecutionContext = { sessionId: extra.sessionId };
+    const result = await runSandbox.execute(parsedArgs, context);
     const text = buildRunSandboxText(result as Record<string, unknown>);
 
     return {
@@ -193,9 +198,10 @@ function registerTools(
 
   // RunSandbox app handler — passes structured result via _meta for the app UI
   // and annotates text content as assistant-only to avoid duplicate display
-  const runSandboxAppHandler = async (args: Record<string, unknown>) => {
+  const runSandboxAppHandler = async (args: Record<string, unknown>, extra: { sessionId?: string }) => {
     const parsedArgs = await runSandbox.schema.parseAsync(args);
-    const result = await runSandbox.execute(parsedArgs);
+    const context: ToolExecutionContext = { sessionId: extra.sessionId };
+    const result = await runSandbox.execute(parsedArgs, context);
     const text = buildRunSandboxText(result as Record<string, unknown>);
 
     return {
@@ -433,6 +439,7 @@ function parseArgs(args: string[]): {
   port: number;
   configPath?: string;
   enableApps: boolean;
+  sandboxMode: SandboxMode;
 } {
   const keepCache = args.includes('--keep-cache');
 
@@ -512,13 +519,31 @@ function parseArgs(args: string[]): {
     }
   }
 
-  return { keepCache, transport, host, port, configPath, enableApps };
+  // --sandbox-mode flag or SANDBOX_MODE env var
+  let sandboxMode: SandboxMode = 'single';
+  const sandboxModeIdx = args.indexOf('--sandbox-mode');
+  if (sandboxModeIdx !== -1) {
+    const value = args[sandboxModeIdx + 1];
+    if (value === 'multi') {
+      sandboxMode = 'multi';
+    }
+  }
+  if (process.env.SANDBOX_MODE === 'multi') {
+    sandboxMode = 'multi';
+  }
+
+  return { keepCache, transport, host, port, configPath, enableApps, sandboxMode };
 }
 
 /**
  * Start the MCP server with HTTP transport using StreamableHTTPServerTransport.
  */
-async function startHttpTransport(mcpServer: McpServer, host: string, port: number): Promise<void> {
+async function startHttpTransport(
+  createMcpServer: () => McpServer,
+  host: string,
+  port: number,
+  manager: SandboxManager,
+): Promise<void> {
   // Track active transports by session ID
   const transports = new Map<string, StreamableHTTPServerTransport>();
 
@@ -542,26 +567,36 @@ async function startHttpTransport(mcpServer: McpServer, host: string, port: numb
         const transport = transports.get(sessionId)!;
         await transport.handleRequest(req, res);
       } else if (req.method === 'POST') {
-        // New session - create a new transport
+        // New session - create a new transport and a dedicated McpServer instance
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           onsessioninitialized: (newSessionId) => {
             transports.set(newSessionId, transport);
             logger.info(`New MCP session: ${newSessionId}`);
+            manager.onSessionInitialized(newSessionId).catch((err) => {
+              logger.error(`Failed to initialize sandbox for session ${newSessionId}`, err);
+            });
           },
           onsessionclosed: (closedSessionId) => {
             transports.delete(closedSessionId);
             logger.info(`MCP session closed: ${closedSessionId}`);
+            manager.onSessionClosed(closedSessionId).catch((err) => {
+              logger.error(`Failed to cleanup sandbox for session ${closedSessionId}`, err);
+            });
           },
         });
 
         transport.onclose = () => {
           if (transport.sessionId) {
             transports.delete(transport.sessionId);
+            manager.onSessionClosed(transport.sessionId).catch((err) => {
+              logger.error(`Failed to cleanup sandbox for session ${transport.sessionId}`, err);
+            });
           }
         };
 
-        // Connect the transport to the MCP server
+        // Each session gets its own McpServer instance to avoid cross-session interference
+        const mcpServer = createMcpServer();
         await mcpServer.connect(transport);
         await transport.handleRequest(req, res);
       } else if (req.method === 'GET') {
@@ -688,6 +723,9 @@ Transport Options:
   --host <host>        HTTP host to bind to (default: 127.0.0.1)
   --port <port>        HTTP port to listen on (default: 3000, implies --transport http)
 
+Sandbox Options:
+  --sandbox-mode <mode>  Sandbox mode: single (default) or multi (per-session sandboxes)
+
 Other Options:
   --config <path>      Path to YAML/JSON config listing libraries to index/allow
   --keep-cache         Keep the scripts cache on startup (cache is cleared by default)
@@ -700,6 +738,11 @@ Environment Variables:
   MCP_TRANSPORT        Transport mode (stdio or http)
   MCP_HOST             HTTP host to bind to
   MCP_PORT             HTTP port to listen on
+  SANDBOX_MODE         Sandbox mode: single (default) or multi
+  SANDBOX_NAMESPACE    K8s namespace for Sandbox CRDs (default: prodisco)
+  SANDBOX_IMAGE        Container image for sandbox pods
+  SANDBOX_IDLE_TIMEOUT_MS  Idle session timeout in ms (default: 600000 = 10 min)
+  SANDBOX_MAX_SESSIONS Maximum concurrent sandboxes (default: 10)
 
 Examples:
   # Stdio mode (for Claude Desktop, claude mcp add)
@@ -720,7 +763,8 @@ Examples:
     process.exit(0);
   }
 
-  const { keepCache, transport, host, port, configPath, enableApps } = parseArgs(args);
+  const { keepCache, transport, host, port, configPath, enableApps, sandboxMode: parsedSandboxMode } = parseArgs(args);
+  let sandboxMode = parsedSandboxMode;
 
   // Load libraries config (defaults to built-in list for backward compatibility)
   const librariesConfig = configPath
@@ -758,21 +802,13 @@ Examples:
     // Search both cache deps directory (external packages) and main package root (workspace packages)
     basePath: [modulesBasePath, PACKAGE_ROOT],
   };
-  const searchTools = createSearchToolsTool(searchToolsRuntimeConfig);
-  const runSandbox = createRunSandboxTool({ libraries: librariesConfig.libraries, enableApps });
+  // Multi-sandbox mode requires HTTP transport (stdio has no session concept)
+  if (sandboxMode === 'multi' && transport === 'stdio') {
+    logger.warn('SANDBOX_MODE=multi requires HTTP transport; falling back to single mode');
+    sandboxMode = 'single';
+  }
 
-  // Create MCP server with dynamic instructions, then register resources/tools
-  const mcpServer = new McpServer(
-    {
-      name: 'kubernetes-mcp',
-      version: typeof pkg.version === 'string' ? pkg.version : '0.0.0',
-    },
-    {
-      instructions: buildServerInstructions(librariesConfig.libraries),
-    },
-  );
-  registerGeneratedResources(mcpServer);
-  registerTools(mcpServer, { searchTools, runSandbox }, { enableApps });
+  const searchTools = createSearchToolsTool(searchToolsRuntimeConfig);
 
   // Clear cache by default unless --keep-cache is specified
   if (!keepCache) {
@@ -790,8 +826,54 @@ Examples:
   await fs.promises.mkdir(SCRIPTS_CACHE_DIR, { recursive: true });
   logger.info(`Scripts cache directory: ${SCRIPTS_CACHE_DIR}`);
 
-  // Start the sandbox gRPC server
-  await startSandboxServer();
+  // Initialize the sandbox manager based on mode
+  if (sandboxMode === 'multi') {
+    const idleTimeoutMs = parseInt(process.env.SANDBOX_IDLE_TIMEOUT_MS || '600000', 10);
+    const maxSessions = parseInt(process.env.SANDBOX_MAX_SESSIONS || '10', 10);
+    sandboxManager = new SandboxManager({
+      mode: 'multi',
+      namespace: process.env.SANDBOX_NAMESPACE || 'prodisco',
+      sandboxPort: parseInt(process.env.SANDBOX_TCP_PORT || '50051', 10),
+      sandboxImage: process.env.SANDBOX_IMAGE,
+      sessionIdleTimeoutMs: idleTimeoutMs,
+      maxSessions,
+    });
+    await sandboxManager.cleanupOrphanedSandboxes();
+    logger.info(`Multi-sandbox mode: per-session sandboxes (max=${maxSessions}, idle=${idleTimeoutMs / 1000}s)`);
+  } else {
+    // Single mode: start/connect to one sandbox, wrap it in SandboxManager
+    await startSandboxServer();
+    const singleClient = getSandboxClient();
+    sandboxManager = new SandboxManager({
+      mode: 'single',
+      singleClient,
+    });
+    logger.info('Single-sandbox mode: all sessions share one sandbox');
+  }
+
+  // Create runSandbox tool with session-aware client resolver
+  const runSandbox = createRunSandboxTool({
+    libraries: librariesConfig.libraries,
+    enableApps,
+    getClient: (sessionId) => sandboxManager!.getClient(sessionId),
+  });
+
+  // Factory to create a fresh McpServer instance with all tools/resources registered.
+  // Each HTTP session gets its own instance to avoid cross-session interference.
+  const createMcpServer = (): McpServer => {
+    const server = new McpServer(
+      {
+        name: 'kubernetes-mcp',
+        version: typeof pkg.version === 'string' ? pkg.version : '0.0.0',
+      },
+      {
+        instructions: buildServerInstructions(librariesConfig.libraries),
+      },
+    );
+    registerGeneratedResources(server);
+    registerTools(server, { searchTools, runSandbox }, { enableApps });
+    return server;
+  };
 
   // No built-in cluster probes: ProDisco is library-agnostic; connectivity checks are up to user code.
 
@@ -800,8 +882,9 @@ Examples:
 
   // Start the appropriate transport
   if (transport === 'http') {
-    await startHttpTransport(mcpServer, host, port);
+    await startHttpTransport(createMcpServer, host, port, sandboxManager);
   } else {
+    const mcpServer = createMcpServer();
     const stdioTransport = new StdioServerTransport();
     await mcpServer.connect(stdioTransport);
     logger.info('ProDisco MCP server ready on stdio');
@@ -824,6 +907,9 @@ async function shutdown(signal: string): Promise<void> {
       logger.info('HTTP server stopped');
     }
 
+    if (sandboxManager) {
+      await sandboxManager.shutdown();
+    }
     stopSandboxServer();
     await shutdownSearchIndex();
     logger.info('Shutdown complete');

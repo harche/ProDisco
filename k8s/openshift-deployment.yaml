@@ -151,6 +151,34 @@ subjects:
     name: mcp-server
     namespace: prodisco
 ---
+# RBAC for MCP server to manage Sandbox CRDs (multi-sandbox mode)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prodisco-sandbox-manager
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources:
+      - sandboxes
+    verbs: ["get", "list", "create", "delete", "watch"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources:
+      - sandboxes/status
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prodisco-sandbox-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prodisco-sandbox-manager
+subjects:
+  - kind: ServiceAccount
+    name: mcp-server
+    namespace: prodisco
+---
 # ClusterRoleBinding for Prometheus/Thanos Querier access (sandbox-server)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -203,7 +231,10 @@ subjects:
     name: agent-sandbox-controller
     namespace: agent-sandbox-system
 ---
-# Sandbox Server using agent-sandbox CRD for isolation
+# Static Sandbox resource for single-sandbox mode (SANDBOX_MODE=single).
+# In multi-sandbox mode (SANDBOX_MODE=multi), the MCP server creates
+# per-session Sandbox CRDs dynamically — remove this resource and
+# the static sandbox-server Service below in that case.
 apiVersion: agents.x-k8s.io/v1alpha1
 kind: Sandbox
 metadata:
@@ -290,7 +321,8 @@ spec:
           configMap:
             name: prodisco-config
 ---
-# Sandbox Server Service
+# Static Service for single-sandbox mode.
+# In multi-sandbox mode, the Sandbox controller creates a Service per CRD automatically.
 apiVersion: v1
 kind: Service
 metadata:
@@ -349,11 +381,12 @@ spec:
               value: "/tmp/cache"
             - name: HOME
               value: "/tmp"
-            # Connect to sandbox-server via TCP
-            - name: SANDBOX_USE_TCP
-              value: "true"
-            - name: SANDBOX_TCP_HOST
-              value: "sandbox-server.prodisco.svc.cluster.local"
+            # Multi-sandbox mode: each MCP session gets its own Sandbox CRD
+            # Set to "single" to use the shared static sandbox (requires static Sandbox CRD above)
+            - name: SANDBOX_MODE
+              value: "multi"
+            - name: SANDBOX_NAMESPACE
+              value: "prodisco"
             - name: SANDBOX_TCP_PORT
               value: "50051"
             - name: PRODISCO_CONFIG_PATH

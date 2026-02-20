@@ -4,12 +4,50 @@ kind: Namespace
 metadata:
   name: prodisco
 ---
+# ConfigMap with ProDisco configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prodisco-config
+  namespace: prodisco
+data:
+  # Endpoint configuration (edit these for your cluster)
+  PROMETHEUS_ENDPOINT: "http://prometheus-server.monitoring.svc.cluster.local:80"
+  LOKI_ENDPOINT: "http://loki.monitoring.svc.cluster.local:3100"
+
+  .prodisco-config.yaml: |
+    libraries:
+      - name: "@kubernetes/client-node"
+        description: "Kubernetes API client"
+      - name: "@prodisco/prometheus-client"
+        description: |
+          Prometheus queries & metric discovery. PROMETHEUS_ENDPOINT env var is pre-configured in the sandbox.
+          Quick start: `const client = new PrometheusClient({ endpoint: process.env.PROMETHEUS_ENDPOINT });`
+          Range query: `client.executeRange('node_cpu_seconds_total', { start: new Date(Date.now() - 3600000), end: new Date(), step: '1m' })`
+          IMPORTANT: TimeRange.start/end must be Date objects or Unix timestamps in SECONDS (not milliseconds). Use `new Date()` or `Math.floor(Date.now()/1000)`.
+          Workflow: (1) create client with endpoint (2) client.execute('metric_name') for instant, client.executeRange() for time series.
+      - name: "@prodisco/loki-client"
+        description: |
+          Loki LogQL querying. LOKI_ENDPOINT env var is pre-configured. Auto-authenticates in Kubernetes using service account token.
+          Quick start: `const client = new LokiClient({ baseUrl: process.env.LOKI_ENDPOINT });`
+          Workflow: (1) create client (2) client.labels() and client.labelValues('namespace') to discover labels (3) client.queryRange('{namespace="default"}') to fetch logs.
+      - name: "simple-statistics"
+        description: "Statistical functions including mean, median, standard deviation, linear regression, and more."
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: mcp-server
   namespace: prodisco
 ---
+# ServiceAccount for dynamically created sandbox pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+---
+# Read-only cluster access for MCP server and sandbox pods
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -36,6 +74,37 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: mcp-server
+subjects:
+  - kind: ServiceAccount
+    name: mcp-server
+    namespace: prodisco
+  - kind: ServiceAccount
+    name: sandbox-server
+    namespace: prodisco
+---
+# RBAC for MCP server to manage Sandbox CRDs (multi-sandbox mode)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mcp-server-sandbox-manager
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources:
+      - sandboxes
+    verbs: ["get", "list", "create", "delete", "watch"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources:
+      - sandboxes/status
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-server-sandbox-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mcp-server-sandbox-manager
 subjects:
   - kind: ServiceAccount
     name: mcp-server
@@ -78,11 +147,17 @@ spec:
               value: "/tmp/prodisco-scripts"
             - name: PRODISCO_ENABLE_APPS
               value: "true"
-            # In-cluster service URLs for monitoring clients
-            - name: PROMETHEUS_ENDPOINT
-              value: "http://prometheus-server.monitoring.svc.cluster.local:80"
-            - name: LOKI_ENDPOINT
-              value: "http://loki.monitoring.svc.cluster.local:3100"
+            # Multi-sandbox mode: each MCP session gets its own Sandbox CRD
+            - name: SANDBOX_MODE
+              value: "multi"
+            - name: SANDBOX_NAMESPACE
+              value: "prodisco"
+            - name: SANDBOX_TCP_PORT
+              value: "50051"
+            - name: SANDBOX_IMAGE
+              value: "prodisco/sandbox-server:test"
+            - name: PRODISCO_CONFIG_PATH
+              value: "/config/.prodisco-config.yaml"
           resources:
             requests:
               memory: "256Mi"
@@ -105,9 +180,15 @@ spec:
           volumeMounts:
             - name: scripts-cache
               mountPath: /tmp/prodisco-scripts
+            - name: prodisco-config
+              mountPath: /config
+              readOnly: true
       volumes:
         - name: scripts-cache
           emptyDir: {}
+        - name: prodisco-config
+          configMap:
+            name: prodisco-config
 ---
 apiVersion: v1
 kind: Service

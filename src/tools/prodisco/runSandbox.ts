@@ -1,8 +1,10 @@
 import { z } from 'zod';
-import type { ToolDefinition } from '../types.js';
-import { getSandboxClient, ExecutionState } from '@prodisco/sandbox-server/client';
+import type { ToolDefinition, ToolExecutionContext } from '../types.js';
+import { getSandboxClient, ExecutionState, type SandboxClient } from '@prodisco/sandbox-server/client';
 import { searchToolsService } from './searchTools.js';
 import { DEFAULT_LIBRARIES_CONFIG, type LibrarySpec } from '../../config/libraries.js';
+
+export type SandboxClientResolver = (sessionId?: string) => SandboxClient | Promise<SandboxClient>;
 
 // ============================================================================
 // Schema Definition
@@ -249,7 +251,9 @@ function formatTruncationMessage(truncatedAt?: { lines: number; chars: number })
  * Execute mode - blocking execution, waits for completion
  */
 async function executeExecuteMode(
-  input: z.infer<typeof RunSandboxInputSchema>
+  input: z.infer<typeof RunSandboxInputSchema>,
+  resolveClient: SandboxClientResolver,
+  sessionId?: string,
 ): Promise<ExecuteModeResult | ErrorResult> {
   const { code, cached, scriptName, timeout = 30000 } = input;
 
@@ -262,7 +266,7 @@ async function executeExecuteMode(
   }
 
   try {
-    const client = getSandboxClient();
+    const client = await resolveClient(sessionId);
 
     const result = await client.execute({
       code,
@@ -312,7 +316,9 @@ async function executeExecuteMode(
  * Collects all chunks and returns complete output
  */
 async function executeStreamMode(
-  input: z.infer<typeof RunSandboxInputSchema>
+  input: z.infer<typeof RunSandboxInputSchema>,
+  resolveClient: SandboxClientResolver,
+  sessionId?: string,
 ): Promise<StreamModeResult | ErrorResult> {
   const { code, cached, scriptName, timeout = 30000 } = input;
 
@@ -325,7 +331,7 @@ async function executeStreamMode(
   }
 
   try {
-    const client = getSandboxClient();
+    const client = await resolveClient(sessionId);
 
     let output = '';
     let errorOutput = '';
@@ -424,7 +430,9 @@ async function executeStreamMode(
  * Async mode - start execution and return immediately with execution ID
  */
 async function executeAsyncMode(
-  input: z.infer<typeof RunSandboxInputSchema>
+  input: z.infer<typeof RunSandboxInputSchema>,
+  resolveClient: SandboxClientResolver,
+  sessionId?: string,
 ): Promise<AsyncModeResult | ErrorResult> {
   const { code, cached, scriptName, timeout = 30000 } = input;
 
@@ -437,7 +445,7 @@ async function executeAsyncMode(
   }
 
   try {
-    const client = getSandboxClient();
+    const client = await resolveClient(sessionId);
 
     const result = await client.executeAsync({
       code,
@@ -465,7 +473,9 @@ async function executeAsyncMode(
  * Status mode - get status and output of an async execution
  */
 async function executeStatusMode(
-  input: z.infer<typeof RunSandboxInputSchema>
+  input: z.infer<typeof RunSandboxInputSchema>,
+  resolveClient: SandboxClientResolver,
+  sessionId?: string,
 ): Promise<StatusModeResult | ErrorResult> {
   const { executionId, wait, outputOffset } = input;
 
@@ -478,7 +488,7 @@ async function executeStatusMode(
   }
 
   try {
-    const client = getSandboxClient();
+    const client = await resolveClient(sessionId);
 
     const status = await client.getExecution(executionId, {
       wait,
@@ -531,7 +541,9 @@ async function executeStatusMode(
  * Cancel mode - cancel a running execution
  */
 async function executeCancelMode(
-  input: z.infer<typeof RunSandboxInputSchema>
+  input: z.infer<typeof RunSandboxInputSchema>,
+  resolveClient: SandboxClientResolver,
+  sessionId?: string,
 ): Promise<CancelModeResult | ErrorResult> {
   const { executionId } = input;
 
@@ -544,7 +556,7 @@ async function executeCancelMode(
   }
 
   try {
-    const client = getSandboxClient();
+    const client = await resolveClient(sessionId);
 
     const result = await client.cancelExecution(executionId);
 
@@ -568,12 +580,14 @@ async function executeCancelMode(
  * List mode - list active and recent executions
  */
 async function executeListMode(
-  input: z.infer<typeof RunSandboxInputSchema>
+  input: z.infer<typeof RunSandboxInputSchema>,
+  resolveClient: SandboxClientResolver,
+  sessionId?: string,
 ): Promise<ListModeResult | ErrorResult> {
   const { states, limit = 10, includeCompletedWithinMs } = input;
 
   try {
-    const client = getSandboxClient();
+    const client = await resolveClient(sessionId);
 
     const executions = await client.listExecutions({
       states: states?.map(stringToState),
@@ -607,7 +621,9 @@ async function executeListMode(
  * Test mode - run tests using uvu framework
  */
 async function executeTestMode(
-  input: z.infer<typeof RunSandboxInputSchema>
+  input: z.infer<typeof RunSandboxInputSchema>,
+  resolveClient: SandboxClientResolver,
+  sessionId?: string,
 ): Promise<TestModeResult | ErrorResult> {
   const { code, tests, timeout = 30000 } = input;
 
@@ -620,7 +636,7 @@ async function executeTestMode(
   }
 
   try {
-    const client = getSandboxClient();
+    const client = await resolveClient(sessionId);
 
     const result = await client.executeTest({
       code,
@@ -653,6 +669,8 @@ async function executeTestMode(
 export type RunSandboxRuntimeConfig = {
   libraries: LibrarySpec[];
   enableApps?: boolean;
+  /** Function to resolve the SandboxClient for a given session. Falls back to getSandboxClient() singleton. */
+  getClient?: SandboxClientResolver;
 };
 
 function formatAllowedImportsForDescription(libraries: LibrarySpec[]): string {
@@ -733,24 +751,26 @@ export function createRunSandboxTool(runtimeConfig: RunSandboxRuntimeConfig) {
       appsOutputGuidance,
     schema: RunSandboxInputSchema,
 
-    async execute(input: z.infer<typeof RunSandboxInputSchema>) {
+    async execute(input: z.infer<typeof RunSandboxInputSchema>, context?: ToolExecutionContext) {
       const { mode = 'execute' } = input;
+      const resolveClient: SandboxClientResolver = runtimeConfig.getClient ?? (() => getSandboxClient());
+      const sessionId = context?.sessionId;
 
       switch (mode) {
         case 'execute':
-          return executeExecuteMode(input);
+          return executeExecuteMode(input, resolveClient, sessionId);
         case 'stream':
-          return executeStreamMode(input);
+          return executeStreamMode(input, resolveClient, sessionId);
         case 'async':
-          return executeAsyncMode(input);
+          return executeAsyncMode(input, resolveClient, sessionId);
         case 'status':
-          return executeStatusMode(input);
+          return executeStatusMode(input, resolveClient, sessionId);
         case 'cancel':
-          return executeCancelMode(input);
+          return executeCancelMode(input, resolveClient, sessionId);
         case 'list':
-          return executeListMode(input);
+          return executeListMode(input, resolveClient, sessionId);
         case 'test':
-          return executeTestMode(input);
+          return executeTestMode(input, resolveClient, sessionId);
         default:
           return {
             mode: mode as string,
