@@ -5,7 +5,7 @@
 # and verifies the MCP server and sandbox come up correctly.
 #
 # This test validates that the packages work correctly when installed from npm
-# (simulating what happens with `npx -y @prodisco/k8s-mcp`).
+# (simulating what happens with `npx -y @prodisco/mcp-server`).
 #
 
 set -euo pipefail
@@ -54,7 +54,7 @@ npm run proto:generate -w @prodisco/sandbox-server
 npm run build -w @prodisco/sandbox-server
 npm run build
 
-# Step 2.5: Pack search-libs and prometheus-client (k8s-mcp and sandbox-server depend on them)
+# Step 2.5: Pack search-libs and prometheus-client (mcp-server and sandbox-server depend on them)
 log "Creating npm pack for @prodisco/search-libs"
 cd "$ROOT_DIR/packages/search-libs"
 SEARCH_LIBS_TARBALL=$(npm pack --pack-destination "$ARTIFACT_DIR" 2>/dev/null | tail -1)
@@ -77,8 +77,8 @@ cd "$ROOT_DIR/packages/sandbox-server"
 SANDBOX_TARBALL=$(npm pack --pack-destination "$ARTIFACT_DIR" 2>/dev/null | tail -1)
 log "Created: $SANDBOX_TARBALL"
 
-# Step 5: Pack k8s-mcp
-log "Creating npm pack for @prodisco/k8s-mcp"
+# Step 5: Pack mcp-server
+log "Creating npm pack for @prodisco/mcp-server"
 cd "$ROOT_DIR"
 MCP_TARBALL=$(npm pack --pack-destination "$ARTIFACT_DIR" 2>/dev/null | tail -1)
 log "Created: $MCP_TARBALL"
@@ -100,12 +100,12 @@ npm install "$ARTIFACT_DIR/$PROM_TARBALL" --save
 log "Installing loki-client from tarball"
 npm install "$ARTIFACT_DIR/$LOKI_TARBALL" --save
 
-# Install sandbox-server (k8s-mcp depends on it)
+# Install sandbox-server (mcp-server depends on it)
 log "Installing sandbox-server from tarball"
 npm install "$ARTIFACT_DIR/$SANDBOX_TARBALL" --save
 
-# Install k8s-mcp
-log "Installing k8s-mcp from tarball"
+# Install mcp-server
+log "Installing mcp-server from tarball"
 npm install "$ARTIFACT_DIR/$MCP_TARBALL" --save
 
 # Step 7: Verify package contents
@@ -127,13 +127,13 @@ if [ ! -f "$SANDBOX_PKG_DIR/dist/generated/sandbox.js" ]; then
 fi
 log "  ✓ sandbox-server package structure is correct"
 
-# Check k8s-mcp has the critical files
-MCP_PKG_DIR="$TEST_DIR/node_modules/@prodisco/k8s-mcp"
+# Check mcp-server has the critical files
+MCP_PKG_DIR="$TEST_DIR/node_modules/@prodisco/mcp-server"
 if [ ! -f "$MCP_PKG_DIR/dist/server.js" ]; then
-  log "ERROR: k8s-mcp missing dist/server.js"
+  log "ERROR: mcp-server missing dist/server.js"
   exit 1
 fi
-log "  ✓ k8s-mcp package structure is correct"
+log "  ✓ mcp-server package structure is correct"
 
 # Step 8: Test sandbox-server can start (TCP mode)
 log "Testing sandbox-server startup"
@@ -176,7 +176,7 @@ cat > "$TEST_DIR/test-mcp-startup.js" << 'EOF'
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 
-const serverPath = path.join(__dirname, 'node_modules/@prodisco/k8s-mcp/dist/server.js');
+const serverPath = path.join(__dirname, 'node_modules/@prodisco/mcp-server/dist/server.js');
 
 console.log('Starting MCP server from:', serverPath);
 
@@ -275,7 +275,7 @@ cat > "$TEST_DIR/test-mcp-tcp.js" << EOF
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 
-const serverPath = path.join(__dirname, 'node_modules/@prodisco/k8s-mcp/dist/server.js');
+const serverPath = path.join(__dirname, 'node_modules/@prodisco/mcp-server/dist/server.js');
 
 console.log('Starting MCP server in TCP mode...');
 
