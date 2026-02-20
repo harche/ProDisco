@@ -1,6 +1,6 @@
 {
   "name": "@prodisco/loki-client",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "TypeScript client for Grafana Loki REST API",
   "type": "module",
   "main": "dist/index.js",
