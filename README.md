@@ -15,6 +15,12 @@ Demo use-cases (optional):
 
 [![Watch the demo](https://img.youtube.com/vi/W-DyrsGRJeQ/maxresdefault.jpg)](https://www.youtube.com/watch?v=W-DyrsGRJeQ)
 
+## Architecture
+
+![Architecture](docs/arch.png)
+
+Each MCP client session gets its own isolated Sandbox CRD (Kata VM), with per-session gRPC connections, idle timeout cleanup, and max session limits. See [docs/grpc-sandbox-architecture.md](docs/grpc-sandbox-architecture.md) for details.
+
 ---
 
 ## Table of Contents

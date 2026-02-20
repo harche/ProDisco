@@ -55,36 +55,9 @@ This document describes the gRPC-based sandbox execution architecture used in Pr
 
 ## Overview
 
-The sandbox system follows a client-server model inspired by Kubernetes' kubelet/containerd architecture:
+The sandbox system follows a client-server model with per-session isolation. Each MCP client session gets its own Sandbox CRD, which provisions a dedicated pod and service:
 
-```
-+---------------------------------------------------------------------+
-|                         MCP Server                                   |
-|  +-------------------+    +--------------------------------------+   |
-|  | searchTools       |    | runSandbox Tool                      |   |
-|  | (API discovery)   |    | (thin gRPC client wrapper)           |   |
-|  +-------------------+    +------------------+-------------------+   |
-|                                              |                       |
-+----------------------------------------------+-----------------------+
-                                               | gRPC over Unix Socket
-                                               | unix:///tmp/prodisco-sandbox.sock
-                                               v
-+---------------------------------------------------------------------+
-|                     Sandbox gRPC Server                              |
-|  +---------------------------------------------------------------+   |
-|  | SandboxService                                                 |   |
-|  | (Execute, ExecuteStream, ExecuteAsync, Cancel, List...)       |   |
-|  +---------------------------------------------------------------+   |
-|                              |                                       |
-|  +----------------+  +-------+--------+  +----------------------+    |
-|  | Executor       |  | Execution      |  | CacheManager         |    |
-|  | (VM + esbuild  |  | Registry       |  | (dedup, persist)     |    |
-|  |  transform)    |  | (state, output)|  |                      |    |
-|  +----------------+  +----------------+  +----------------------+    |
-|                                                                      |
-|  Pre-configured: k8s client, KubeConfig, prometheus-query           |
-+---------------------------------------------------------------------+
-```
+![Architecture](arch.png)
 
 ---
 
