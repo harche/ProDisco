@@ -561,10 +561,25 @@ export class Executor {
       },
     };
 
+    // Provide stub stdout/stderr so code calling process.stdout.write()
+    // doesn't crash the sandbox server process with "Cannot read properties of undefined"
+    const stdoutStub = {
+      write: (chunk: unknown) => {
+        addLine(String(chunk).replace(/\n$/, ''), false);
+        return true;
+      },
+    };
+    const stderrStub = {
+      write: (chunk: unknown) => {
+        addLine(String(chunk).replace(/\n$/, ''), true);
+        return true;
+      },
+    };
+
     const sandbox: Record<string, unknown> = {
       console: consoleObj,
       require: (m: string) => this.safeRequire(m),
-      process: { env: process.env },
+      process: { env: process.env, stdout: stdoutStub, stderr: stderrStub },
       setTimeout,
       setInterval,
       clearTimeout,

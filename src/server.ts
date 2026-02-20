@@ -26,6 +26,11 @@ import type { AnyToolDefinition } from './tools/types.js';
 
 // Track the sandbox server subprocess
 let sandboxProcess: ChildProcess | null = null;
+let sandboxShuttingDown = false;
+let sandboxRestartCount = 0;
+const MAX_SANDBOX_RESTARTS = 5;
+const SANDBOX_RESTART_WINDOW_MS = 60_000; // reset restart count after 1 minute of stability
+let sandboxRestartWindowTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Track the HTTP server (when using HTTP transport)
 let httpServer: Server | null = null;
@@ -318,12 +323,22 @@ async function startSandboxServer(): Promise<void> {
   }
 
   // Local mode: spawn subprocess
+  const socketPath = process.env.SANDBOX_SOCKET_PATH || '/tmp/prodisco-sandbox.sock';
+  await spawnSandboxProcess(socketPath);
+}
+
+/**
+ * Spawn the sandbox server subprocess and wait for it to become healthy.
+ */
+async function spawnSandboxProcess(socketPath: string): Promise<void> {
   // Use require.resolve to find the sandbox-server package, works both in development
   // (where it's in packages/) and when installed from npm (where it's in node_modules/)
   const sandboxServerPath = require.resolve('@prodisco/sandbox-server/server');
-  const socketPath = process.env.SANDBOX_SOCKET_PATH || '/tmp/prodisco-sandbox.sock';
 
   logger.info('Starting sandbox gRPC server...');
+
+  // Close any existing gRPC client before (re)spawning
+  closeSandboxClient();
 
   sandboxProcess = spawn('node', [sandboxServerPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -354,6 +369,31 @@ async function startSandboxServer(): Promise<void> {
       logger.info(`Sandbox server terminated by signal ${signal}`);
     }
     sandboxProcess = null;
+
+    // Auto-restart unless we're shutting down intentionally
+    if (!sandboxShuttingDown) {
+      sandboxRestartCount++;
+      if (sandboxRestartCount > MAX_SANDBOX_RESTARTS) {
+        logger.error(`Sandbox server crashed ${sandboxRestartCount} times within the restart window, not restarting`);
+        return;
+      }
+
+      const delay = Math.min(1000 * Math.pow(2, sandboxRestartCount - 1), 10_000);
+      logger.info(`Sandbox server died unexpectedly, restarting in ${delay}ms (attempt ${sandboxRestartCount}/${MAX_SANDBOX_RESTARTS})...`);
+
+      setTimeout(() => {
+        if (sandboxShuttingDown) return;
+        spawnSandboxProcess(socketPath).catch((err) => {
+          logger.error('Failed to restart sandbox server', err);
+        });
+      }, delay);
+
+      // Reset restart count after a period of stability
+      if (sandboxRestartWindowTimer) clearTimeout(sandboxRestartWindowTimer);
+      sandboxRestartWindowTimer = setTimeout(() => {
+        sandboxRestartCount = 0;
+      }, SANDBOX_RESTART_WINDOW_MS);
+    }
   });
 
   // Wait for the sandbox server to become healthy
@@ -371,6 +411,8 @@ async function startSandboxServer(): Promise<void> {
  * Stop the sandbox server subprocess (only in local mode).
  */
 function stopSandboxServer(): void {
+  sandboxShuttingDown = true;
+  if (sandboxRestartWindowTimer) clearTimeout(sandboxRestartWindowTimer);
   closeSandboxClient();
 
   // Only stop subprocess if running in local mode
