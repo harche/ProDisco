@@ -58,14 +58,14 @@ ProDisco goes a step further: instead of exposing custom TypeScript modules, it 
 
 ```bash
 curl -O https://raw.githubusercontent.com/harche/ProDisco/main/examples/prodisco.kubernetes.yaml
-claude mcp add ProDisco --env KUBECONFIG="${HOME}/.kube/config" -- npx -y @prodisco/k8s-mcp --config prodisco.kubernetes.yaml
+claude mcp add ProDisco --env KUBECONFIG="${HOME}/.kube/config" -- npx -y @prodisco/mcp-server --config prodisco.kubernetes.yaml
 ```
 
 **PostgreSQL (in-memory testing):**
 
 ```bash
 curl -O https://raw.githubusercontent.com/harche/ProDisco/main/examples/prodisco.postgres.yaml
-claude mcp add ProDisco -- npx -y @prodisco/k8s-mcp --config prodisco.postgres.yaml
+claude mcp add ProDisco -- npx -y @prodisco/mcp-server --config prodisco.postgres.yaml
 ```
 
 **Remove if needed:**
