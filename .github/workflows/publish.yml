@@ -37,7 +37,8 @@ jobs:
         id: changesets
         uses: changesets/action@v1
         with:
-          publish: npx changeset publish
+          version: npx changeset version && npm version patch --no-git-tag-version
+          publish: npx changeset publish && npm publish || true
           title: "chore: version packages"
           commit: "chore: version packages"
         env:
