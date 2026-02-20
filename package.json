@@ -29,7 +29,7 @@
     "test": "vitest run",
     "test:integration": "scripts/integration/run-kind-integration.sh",
     "test:examples": "bash scripts/ci/examples-smoke.sh",
-    "prepare": "husky"
+    "prepare": "husky || true"
   },
   "keywords": [
     "kubernetes",
