@@ -1,6 +1,6 @@
 {
   "name": "@prodisco/sandbox-server",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "gRPC sandbox server for code execution with Kubernetes context",
   "type": "module",
   "main": "dist/client/index.js",
@@ -38,8 +38,8 @@
     "@grpc/grpc-js": "^1.12.5",
     "@kubernetes/client-node": "^1.4.0",
     "esbuild": "^0.27.1",
-    "@prodisco/loki-client": "^0.1.0",
-    "@prodisco/prometheus-client": "^0.1.0",
+    "@prodisco/loki-client": "^0.1.2",
+    "@prodisco/prometheus-client": "^0.1.2",
     "prometheus-query": "^3.3.2",
     "simple-statistics": "^7.8.8"
   },
