@@ -1,0 +1,207 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prodisco
+---
+# PostgreSQL database
+apiVersion: v1
+kind: Pod
+metadata:
+  name: postgresql
+  namespace: prodisco
+  labels:
+    app: postgresql
+spec:
+  containers:
+    - name: postgresql
+      image: postgres:16
+      ports:
+        - containerPort: 5432
+          protocol: TCP
+      env:
+        - name: POSTGRES_USER
+          value: "prodisco"
+        - name: POSTGRES_PASSWORD
+          value: "prodisco"
+        - name: POSTGRES_DB
+          value: "prodisco"
+      resources:
+        requests:
+          memory: "128Mi"
+          cpu: "100m"
+        limits:
+          memory: "512Mi"
+          cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: prodisco
+  labels:
+    app: postgresql
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+  selector:
+    app: postgresql
+---
+# ConfigMap with ProDisco configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prodisco-config
+  namespace: prodisco
+data:
+  .prodisco-config.yaml: |
+    libraries:
+      - name: "pg"
+        description: |
+          PostgreSQL client for Node.js. Connect to the PostgreSQL server running in the cluster.
+          Quick start: `const { Client } = require("pg"); const client = new Client({ host: "postgresql.prodisco.svc.cluster.local", port: 5432, user: "prodisco", password: "prodisco", database: "prodisco" }); await client.connect();`
+          Queries: `const res = await client.query("SELECT * FROM my_table");` returns `{ rows, rowCount, fields }`.
+          Parameterized: `await client.query("INSERT INTO users(name, age) VALUES($1, $2)", ["alice", 30]);`
+          Always call `await client.end();` when done.
+          IMPORTANT: Before querying or modifying any table, ALWAYS discover the schema first. List tables with `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'` and inspect columns with `SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'my_table'`. Never assume column names or types exist — verify them first.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-server
+  namespace: prodisco
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+---
+# RBAC for MCP server to manage Sandbox CRDs (multi-sandbox mode)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mcp-server-sandbox-manager
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources:
+      - sandboxes
+    verbs: ["get", "list", "create", "delete", "watch"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources:
+      - sandboxes/status
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-server-sandbox-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mcp-server-sandbox-manager
+subjects:
+  - kind: ServiceAccount
+    name: mcp-server
+    namespace: prodisco
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-server
+  template:
+    metadata:
+      labels:
+        app: mcp-server
+    spec:
+      serviceAccountName: mcp-server
+      containers:
+        - name: mcp-server
+          image: prodisco/mcp-server:test
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          env:
+            - name: MCP_TRANSPORT
+              value: "http"
+            - name: MCP_HOST
+              value: "0.0.0.0"
+            - name: MCP_PORT
+              value: "3000"
+            - name: SCRIPTS_CACHE_DIR
+              value: "/tmp/prodisco-scripts"
+            - name: PRODISCO_ENABLE_APPS
+              value: "true"
+            # Multi-sandbox mode: each MCP session gets its own Sandbox CRD
+            - name: SANDBOX_MODE
+              value: "multi"
+            - name: SANDBOX_NAMESPACE
+              value: "prodisco"
+            - name: SANDBOX_TCP_PORT
+              value: "50051"
+            - name: SANDBOX_IMAGE
+              value: "prodisco/sandbox-server:test"
+            - name: PRODISCO_CONFIG_PATH
+              value: "/config/.prodisco-config.yaml"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - name: scripts-cache
+              mountPath: /tmp/prodisco-scripts
+            - name: prodisco-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: scripts-cache
+          emptyDir: {}
+        - name: prodisco-config
+          configMap:
+            name: prodisco-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app: mcp-server

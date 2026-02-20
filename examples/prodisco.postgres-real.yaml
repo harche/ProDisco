@@ -1,0 +1,9 @@
+libraries:
+  - name: "pg"
+    description: |
+      PostgreSQL client for Node.js. Connect to the PostgreSQL server running in the cluster.
+      Quick start: `const { Client } = require("pg"); const client = new Client({ host: "postgresql.prodisco.svc.cluster.local", port: 5432, user: "prodisco", password: "prodisco", database: "prodisco" }); await client.connect();`
+      Queries: `const res = await client.query("SELECT * FROM my_table");` returns `{ rows, rowCount, fields }`.
+      Parameterized: `await client.query("INSERT INTO users(name, age) VALUES($1, $2)", ["alice", 30]);`
+      Always call `await client.end();` when done.
+      IMPORTANT: Before querying or modifying any table, ALWAYS discover the schema first. List tables with `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'` and inspect columns with `SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'my_table'`. Never assume column names or types exist — verify them first.
