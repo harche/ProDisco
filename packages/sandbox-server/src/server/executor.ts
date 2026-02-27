@@ -9,6 +9,24 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 const MAX_OUTPUT_LINES = 5000;
 const MAX_OUTPUT_CHARS = 500000; // 500KB
 
+// Environment variable leak detection (defense-in-depth)
+const ENV_LEAK_ERROR = 'Execution blocked: output contains sensitive environment variable values';
+const MIN_SENSITIVE_VALUE_LENGTH = 8;
+
+const NON_SENSITIVE_ENV_NAMES = new Set([
+  'PATH', 'HOME', 'SHELL', 'LANG', 'LANGUAGE', 'TERM', 'USER', 'LOGNAME',
+  'HOSTNAME', 'PWD', 'OLDPWD', 'TMPDIR', 'TMP', 'TEMP', 'EDITOR', 'VISUAL',
+  'PAGER', 'COLORTERM', 'TERM_PROGRAM', 'DISPLAY', 'SHLVL', 'MANPATH',
+  'NODE_ENV', 'NODE_PATH', 'NODE_OPTIONS', 'NODE_VERSION',
+  'CI', 'GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_REF', 'GITHUB_SHA',
+  'GITHUB_WORKSPACE', 'GITHUB_EVENT_NAME', 'GITHUB_RUN_ID', 'GITHUB_RUN_NUMBER',
+  'SANDBOX_ALLOWED_MODULES', 'SANDBOX_MODULES_BASE_PATH', 'SANDBOX_TRANSPORT_MODE',
+  'SANDBOX_USE_TCP', 'SANDBOX_TCP_HOST', 'SANDBOX_TCP_PORT', 'SANDBOX_SOCKET_PATH',
+  'SANDBOX_CONFIG_PATH', 'PRODISCO_CONFIG_PATH', 'PROMETHEUS_URL',
+]);
+
+const NON_SENSITIVE_ENV_PREFIXES = ['npm_', 'NVM_', 'XDG_', 'LC_', 'LESS', 'LS_'];
+
 /**
  * Tracks output size and truncation state during execution.
  */
@@ -17,6 +35,7 @@ interface OutputTracker {
   charCount: number;
   truncated: boolean;
   truncatedAt?: { lines: number; chars: number };
+  envLeakDetected: boolean;
 }
 
 export interface ExecutionResult {
@@ -417,6 +436,7 @@ export class Executor {
   private prometheusUrl?: string;
   private moduleCache = new Map<string, unknown>();
   private preloadPromise: Promise<void> | null = null;
+  private sensitiveEnvValues: Set<string>;
 
   constructor(config: ExecutorConfig = {}) {
     this.allowedModules = config.allowedModules ? new Set(config.allowedModules) : parseAllowedModulesFromEnv();
@@ -429,6 +449,8 @@ export class Executor {
     this.requireFromBase = createRequire(path.join(this.basePath, 'index.js'));
     this.prometheusUrl = config.prometheusUrl || process.env.PROMETHEUS_URL;
 
+    this.sensitiveEnvValues = this.buildSensitiveValues();
+
     // Start preloading in the background so async APIs can return quickly.
     // Any errors are swallowed; a later require() will surface failures as needed.
     this.preloadPromise = this.preloadAllowedModules().catch(() => undefined);
@@ -439,6 +461,39 @@ export class Executor {
    */
   getKubernetesContext(): string {
     return 'unknown';
+  }
+
+  /**
+   * Build the set of sensitive env var values to check against output.
+   * Filters out short values and known non-sensitive variable names.
+   */
+  private buildSensitiveValues(): Set<string> {
+    const values = new Set<string>();
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value === undefined || value.length < MIN_SENSITIVE_VALUE_LENGTH) {
+        continue;
+      }
+      if (NON_SENSITIVE_ENV_NAMES.has(key)) {
+        continue;
+      }
+      if (NON_SENSITIVE_ENV_PREFIXES.some(prefix => key.startsWith(prefix))) {
+        continue;
+      }
+      values.add(value);
+    }
+    return values;
+  }
+
+  /**
+   * Check if text contains any sensitive env var value.
+   */
+  private containsSensitiveEnvValue(text: string): boolean {
+    for (const value of this.sensitiveEnvValues) {
+      if (text.includes(value)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async ensureAllowedModulesPreloaded(): Promise<void> {
@@ -521,6 +576,15 @@ export class Executor {
     const makeLine = (args: unknown[]) => args.map(String).join(' ');
 
     const addLine = (line: string, isError: boolean) => {
+      // Check for env var leak (defense-in-depth)
+      if (tracker.envLeakDetected) {
+        return;
+      }
+      if (this.containsSensitiveEnvValue(line)) {
+        tracker.envLeakDetected = true;
+        return;
+      }
+
       // Check if already truncated
       if (tracker.truncated) {
         return;
@@ -579,7 +643,7 @@ export class Executor {
     const sandbox: Record<string, unknown> = {
       console: consoleObj,
       require: (m: string) => this.safeRequire(m),
-      process: { env: process.env, stdout: stdoutStub, stderr: stderrStub },
+      process: { env: Object.freeze({}), stdout: stdoutStub, stderr: stderrStub },
       setTimeout,
       setInterval,
       clearTimeout,
@@ -611,7 +675,18 @@ export class Executor {
       lines: [],
       charCount: 0,
       truncated: false,
+      envLeakDetected: false,
     };
+
+    const envLeakResult = (): ExecutionResult => ({
+      success: false,
+      output: '',
+      error: ENV_LEAK_ERROR,
+      executionTimeMs: Date.now() - startTime,
+      outputLineCount: 0,
+      outputCharCount: 0,
+      truncated: false,
+    });
 
     // Clamp timeout
     const timeout = Math.min(Math.max(timeoutMs, 1000), 120000);
@@ -670,6 +745,11 @@ export class Executor {
 
       await Promise.race([resultPromise, timeoutPromise]);
 
+      // Check for env var leak in output
+      if (tracker.envLeakDetected) {
+        return envLeakResult();
+      }
+
       return {
         success: true,
         output: tracker.lines.join('\n'),
@@ -681,10 +761,16 @@ export class Executor {
       };
 
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      // Check for env var leak in output or error message
+      if (tracker.envLeakDetected || this.containsSensitiveEnvValue(errorMsg)) {
+        return envLeakResult();
+      }
+
       return {
         success: false,
         output: tracker.lines.join('\n'),
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMsg,
         executionTimeMs: Date.now() - startTime,
         outputLineCount: tracker.lines.length,
         outputCharCount: tracker.charCount,
@@ -705,7 +791,20 @@ export class Executor {
       lines: [],
       charCount: 0,
       truncated: false,
+      envLeakDetected: false,
     };
+
+    const envLeakStreamingResult = (): StreamingExecutionResult => ({
+      success: false,
+      output: '',
+      error: ENV_LEAK_ERROR,
+      executionTimeMs: Date.now() - startTime,
+      cancelled: false,
+      timedOut: false,
+      outputLineCount: 0,
+      outputCharCount: 0,
+      truncated: false,
+    });
 
     // Check if already aborted
     if (signal?.aborted) {
@@ -787,6 +886,9 @@ export class Executor {
       ]);
 
       if (result === 'abort') {
+        if (tracker.envLeakDetected) {
+          return envLeakStreamingResult();
+        }
         return {
           success: false,
           output: tracker.lines.join('\n'),
@@ -802,6 +904,9 @@ export class Executor {
       }
 
       if (result === 'timeout') {
+        if (tracker.envLeakDetected) {
+          return envLeakStreamingResult();
+        }
         return {
           success: false,
           output: tracker.lines.join('\n'),
@@ -818,10 +923,14 @@ export class Executor {
 
       if (typeof result === 'object' && result !== null && 'error' in result) {
         const error = (result as { error: unknown }).error;
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        if (tracker.envLeakDetected || this.containsSensitiveEnvValue(errorMsg)) {
+          return envLeakStreamingResult();
+        }
         return {
           success: false,
           output: tracker.lines.join('\n'),
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMsg,
           executionTimeMs: Date.now() - startTime,
           cancelled: false,
           timedOut: false,
@@ -830,6 +939,11 @@ export class Executor {
           truncated: tracker.truncated,
           truncatedAt: tracker.truncatedAt,
         };
+      }
+
+      // Check for env var leak in output
+      if (tracker.envLeakDetected) {
+        return envLeakStreamingResult();
       }
 
       return {
@@ -845,10 +959,14 @@ export class Executor {
       };
 
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      if (tracker.envLeakDetected || this.containsSensitiveEnvValue(errorMsg)) {
+        return envLeakStreamingResult();
+      }
       return {
         success: false,
         output: tracker.lines.join('\n'),
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMsg,
         executionTimeMs: Date.now() - startTime,
         cancelled: false,
         timedOut: false,

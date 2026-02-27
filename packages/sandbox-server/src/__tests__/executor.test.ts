@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { Executor, type ExecutionResult, type ExecutorConfig, type TestExecutionResult } from '../server/executor.js';
 
 describe('Executor', () => {
@@ -436,14 +436,14 @@ describe('Executor', () => {
       expect(result.output).toBe('object');
     });
 
-    it('can read environment variables', async () => {
+    it('cannot read host environment variables', async () => {
       const result = await executor.execute(`
-        // PATH should always be defined
+        // PATH should not be accessible in the sandbox
         console.log(typeof process.env.PATH);
       `);
 
       expect(result.success).toBe(true);
-      expect(result.output).toBe('string');
+      expect(result.output).toBe('undefined');
     });
   });
 
@@ -660,6 +660,303 @@ describe('Executor', () => {
       expect(result.truncated).toBe(false);
       expect(result.outputLineCount).toBe(100);
       expect(result.truncatedAt).toBeUndefined();
+    });
+  });
+
+  // ============================================================================
+  // Environment Variable Leak Prevention Tests
+  // ============================================================================
+
+  describe('Environment Variable Leak Prevention', () => {
+    // ---- Layer 1: Sandbox process.env restriction ----
+
+    describe('Sandbox process.env restriction', () => {
+      it('exposes empty process.env to sandbox code', async () => {
+        const result = await executor.execute(`
+          const keys = Object.keys(process.env);
+          console.log(keys.length);
+        `);
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('0');
+      });
+
+      it('prevents sandbox code from adding to process.env', async () => {
+        const result = await executor.execute(`
+          try {
+            process.env.INJECTED = 'malicious';
+          } catch(e) {
+            // strict mode or frozen — either way is fine
+          }
+          console.log(process.env.INJECTED === undefined ? 'blocked' : 'leaked');
+        `);
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('blocked');
+      });
+
+      it('returns undefined for all env var reads', async () => {
+        const result = await executor.execute(`
+          const vars = [
+            process.env.PATH,
+            process.env.HOME,
+            process.env.K8S_SERVICE_ACCOUNT_TOKEN,
+            process.env.SECRET_KEY,
+            process.env.NODE_ENV
+          ];
+          console.log(vars.every(v => v === undefined));
+        `);
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('true');
+      });
+
+      it('prevents env dump via JSON.stringify', async () => {
+        const result = await executor.execute(`
+          const dump = JSON.stringify(process.env);
+          console.log(dump);
+        `);
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('{}');
+      });
+
+      it('prevents env enumeration via Object methods', async () => {
+        const result = await executor.execute(`
+          console.log(Object.keys(process.env).length);
+          console.log(Object.values(process.env).length);
+          console.log(Object.entries(process.env).length);
+        `);
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('0\n0\n0');
+      });
+
+      it('prevents env enumeration via for...in', async () => {
+        const result = await executor.execute(`
+          const keys: string[] = [];
+          for (const key in process.env) {
+            keys.push(key);
+          }
+          console.log(keys.length);
+        `);
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('0');
+      });
+
+      it('allowed modules load successfully with restricted env', async () => {
+        const result = await executor.execute(`
+          const ss = require('simple-statistics');
+          console.log(typeof ss.mean);
+        `);
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('function');
+      });
+
+      it('process.stdout.write still works with restricted env', async () => {
+        const result = await executor.execute(`
+          process.stdout.write('hello via stdout');
+        `);
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('hello via stdout');
+      });
+    });
+
+    // ---- Layer 2: Output leak filter (defense-in-depth) ----
+
+    describe('Output leak filter (defense-in-depth)', () => {
+      const TEST_SECRET = 'xK9mP2vL8qR4wN7j';
+      let originalTestSecret: string | undefined;
+
+      beforeEach(() => {
+        originalTestSecret = process.env.TEST_SECRET_KEY;
+        process.env.TEST_SECRET_KEY = TEST_SECRET;
+        // Recreate executor so it rebuilds sensitiveEnvValues
+        executor = new Executor();
+      });
+
+      afterEach(() => {
+        if (originalTestSecret === undefined) {
+          delete process.env.TEST_SECRET_KEY;
+        } else {
+          process.env.TEST_SECRET_KEY = originalTestSecret;
+        }
+      });
+
+      it('blocks output containing a sensitive env value', async () => {
+        const result = await executor.execute(`
+          console.log("${TEST_SECRET}");
+        `);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('sensitive environment variable');
+        expect(result.output).toBe('');
+      });
+
+      it('blocks output with sensitive value embedded in larger text', async () => {
+        const result = await executor.execute(`
+          console.log("The token is: ${TEST_SECRET} and more text");
+        `);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('sensitive environment variable');
+        expect(result.output).toBe('');
+      });
+
+      it('blocks sensitive values leaked through error messages', async () => {
+        const result = await executor.execute(`
+          throw new Error("${TEST_SECRET}");
+        `);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('sensitive environment variable');
+        expect(result.error).not.toContain(TEST_SECRET);
+        expect(result.output).toBe('');
+      });
+
+      it('blocks sensitive values via process.stdout.write', async () => {
+        const result = await executor.execute(`
+          process.stdout.write("${TEST_SECRET}");
+        `);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('sensitive environment variable');
+        expect(result.output).toBe('');
+      });
+
+      it('blocks sensitive values via process.stderr.write', async () => {
+        const result = await executor.execute(`
+          process.stderr.write("${TEST_SECRET}");
+        `);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('sensitive environment variable');
+        expect(result.output).toBe('');
+      });
+
+      it('blocks sensitive values via console.error', async () => {
+        const result = await executor.execute(`
+          console.error("${TEST_SECRET}");
+        `);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('sensitive environment variable');
+        expect(result.output).toBe('');
+      });
+
+      it('blocks sensitive values via console.warn', async () => {
+        const result = await executor.execute(`
+          console.warn("${TEST_SECRET}");
+        `);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('sensitive environment variable');
+        expect(result.output).toBe('');
+      });
+
+      it('does not block short env var values (less than 8 chars)', async () => {
+        process.env.TEST_SHORT_VAR = 'abc';
+        const shortExecutor = new Executor();
+        const result = await shortExecutor.execute('console.log("abc")');
+        delete process.env.TEST_SHORT_VAR;
+
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('abc');
+      });
+
+      it('does not block values from non-sensitive env vars', async () => {
+        const originalNodeEnv = process.env.NODE_ENV;
+        process.env.NODE_ENV = 'development_extended_value';
+        const envExecutor = new Executor();
+        const result = await envExecutor.execute('console.log("development_extended_value")');
+        if (originalNodeEnv === undefined) {
+          delete process.env.NODE_ENV;
+        } else {
+          process.env.NODE_ENV = originalNodeEnv;
+        }
+
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('development_extended_value');
+      });
+
+      it('allows normal output that does not contain sensitive values', async () => {
+        const result = await executor.execute(`
+          console.log("hello world");
+          console.log("line 2");
+          console.log("line 3");
+        `);
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('hello world\nline 2\nline 3');
+      });
+
+      it('suppresses all output after leak is detected', async () => {
+        const result = await executor.execute(`
+          console.log("line 1 safe");
+          console.log("line 2 safe");
+          console.log("${TEST_SECRET}");
+          console.log("line 4 after leak");
+          console.log("line 5 after leak");
+        `);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('sensitive environment variable');
+        expect(result.output).toBe('');
+      });
+
+      it('blocks leaked values in streaming mode', async () => {
+        const chunks: string[] = [];
+        const result = await executor.executeStreaming({
+          code: `console.log("${TEST_SECRET}");`,
+          onOutput: (output) => { chunks.push(output); },
+        });
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('sensitive environment variable');
+        expect(result.output).toBe('');
+        // The leaked chunk should NOT have been sent
+        expect(chunks.some(c => c.includes(TEST_SECRET))).toBe(false);
+      });
+
+      it('sends safe chunks before leak but stops after detection in streaming mode', async () => {
+        const chunks: string[] = [];
+        const result = await executor.executeStreaming({
+          code: `
+            console.log("safe line 1");
+            console.log("safe line 2");
+            console.log("${TEST_SECRET}");
+            console.log("should not appear");
+          `,
+          onOutput: (output) => { chunks.push(output); },
+        });
+        expect(result.success).toBe(false);
+        // Safe lines may have been streamed before detection
+        expect(chunks.some(c => c.includes(TEST_SECRET))).toBe(false);
+        expect(chunks.some(c => c.includes('should not appear'))).toBe(false);
+      });
+
+      it('blocks leaked values in test execution mode', async () => {
+        const result = await executor.executeTest({
+          tests: `
+            test('leaks secret', () => {
+              console.log("${TEST_SECRET}");
+              assert.ok(true);
+            });
+          `,
+        });
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('sensitive environment variable');
+      });
+
+      it('blocks output matching any sensitive env var value', async () => {
+        process.env.TEST_ANOTHER_SECRET = 'aB3cD4eF5gH6iJ7k';
+        const multiExecutor = new Executor();
+        const result = await multiExecutor.execute('console.log("aB3cD4eF5gH6iJ7k")');
+        delete process.env.TEST_ANOTHER_SECRET;
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('sensitive environment variable');
+        expect(result.output).toBe('');
+      });
+
+      it('does not block values from env vars with non-sensitive prefixes', async () => {
+        const original = process.env.npm_config_registry;
+        process.env.npm_config_registry = 'https://registry.npmjs.org';
+        const npmExecutor = new Executor();
+        const result = await npmExecutor.execute('console.log("https://registry.npmjs.org")');
+        if (original === undefined) {
+          delete process.env.npm_config_registry;
+        } else {
+          process.env.npm_config_registry = original;
+        }
+
+        expect(result.success).toBe(true);
+      });
     });
   });
 
