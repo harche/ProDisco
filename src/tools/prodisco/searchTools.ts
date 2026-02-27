@@ -147,7 +147,7 @@ function createSearchToolsInputSchema(libraries: LibrarySpec[]) {
     .int()
     .positive()
     .max(50)
-    .default(10)
+    .default(3)
     .optional()
     .describe('Maximum number of results to return'),
   offset: z
