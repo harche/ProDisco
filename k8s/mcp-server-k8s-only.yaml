@@ -1,0 +1,203 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prodisco
+---
+# ConfigMap with ProDisco configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prodisco-config
+  namespace: prodisco
+data:
+  .prodisco-config.yaml: |
+    libraries:
+      - name: "@kubernetes/client-node"
+        description: "Kubernetes API client"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-server
+  namespace: prodisco
+---
+# ServiceAccount for dynamically created sandbox pods
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-server
+  namespace: prodisco
+---
+# Full unrestricted cluster access for MCP server and sandbox pods
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mcp-server
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-server
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mcp-server
+subjects:
+  - kind: ServiceAccount
+    name: mcp-server
+    namespace: prodisco
+  - kind: ServiceAccount
+    name: sandbox-server
+    namespace: prodisco
+---
+# RBAC for MCP server to manage Sandbox CRDs (multi-sandbox mode)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mcp-server-sandbox-manager
+rules:
+  - apiGroups: ["agents.x-k8s.io"]
+    resources:
+      - sandboxes
+    verbs: ["get", "list", "create", "delete", "watch"]
+  - apiGroups: ["agents.x-k8s.io"]
+    resources:
+      - sandboxes/status
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-server-sandbox-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mcp-server-sandbox-manager
+subjects:
+  - kind: ServiceAccount
+    name: mcp-server
+    namespace: prodisco
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-server
+  template:
+    metadata:
+      labels:
+        app: mcp-server
+    spec:
+      serviceAccountName: mcp-server
+      containers:
+        - name: mcp-server
+          image: prodisco/mcp-server:test
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          env:
+            - name: MCP_TRANSPORT
+              value: "http"
+            - name: MCP_HOST
+              value: "0.0.0.0"
+            - name: MCP_PORT
+              value: "3000"
+            - name: SCRIPTS_CACHE_DIR
+              value: "/tmp/prodisco-scripts"
+            - name: SANDBOX_MODE
+              value: "single"
+            - name: SANDBOX_TCP_PORT
+              value: "50051"
+            - name: PRODISCO_CONFIG_PATH
+              value: "/config/.prodisco-config.yaml"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - name: scripts-cache
+              mountPath: /tmp/prodisco-scripts
+            - name: prodisco-config
+              mountPath: /config
+              readOnly: true
+        - name: sandbox-server
+          image: prodisco/sandbox-server:test
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 50051
+              name: grpc
+              protocol: TCP
+          env:
+            - name: SANDBOX_USE_TCP
+              value: "true"
+            - name: SANDBOX_TCP_HOST
+              value: "0.0.0.0"
+            - name: SANDBOX_TCP_PORT
+              value: "50051"
+            - name: SCRIPTS_CACHE_DIR
+              value: "/tmp/prodisco-scripts"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          volumeMounts:
+            - name: scripts-cache
+              mountPath: /tmp/prodisco-scripts
+            - name: prodisco-config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: scripts-cache
+          emptyDir: {}
+        - name: prodisco-config
+          configMap:
+            name: prodisco-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-server
+  namespace: prodisco
+  labels:
+    app: mcp-server
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3000
+      targetPort: 3000
+      protocol: TCP
+      name: http
+  selector:
+    app: mcp-server
